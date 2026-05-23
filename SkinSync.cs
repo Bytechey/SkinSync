@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    [BepInPlugin("com.yourname.skinsync", "Skin Sync Mod", "1.0.9")]
+    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.0.9")]
     public class SkinSync : BaseUnityPlugin
     {
         internal static Harmony harmony;
@@ -25,7 +25,7 @@ namespace SkinSyncMod
 
         private void Awake()
         {
-            harmony = new Harmony("com.yourname.skinsync");
+            harmony = new Harmony("com.Bytechey.skinsync");
             harmony.PatchAll();
             ScanAvailableSkins();
             Logger.LogInfo($"SkinSync Mod loaded. Found {availableSkins.Count} skins.");
