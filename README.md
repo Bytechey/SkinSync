@@ -20,7 +20,7 @@
 ## 安装方法
 
 1. 将以下文件放置于 `BepInEx/plugins` 文件夹下：
-   - `SkinSync.dll`
+   - `SkinSyncMod.dll`
    - `CustomSprites` 文件夹（包含皮肤贴图）
 
 2. 皮肤文件应放置在 `CustomSprites` 文件夹内，并按照以下规则命名：
