@@ -1,0 +1,5 @@
+C:\Users\20631\Desktop\SkinSync\ClassLibrary1\obj\Release\net472\SkinSyncMod.csproj.AssemblyReference.cache
+C:\Users\20631\Desktop\SkinSync\ClassLibrary1\obj\Release\net472\SkinSyncMod.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\20631\Desktop\SkinSync\ClassLibrary1\obj\Release\net472\SkinSyncMod.AssemblyInfoInputs.cache
+C:\Users\20631\Desktop\SkinSync\ClassLibrary1\obj\Release\net472\SkinSyncMod.AssemblyInfo.cs
+C:\Users\20631\Desktop\SkinSync\ClassLibrary1\obj\Release\net472\SkinSyncMod.csproj.CoreCompileInputs.cache

@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2012/06/nuspec.xsd">
+  <metadata>
+    <id>SkinSyncMod</id>
+    <version>1.0.0</version>
+    <authors>SkinSyncMod</authors>
+    <description>Package Description</description>
+    <repository type="git" />
+    <dependencies>
+      <group targetFramework="net10.0" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="D:\steam\steamapps\common\Casualties Unknown Demo\BepInEx\plugins\SkinSync\ClassLibrary1\bin\Debug\net10.0\SkinSyncMod.dll" target="lib\net10.0\SkinSyncMod.dll" />
+  </files>
+</package>
