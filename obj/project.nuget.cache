@@ -1,11 +1,11 @@
 {
   "version": 2,
-  "dgSpecHash": "yyMSUHkScAo=",
+  "dgSpecHash": "aLoTHpjhRpE=",
   "success": true,
-  "projectFilePath": "C:\\Users\\20631\\Desktop\\SkinSync\\ClassLibrary1\\SkinSyncMod.csproj",
+  "projectFilePath": "D:\\Works\\CasualtiesUnknown-SkinEditor\\mods\\SkinSync\\SkinSync.csproj",
   "expectedPackageFiles": [
-    "C:\\Users\\20631\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
-    "C:\\Users\\20631\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net48\\1.0.3\\microsoft.netframework.referenceassemblies.net48.1.0.3.nupkg.sha512"
+    "C:\\Users\\mcxia\\.nuget\\packages\\microsoft.netframework.referenceassemblies\\1.0.3\\microsoft.netframework.referenceassemblies.1.0.3.nupkg.sha512",
+    "C:\\Users\\mcxia\\.nuget\\packages\\microsoft.netframework.referenceassemblies.net48\\1.0.3\\microsoft.netframework.referenceassemblies.net48.1.0.3.nupkg.sha512"
   ],
   "logs": []
 }
