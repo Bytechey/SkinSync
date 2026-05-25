@@ -33,6 +33,7 @@ namespace SkinSyncMod
             // 尾巴形变调试面板（按 F9 切显隐）。卸载方式：删除下面这一行 + 删除 TailDebugPanel.cs 重 build。
             // gameObject.AddComponent<TailDebugPanel>();
             gameObject.AddComponent<SkinSyncMod.Patches.SkinCacheBroadcaster>();
+            gameObject.AddComponent<SkinSyncMod.Patches.UpdateChecker>();
         }
 
         private void ScanAvailableSkins()
