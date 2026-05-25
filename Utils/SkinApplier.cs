@@ -152,12 +152,16 @@ namespace SkinSyncMod
             // 上翼挂在 container 下；下翼挂在对应上翼下，实现父子关节链。
             GameObject upL = null;
             GameObject upR = null;
+            // 下翼挂"上翼末端"的偏移基准：以上翼 PNG 的实际半高为准（不再硬编码 16px），
+            // 让不同尺寸的翼贴图都能正确接续，与编辑器端 wingsPieceHalfH 的处理一致。
+            float leftUpperHalfPx = wingUL != null ? wingUL.rect.height * 0.5f : 16f;
+            float rightUpperHalfPx = wingUR != null ? wingUR.rect.height * 0.5f : 16f;
             if (wingUL != null) upL = AttachWing(container.transform, "WingUL", wingUL, cfg.WingUL, sortLayer, isLeft: true);
             if (wingUR != null) upR = AttachWing(container.transform, "WingUR", wingUR, cfg.WingUR, sortLayer, isLeft: false);
-            if (wingDL != null && upL != null) AttachWing(upL.transform, "WingDL", wingDL, cfg.WingDL, sortLayer, isLeft: true, isLower: true);
-            else if (wingDL != null) AttachWing(container.transform, "WingDL", wingDL, cfg.WingDL, sortLayer, isLeft: true, isLower: true);
-            if (wingDR != null && upR != null) AttachWing(upR.transform, "WingDR", wingDR, cfg.WingDR, sortLayer, isLeft: false, isLower: true);
-            else if (wingDR != null) AttachWing(container.transform, "WingDR", wingDR, cfg.WingDR, sortLayer, isLeft: false, isLower: true);
+            if (wingDL != null && upL != null) AttachWing(upL.transform, "WingDL", wingDL, cfg.WingDL, sortLayer, isLeft: true, isLower: true, upperHalfPx: leftUpperHalfPx);
+            else if (wingDL != null) AttachWing(container.transform, "WingDL", wingDL, cfg.WingDL, sortLayer, isLeft: true, isLower: true, upperHalfPx: leftUpperHalfPx);
+            if (wingDR != null && upR != null) AttachWing(upR.transform, "WingDR", wingDR, cfg.WingDR, sortLayer, isLeft: false, isLower: true, upperHalfPx: rightUpperHalfPx);
+            else if (wingDR != null) AttachWing(container.transform, "WingDR", wingDR, cfg.WingDR, sortLayer, isLeft: false, isLower: true, upperHalfPx: rightUpperHalfPx);
         }
 
         // 在 body 子树里找 limb：先匹配 GameObject.name，再 fallback 匹配 SpriteRenderer.sprite.name 含 limbName。
@@ -181,7 +185,7 @@ namespace SkinSyncMod
         private const float UPTORSO_OFFSET_Y = -10f;
 
         private static GameObject AttachWing(Transform parent, string name, Sprite sprite, WingsConfigLoader.Piece piece,
-            int sortLayer, bool isLeft, bool isLower = false)
+            int sortLayer, bool isLeft, bool isLower = false, float upperHalfPx = 16f)
         {
             var go = new GameObject(name);
             go.transform.SetParent(parent, worldPositionStays: false);
@@ -191,8 +195,8 @@ namespace SkinSyncMod
             float localPxY = isLower ? piece.Y : (piece.Y - UPTORSO_OFFSET_Y);
             float lx = localPxX / PIXELS_PER_UNIT;
             float ly = -localPxY / PIXELS_PER_UNIT;
-            // 下翼默认挂在上翼"末端"基准（PNG 半高 16px = 2 单位，向下）。
-            if (isLower) ly += -16f / PIXELS_PER_UNIT;
+            // 下翼默认挂在上翼"末端"基准，按上翼 PNG 实际半高换算（兼容非 32px 高的翼图）。
+            if (isLower) ly += -upperHalfPx / PIXELS_PER_UNIT;
             go.transform.localPosition = new Vector3(lx, ly, 0f);
             go.transform.localScale = Vector3.one;
 
