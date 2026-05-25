@@ -58,24 +58,26 @@ namespace SkinSyncMod
                 if (tail.GetComponent<TailFlowDeform>() == null)
                     tail.gameObject.AddComponent<TailFlowDeform>();
             }
-
-            EnsureDirectionalSwitchers(playerObj, spriteDict);
         }
 
-        private static void EnsureDirectionalSwitchers(GameObject playerObj, Dictionary<string, Sprite> sprites)
+        /// <summary>
+        /// 优先按 limb.gameObject.name 末尾 F/B 后缀挑选 <spriteName><F|B> 独立图，缺失时回退共享 sprite 名。
+        /// </summary>
+        private static void ReplaceLimbSprite(Limb limb, Dictionary<string, Sprite> dict)
         {
-            Body body = playerObj.GetComponentInChildren<Body>(true);
-            if (body == null) return;
-            foreach (var limb in body.GetComponentsInChildren<Limb>(true))
+            var renderer = limb.GetComponent<SpriteRenderer>();
+            if (renderer?.sprite == null) return;
+            string baseSprite = renderer.sprite.name;
+            string limbName = limb.gameObject.name ?? string.Empty;
+            char lastChar = limbName.Length > 0 ? limbName[limbName.Length - 1] : '\0';
+            if ((lastChar == 'F' || lastChar == 'B')
+                && dict.TryGetValue(baseSprite + lastChar, out var sided))
             {
-                var sw = limb.GetComponent<DirectionalSpriteSwitcher>() ?? limb.gameObject.AddComponent<DirectionalSpriteSwitcher>();
-                sw.Configure(body, sprites);
+                renderer.sprite = sided;
+                return;
             }
-            foreach (var tail in body.GetComponentsInChildren<TailScript>(true))
-            {
-                var sw = tail.GetComponent<DirectionalSpriteSwitcher>() ?? tail.gameObject.AddComponent<DirectionalSpriteSwitcher>();
-                sw.Configure(body, sprites);
-            }
+            if (dict.TryGetValue(baseSprite, out var shared))
+                renderer.sprite = shared;
         }
 
         private static Dictionary<string, Sprite> LoadCharacterSprites(string character)
@@ -98,13 +100,6 @@ namespace SkinSyncMod
                 }
             }
             return dict;
-        }
-
-        private static void ReplaceLimbSprite(Limb limb, Dictionary<string, Sprite> dict)
-        {
-            var renderer = limb.GetComponent<SpriteRenderer>();
-            if (renderer?.sprite != null && dict.TryGetValue(renderer.sprite.name, out var newSprite))
-                renderer.sprite = newSprite;
         }
 
         private static void ReplaceTailSprite(TailScript tail, Dictionary<string, Sprite> dict)
