@@ -1,7 +1,7 @@
 {
-  "version": 4,
+  "version": 3,
   "targets": {
-    "net48": {
+    ".NETFramework,Version=v4.8": {
       "Microsoft.NETFramework.ReferenceAssemblies/1.0.3": {
         "type": "package",
         "dependencies": {
@@ -410,24 +410,24 @@
     }
   },
   "projectFileDependencyGroups": {
-    "net48": [
+    ".NETFramework,Version=v4.8": [
       "Microsoft.NETFramework.ReferenceAssemblies >= 1.0.3"
     ]
   },
   "packageFolders": {
-    "C:\\Users\\20631\\.nuget\\packages\\": {}
+    "C:\\Users\\mcxia\\.nuget\\packages\\": {}
   },
   "project": {
-    "version": "1.0.0",
+    "version": "1.0.9",
     "restore": {
-      "projectUniqueName": "C:\\Users\\20631\\Desktop\\SkinSync\\ClassLibrary1\\SkinSyncMod.csproj",
+      "projectUniqueName": "D:\\Works\\CasualtiesUnknown-SkinEditor\\mods\\SkinSync\\SkinSync.csproj",
       "projectName": "SkinSyncMod",
-      "projectPath": "C:\\Users\\20631\\Desktop\\SkinSync\\ClassLibrary1\\SkinSyncMod.csproj",
-      "packagesPath": "C:\\Users\\20631\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\20631\\Desktop\\SkinSync\\ClassLibrary1\\obj\\",
+      "projectPath": "D:\\Works\\CasualtiesUnknown-SkinEditor\\mods\\SkinSync\\SkinSync.csproj",
+      "packagesPath": "C:\\Users\\mcxia\\.nuget\\packages\\",
+      "outputPath": "D:\\Works\\CasualtiesUnknown-SkinEditor\\mods\\SkinSync\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
-        "C:\\Users\\20631\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        "C:\\Users\\mcxia\\AppData\\Roaming\\NuGet\\NuGet.Config"
       ],
       "originalTargetFrameworks": [
         "net48"
@@ -437,7 +437,6 @@
       },
       "frameworks": {
         "net48": {
-          "framework": "net48",
           "targetAlias": "net48",
           "projectReferences": {}
         }
@@ -452,11 +451,10 @@
         "auditLevel": "low",
         "auditMode": "direct"
       },
-      "SdkAnalysisLevel": "10.0.300"
+      "SdkAnalysisLevel": "9.0.300"
     },
     "frameworks": {
       "net48": {
-        "framework": "net48",
         "targetAlias": "net48",
         "dependencies": {
           "Microsoft.NETFramework.ReferenceAssemblies": {
@@ -466,7 +464,7 @@
             "autoReferenced": true
           }
         },
-        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\10.0.300\\RuntimeIdentifierGraph.json"
+        "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.314\\RuntimeIdentifierGraph.json"
       }
     }
   }
