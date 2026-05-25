@@ -1,0 +1,37 @@
+name: Build SkinSync
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "**.cs"
+      - "**.csproj"
+      - "references/**"
+      - ".github/workflows/build.yml"
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build Release
+        shell: pwsh
+        run: dotnet build SkinSync.csproj -c Release --nologo
+
+      - name: Upload SkinSyncMod.dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkinSyncMod
+          path: bin/Release/SkinSyncMod.dll
+          if-no-files-found: error
+          retention-days: 30
