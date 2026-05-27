@@ -11,6 +11,7 @@ namespace SkinSyncMod
         public static int ConstraintIters = 6;
 
         public static float Damping = 0.45f;
+        public static float SpeedDamping = 0.05f;
         public static float Stiffness = 1.0f;
         public static float GravityX = 0f;
         public static float GravityY = -1.2f;

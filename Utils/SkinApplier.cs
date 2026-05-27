@@ -87,7 +87,7 @@ namespace SkinSyncMod
         }
 
         /// <summary>
-        /// 优先按 limb.gameObject.name 末尾 F/B 后缀挑选 <spriteName><F|B> 独立图，缺失时回退共享 sprite 名。
+        /// 按 limb 名末尾 F/B 后缀挑选 sprite：sided 副本 → 共享 base → 反向 sided 副本；都缺则保留原 sprite。
         /// </summary>
         private static void ReplaceLimbSprite(Limb limb, Dictionary<string, Sprite> dict)
         {
@@ -96,14 +96,27 @@ namespace SkinSyncMod
             string baseSprite = renderer.sprite.name;
             string limbName = limb.gameObject.name ?? string.Empty;
             char lastChar = limbName.Length > 0 ? limbName[limbName.Length - 1] : '\0';
-            if ((lastChar == 'F' || lastChar == 'B')
-                && dict.TryGetValue(baseSprite + lastChar, out var sided))
+            if (lastChar == 'F' || lastChar == 'B')
             {
-                renderer.sprite = sided;
+                if (dict.TryGetValue(baseSprite + lastChar, out var sided))
+                {
+                    renderer.sprite = sided;
+                    return;
+                }
+                if (dict.TryGetValue(baseSprite, out var shared))
+                {
+                    renderer.sprite = shared;
+                    return;
+                }
+                char opposite = lastChar == 'F' ? 'B' : 'F';
+                if (dict.TryGetValue(baseSprite + opposite, out var fallback))
+                {
+                    renderer.sprite = fallback;
+                }
                 return;
             }
-            if (dict.TryGetValue(baseSprite, out var shared))
-                renderer.sprite = shared;
+            if (dict.TryGetValue(baseSprite, out var direct))
+                renderer.sprite = direct;
         }
 
         private static Dictionary<string, Sprite> LoadCharacterSprites(string character)

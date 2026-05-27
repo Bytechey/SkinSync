@@ -21,6 +21,8 @@ namespace SkinSyncMod
         private Vector2[] _smoothPos;
         private float _segLen;
         private bool _physicsInited;
+        private float _windPhase;
+        private float _smoothBaseAmp;
 
         private int _cachedSpriteId;
         private Vector3[] _verts;
@@ -189,7 +191,9 @@ namespace SkinSyncMod
             int n = _bonePos.Length;
             float playerSpeed = (_body != null && _body.rb != null) ? Mathf.Abs(_body.rb.velocity.x) : 0f;
             Vector2 gravity = new Vector2(TailDeformConfig.GravityX, TailDeformConfig.GravityY);
-            float damping = Mathf.Clamp01(TailDeformConfig.Damping);
+            float baseDamping = Mathf.Clamp01(TailDeformConfig.Damping);
+            float speedDamping = Mathf.Max(0f, TailDeformConfig.SpeedDamping);
+            float damping = Mathf.Clamp01(baseDamping + Mathf.Min(playerSpeed * speedDamping, 0.5f));
             float maxBendRad = Mathf.Max(0f, TailDeformConfig.MaxBendDeg) * Mathf.Deg2Rad;
             float stiffness = Mathf.Clamp01(TailDeformConfig.Stiffness);
             int iters = Mathf.Max(1, TailDeformConfig.ConstraintIters);
@@ -204,9 +208,10 @@ namespace SkinSyncMod
             _bonePrev[1] = Vector2.Lerp(_bonePrev[1], anchor1, anchorBlend);
 
             Vector2 perpWorld = Vector2.up;
-            float now = Time.time;
             float windFreq = TailDeformConfig.WindFreq + playerSpeed * 0.15f;
             float baseAmp = TailDeformConfig.WindAmp + playerSpeed * TailDeformConfig.SpeedDisturb;
+            _windPhase += dt * windFreq;
+            _smoothBaseAmp = Mathf.Lerp(_smoothBaseAmp, baseAmp, 0.2f);
 
             float maxFixedDt = Mathf.Max(0.005f, TailDeformConfig.MaxFixedDt);
             int subSteps = Mathf.Max(1, Mathf.CeilToInt(dt / maxFixedDt));
@@ -220,14 +225,32 @@ namespace SkinSyncMod
                     _bonePrev[i] = _bonePos[i];
                     Vector2 next = _bonePos[i] + vel + gravity * (subDt * subDt);
                     float t = (float)i / (n - 1);
-                    float waveAmp = baseAmp * t * t;
-                    float wave = Mathf.Sin(now * windFreq + t * Mathf.PI * 2f) * waveAmp;
+                    float waveAmp = _smoothBaseAmp * t * t;
+                    float wave = Mathf.Sin(_windPhase + t * Mathf.PI * 2f) * waveAmp;
                     next += perpWorld * wave;
+                    Vector2 disp = next - _bonePos[i];
+                    if (disp.magnitude > maxStep) next = _bonePos[i] + disp.normalized * maxStep;
                     _bonePos[i] = next;
                 }
 
                 for (int it = 0; it < iters; it++)
                 {
+                    for (int i = 1; i < n - 1; i++)
+                    {
+                        Vector2 prevDir = _bonePos[i] - _bonePos[i - 1];
+                        Vector2 nextDir = _bonePos[i + 1] - _bonePos[i];
+                        if (prevDir.sqrMagnitude < 1e-6f || nextDir.sqrMagnitude < 1e-6f) continue;
+                        float prevAng = Mathf.Atan2(prevDir.y, prevDir.x) * Mathf.Rad2Deg;
+                        float nextAng = Mathf.Atan2(nextDir.y, nextDir.x) * Mathf.Rad2Deg;
+                        float ang = Mathf.DeltaAngle(prevAng, nextAng) * Mathf.Deg2Rad;
+                        if (Mathf.Abs(ang) <= maxBendRad) continue;
+                        float clamped = Mathf.Clamp(ang, -maxBendRad, maxBendRad);
+                        float c = Mathf.Cos(clamped);
+                        float s = Mathf.Sin(clamped);
+                        Vector2 baseDir = prevDir.normalized;
+                        Vector2 rotated = new Vector2(baseDir.x * c - baseDir.y * s, baseDir.x * s + baseDir.y * c);
+                        _bonePos[i + 1] = _bonePos[i] + rotated * nextDir.magnitude;
+                    }
                     for (int i = 1; i < n; i++)
                     {
                         Vector2 d = _bonePos[i] - _bonePos[i - 1];
@@ -236,21 +259,6 @@ namespace SkinSyncMod
                         float diff = (len - _segLen) * stiffness;
                         Vector2 fix = d * (diff / len);
                         _bonePos[i] -= fix;
-                    }
-                    for (int i = 1; i < n - 1; i++)
-                    {
-                        Vector2 prevDir = _bonePos[i] - _bonePos[i - 1];
-                        Vector2 nextDir = _bonePos[i + 1] - _bonePos[i];
-                        if (prevDir.sqrMagnitude < 1e-6f || nextDir.sqrMagnitude < 1e-6f) continue;
-                        float ang = Vector2.SignedAngle(prevDir, nextDir) * Mathf.Deg2Rad;
-                        float maxA = maxBendRad;
-                        if (Mathf.Abs(ang) <= maxA) continue;
-                        float clamped = Mathf.Clamp(ang, -maxA, maxA);
-                        float c = Mathf.Cos(clamped);
-                        float s = Mathf.Sin(clamped);
-                        Vector2 baseDir = prevDir.normalized;
-                        Vector2 rotated = new Vector2(baseDir.x * c - baseDir.y * s, baseDir.x * s + baseDir.y * c);
-                        _bonePos[i + 1] = _bonePos[i] + rotated * nextDir.magnitude;
                     }
                 }
             }

@@ -138,6 +138,7 @@ namespace SkinSyncMod
             TailDeformConfig.Segments = msg.segments;
             TailDeformConfig.ConstraintIters = msg.constraintIters;
             TailDeformConfig.Damping = msg.damping;
+            TailDeformConfig.SpeedDamping = msg.speedDamping;
             TailDeformConfig.Stiffness = msg.stiffness;
             TailDeformConfig.MaxBendDeg = msg.maxBendDeg;
             TailDeformConfig.AnchorFollow = msg.anchorFollow;
@@ -156,6 +157,7 @@ namespace SkinSyncMod
                 Enabled = msg.enabled, FrontGuard = msg.frontGuard,
                 Segments = msg.segments, ConstraintIters = msg.constraintIters,
                 Damping = msg.damping, Stiffness = msg.stiffness,
+                SpeedDamping = msg.speedDamping,
                 MaxBendDeg = msg.maxBendDeg, AnchorFollow = msg.anchorFollow,
                 Smoothness = msg.smoothness, MaxStep = msg.maxStep,
                 MaxFixedDt = msg.maxFixedDt, FrontGuardMargin = msg.frontGuardMargin,

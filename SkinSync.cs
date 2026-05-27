@@ -322,6 +322,7 @@ namespace SkinSyncMod
             TailDeformConfig.Segments = ov?.Segments ?? 10;
             TailDeformConfig.ConstraintIters = ov?.ConstraintIters ?? 6;
             TailDeformConfig.Damping = ov?.Damping ?? 0.45f;
+            TailDeformConfig.SpeedDamping = ov?.SpeedDamping ?? 0.05f;
             TailDeformConfig.Stiffness = ov?.Stiffness ?? 1.0f;
             TailDeformConfig.MaxBendDeg = ov?.MaxBendDeg ?? 18f;
             TailDeformConfig.AnchorFollow = ov?.AnchorFollow ?? 1.0f;
@@ -348,6 +349,7 @@ namespace SkinSyncMod
                 Segments = TailDeformConfig.Segments,
                 ConstraintIters = TailDeformConfig.ConstraintIters,
                 Damping = TailDeformConfig.Damping,
+                SpeedDamping = TailDeformConfig.SpeedDamping,
                 Stiffness = TailDeformConfig.Stiffness,
                 MaxBendDeg = TailDeformConfig.MaxBendDeg,
                 AnchorFollow = TailDeformConfig.AnchorFollow,
@@ -390,6 +392,7 @@ namespace SkinSyncMod
                 segments = TailDeformConfig.Segments,
                 constraintIters = TailDeformConfig.ConstraintIters,
                 damping = TailDeformConfig.Damping,
+                speedDamping = TailDeformConfig.SpeedDamping,
                 stiffness = TailDeformConfig.Stiffness,
                 maxBendDeg = TailDeformConfig.MaxBendDeg,
                 anchorFollow = TailDeformConfig.AnchorFollow,

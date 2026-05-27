@@ -473,6 +473,8 @@ namespace SkinSyncMod
 
             float dp = DrawSliderRow(SkinSyncI18n.T("tail.damping"), TailDeformConfig.Damping, 0f, 5f, 0.01f);
             if (!Mathf.Approximately(dp, TailDeformConfig.Damping)) { TailDeformConfig.Damping = dp; changed = true; }
+            float sdp = DrawSliderRow(SkinSyncI18n.T("tail.speed_damping"), TailDeformConfig.SpeedDamping, 0f, 0.5f, 0.005f);
+            if (!Mathf.Approximately(sdp, TailDeformConfig.SpeedDamping)) { TailDeformConfig.SpeedDamping = sdp; changed = true; }
             float st = DrawSliderRow(SkinSyncI18n.T("tail.stiffness"), TailDeformConfig.Stiffness, 0f, 5f, 0.01f);
             if (!Mathf.Approximately(st, TailDeformConfig.Stiffness)) { TailDeformConfig.Stiffness = st; changed = true; }
             float mb = DrawSliderRow(SkinSyncI18n.T("tail.max_bend"), TailDeformConfig.MaxBendDeg, 0f, 180f, 1f);

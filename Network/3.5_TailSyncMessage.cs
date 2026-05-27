@@ -4,7 +4,7 @@ namespace SkinSyncMod
 {
     /// <summary>
     /// 子端改动尾巴形变参数时发到服务端，服务端校验后广播全员。
-    /// 17 字段对齐 TailDeformConfig；接收端覆盖到全局 static + 写 settings.SetTailOverride（按 skin）。
+    /// 18 字段对齐 TailDeformConfig；接收端覆盖到全局 static + 写 settings.SetTailOverride（按 skin）。
     /// </summary>
     public struct TailSyncMessage : INetSerializable
     {
@@ -15,6 +15,7 @@ namespace SkinSyncMod
         public int segments;
         public int constraintIters;
         public float damping;
+        public float speedDamping;
         public float stiffness;
         public float maxBendDeg;
         public float anchorFollow;
@@ -37,6 +38,7 @@ namespace SkinSyncMod
             writer.Put(segments);
             writer.Put(constraintIters);
             writer.Put(damping);
+            writer.Put(speedDamping);
             writer.Put(stiffness);
             writer.Put(maxBendDeg);
             writer.Put(anchorFollow);
@@ -60,6 +62,7 @@ namespace SkinSyncMod
             segments = reader.GetInt();
             constraintIters = reader.GetInt();
             damping = reader.GetFloat();
+            speedDamping = reader.GetFloat();
             stiffness = reader.GetFloat();
             maxBendDeg = reader.GetFloat();
             anchorFollow = reader.GetFloat();

@@ -48,6 +48,7 @@ namespace SkinSyncMod
             public int? Segments;
             public int? ConstraintIters;
             public float? Damping;
+            public float? SpeedDamping;
             public float? Stiffness;
             public float? MaxBendDeg;
             public float? AnchorFollow;
@@ -306,6 +307,7 @@ namespace SkinSyncMod
                 case "Segments": if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out int sg)) ov.Segments = sg; break;
                 case "ConstraintIters": if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ci)) ov.ConstraintIters = ci; break;
                 case "Damping": if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float dp)) ov.Damping = dp; break;
+                case "SpeedDamping": if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float sdp)) ov.SpeedDamping = sdp; break;
                 case "Stiffness": if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float st)) ov.Stiffness = st; break;
                 case "MaxBendDeg": if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float mb)) ov.MaxBendDeg = mb; break;
                 case "AnchorFollow": if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float af)) ov.AnchorFollow = af; break;
@@ -335,6 +337,7 @@ namespace SkinSyncMod
                 AddIntPart(parts, "Segments", ov.Segments);
                 AddIntPart(parts, "ConstraintIters", ov.ConstraintIters);
                 AddFloatPart(parts, "Damping", ov.Damping);
+                AddFloatPart(parts, "SpeedDamping", ov.SpeedDamping);
                 AddFloatPart(parts, "Stiffness", ov.Stiffness);
                 AddFloatPart(parts, "MaxBendDeg", ov.MaxBendDeg);
                 AddFloatPart(parts, "AnchorFollow", ov.AnchorFollow);
