@@ -25,6 +25,8 @@ namespace SkinSyncMod
             ["sw.require_equipment"] = "配件配了 requireWornSlot 时，仅穿戴对应装备 slot 才显示",
 
             ["sec.sync"] = "多人同步",
+            ["sync.no_krokmp_hint"] = "未找到 KrokMP 多人联机模组，多人同步选项不可用",
+            ["sync.network_off_hint"] = "尚未进入多人会话，以下设置将在主机 / 客户端连接后生效",
             ["lbl.sync_mode"] = "同步策略：",
             ["sync.mode_on_enter"] = "进入游戏一键同步",
             ["sync.mode_passive"] = "仅被动响应改动",
@@ -119,6 +121,8 @@ namespace SkinSyncMod
             ["sw.require_equipment"] = "Show requireWornSlot accessories only when wearing the slot equipment",
 
             ["sec.sync"] = "Multiplayer sync",
+            ["sync.no_krokmp_hint"] = "KrokMP multiplayer mod not found — multiplayer sync options are disabled",
+            ["sync.network_off_hint"] = "Not in a multiplayer session — settings below will apply once host / client is connected",
             ["lbl.sync_mode"] = "Sync strategy:",
             ["sync.mode_on_enter"] = "On enter (auto sync)",
             ["sync.mode_passive"] = "Passive (on change)",

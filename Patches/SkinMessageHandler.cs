@@ -1,6 +1,6 @@
-﻿using KrokoshaCasualtiesMP;
-using LiteNetLib;
+﻿using LiteNetLib;
 using LiteNetLib.Utils;
+using SkinSyncMod.Network;
 using UnityEngine;
 
 namespace SkinSyncMod
@@ -18,7 +18,7 @@ namespace SkinSyncMod
             ApplySkinToPlayer(msg.netId, msg.skinID);
 
             // 收到的是本地玩家自己 → 写回 Settings.CurrentSkin，让主菜单 / 单机也用同一个值。
-            if (NetBody.TryGetNetBodyFromId(msg.netId, out NetBody nb) && nb != null && nb.is_local)
+            if (KrokoshaBridge.TryGetNetBodyFromId(msg.netId, out _, out _, out bool isLocal) && isLocal)
             {
                 if (SkinSync.Settings != null) SkinSync.Settings.CurrentSkin.Value = msg.skinID;
             }
@@ -41,21 +41,19 @@ namespace SkinSyncMod
             NetDataWriter writer = new NetDataWriter();
             writer.Put(SkinNetworkIDs.SkinChangeMessageId);
             msg.Serialize(writer);
-            var allClients = ServerMain.AllClientIds;
-            Net.Server_SendToClients(DeliveryMethod.ReliableOrdered, writer, allClients);
+            KrokoshaBridge.ServerBroadcast(DeliveryMethod.ReliableOrdered, writer);
 
-            if (NetPlayer.TryGetPlayerFromClientId(callerId, out NetPlayer plr) && plr.steam_id != 0UL)
-                SkinCacheStore.Set(plr.steam_id, msg.skinID);
+            if (KrokoshaBridge.TryGetPlayerSteamId(callerId, out ulong steamId) && steamId != 0UL)
+                SkinCacheStore.Set(steamId, msg.skinID);
         }
 
         private static void ApplySkinToPlayer(uint netId, string characterName)
         {
-            if (!NetBody.TryGetNetBodyFromId(netId, out NetBody nb))
+            if (!KrokoshaBridge.TryGetNetBodyFromId(netId, out _, out GameObject playerObj, out _))
             {
                 Debug.LogWarning($"[SkinSync] NetBody with netId {netId} not found");
                 return;
             }
-            GameObject playerObj = nb.chara;
             if (playerObj == null)
             {
                 Debug.LogWarning($"[SkinSync] Player GameObject for netId {netId} is null");
@@ -87,7 +85,7 @@ namespace SkinSyncMod
             var writer = new NetDataWriter();
             writer.Put(SkinNetworkIDs.AccessorySyncMessageId);
             msg.Serialize(writer);
-            Net.Server_SendToClients(DeliveryMethod.ReliableOrdered, writer, ServerMain.AllClientIds);
+            KrokoshaBridge.ServerBroadcast(DeliveryMethod.ReliableOrdered, writer);
         }
 
         private static void ApplyAccessoryOverride(AccessorySyncMessage msg)
@@ -97,9 +95,9 @@ namespace SkinSyncMod
             SkinSync.Settings.SetAccessoryEnabled(msg.skinID, msg.accId, msg.enabled);
             SkinSync.Settings.SetAccessoryTransform(msg.skinID, msg.accId, msg.offX, msg.offY, msg.rotation, msg.zOrder);
             // 把目标玩家的 chara 重新装配一遍——AccessoryAttacher.Apply 内部会读最新 settings 覆盖。
-            if (NetBody.TryGetNetBodyFromId(msg.netId, out NetBody nb) && nb != null && nb.chara != null)
+            if (KrokoshaBridge.TryGetNetBodyFromId(msg.netId, out _, out GameObject chara, out _) && chara != null)
             {
-                SkinApplier.ApplySkinToPlayer(nb.chara, msg.skinID);
+                SkinApplier.ApplySkinToPlayer(chara, msg.skinID);
             }
         }
 
@@ -126,7 +124,7 @@ namespace SkinSyncMod
             var writer = new NetDataWriter();
             writer.Put(SkinNetworkIDs.TailSyncMessageId);
             msg.Serialize(writer);
-            Net.Server_SendToClients(DeliveryMethod.ReliableOrdered, writer, ServerMain.AllClientIds);
+            KrokoshaBridge.ServerBroadcast(DeliveryMethod.ReliableOrdered, writer);
         }
 
         private static void ApplyTailOverride(TailSyncMessage msg)

@@ -214,6 +214,19 @@ namespace SkinSyncMod
             GUILayout.Space(12f);
             GUILayout.Label(SkinSyncI18n.T("sec.sync"), BlackWhiteSkin.HeaderStyle);
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
+            bool mpAvailable = SkinSync.IsMultiplayerSession;
+            if (!mpAvailable)
+            {
+                GUILayout.Label(SkinSyncI18n.T("sync.no_krokmp_hint"));
+                GUILayout.Space(4f);
+            }
+            else if (!SkinSyncMod.Network.KrokoshaBridge.IsNetworkRunning())
+            {
+                GUILayout.Label(SkinSyncI18n.T("sync.network_off_hint"));
+                GUILayout.Space(4f);
+            }
+            bool prevEnabled = GUI.enabled;
+            GUI.enabled = prevEnabled && mpAvailable;
             // 同步模式：两按钮互斥单选。
             GUILayout.BeginHorizontal();
             GUILayout.Label(SkinSyncI18n.T("lbl.sync_mode"),
@@ -242,6 +255,7 @@ namespace SkinSyncMod
             if (syncAcc != _cfg.SyncAccessories.Value) _cfg.SyncAccessories.Value = syncAcc;
             bool syncTail = DrawSwitch(SkinSyncI18n.T("sw.sync_tail"), _cfg.SyncTailDeform.Value);
             if (syncTail != _cfg.SyncTailDeform.Value) _cfg.SyncTailDeform.Value = syncTail;
+            GUI.enabled = prevEnabled;
             GUILayout.EndVertical();
 
             GUILayout.Space(12f);

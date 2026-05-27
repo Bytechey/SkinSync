@@ -5,7 +5,7 @@ using UnityEngine;
 namespace SkinSyncMod
 {
     /// <summary>
-    /// 解析 &lt;skin&gt;/blood.json：per-skin 自定义血液颜色 + 粒子贴图 + 粒子动效 / 光影。
+    /// 解析 blood.json（位于皮肤目录下）：per-skin 自定义血液颜色 + 粒子贴图 + 粒子动效 / 光影。
     /// 缺字段回落游戏默认；blood.json 缺失时返回 null（外部按"无自定义"处理）。
     /// </summary>
     public static class BloodConfigLoader
@@ -43,7 +43,7 @@ namespace SkinSyncMod
             public float? AnimFps;
         }
 
-        /// <summary>读取 &lt;skinDir&gt;/blood.json；缺失或解析失败返回 null。</summary>
+        /// <summary>读取皮肤目录下的 blood.json；缺失或解析失败返回 null。</summary>
         public static Config Load(string skinDir)
         {
             if (string.IsNullOrEmpty(skinDir)) return null;

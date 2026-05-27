@@ -1,6 +1,6 @@
 ﻿using HarmonyLib;
-using KrokoshaCasualtiesMP;
 using LiteNetLib.Utils;
+using SkinSyncMod.Network;
 using System.Reflection;
 using UnityEngine;
 
@@ -9,10 +9,12 @@ namespace SkinSyncMod.Patches
     /// <summary>
     /// 拦截服务器端 Net.InvokeServerMessage，将自定义皮肤消息分发到 SkinMessageHandlers，避免与原管线冲突。
     /// </summary>
-    [HarmonyPatch(typeof(Net), "InvokeServerMessage")]
+    [HarmonyPatch]
     public static class ServerMessageInterceptor
     {
         private static FieldInfo _positionField = typeof(NetDataReader).GetField("_position", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        static MethodBase TargetMethod() => KrokoshaBridge.InvokeServerMessageMethod;
 
         static bool Prefix(uint callerclientId, NetDataReader reader)
         {
@@ -46,10 +48,12 @@ namespace SkinSyncMod.Patches
     /// <summary>
     /// 拦截客户端 Net.InvokeClientMessage，将自定义皮肤消息分发到 SkinMessageHandlers。
     /// </summary>
-    [HarmonyPatch(typeof(Net), "InvokeClientMessage")]
+    [HarmonyPatch]
     public static class ClientMessageInterceptor
     {
         private static FieldInfo _positionField = typeof(NetDataReader).GetField("_position", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        static MethodBase TargetMethod() => KrokoshaBridge.InvokeClientMessageMethod;
 
         static bool Prefix(uint callerclientId, NetDataReader reader)
         {

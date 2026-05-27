@@ -75,10 +75,6 @@
       <HintPath>references\LiteNetLib.dll</HintPath>
       <Private>false</Private>
     </Reference>
-    <Reference Include="KrokoshaCasualtiesMP">
-      <HintPath>references\KrokoshaCasualtiesMP.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
     <Reference Include="Unity.RenderPipelines.Universal.Runtime">
       <HintPath>references\Unity.RenderPipelines.Universal.Runtime.dll</HintPath>
       <Private>false</Private>

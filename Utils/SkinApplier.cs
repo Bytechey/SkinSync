@@ -15,6 +15,21 @@ namespace SkinSyncMod
         private static string _currentCharacter = null;
         // 多人模式下每个 chara 当前应用的皮肤名——给 BloodPatches 等按 chara 反查 character。
         private static readonly Dictionary<GameObject, string> _byChara = new Dictionary<GameObject, string>();
+        private static readonly Dictionary<int, Sprite> _originalLimbSprites = new Dictionary<int, Sprite>();
+        private static readonly Dictionary<int, Sprite> _originalTailSprites = new Dictionary<int, Sprite>();
+        private static readonly Dictionary<int, FacialOriginal> _originalFaces = new Dictionary<int, FacialOriginal>();
+
+        private struct FacialOriginal
+        {
+            public Sprite DefaultHead;
+            public Sprite DefaultHeadMouth;
+            public Sprite DefaultHeadMouthHalf;
+            public Sprite EyesGone;
+            public Sprite EyesGoneHealed;
+            public Sprite[] DisfiguredHead;
+            public Sprite[] DisfiguredHeadHeal;
+            public Eye[] Eyes;
+        }
 
         /// <summary>查指定 chara 当前已应用的皮肤名；未应用时返回 null。</summary>
         public static string GetCharacterByChara(GameObject chara)
@@ -46,7 +61,7 @@ namespace SkinSyncMod
                 spriteDict = LoadCharacterSprites(characterName);
                 if (spriteDict == null || spriteDict.Count == 0)
                 {
-                    Debug.LogWarning($"[SkinSync] No sprites found for character {characterName}");
+                    SkinSyncMod.SkinSync.Log?.LogWarning($"[SkinSync] No sprites found for character {characterName}");
                     return;
                 }
                 _skinCache[characterName] = spriteDict;
@@ -86,37 +101,48 @@ namespace SkinSyncMod
             BloodAttacher.Apply(playerObj, characterName);
         }
 
+        /// <summary>遍历当前场景所有 Body，对每个挂载点调用 ApplySkinToPlayer；用于单机模式无固定 localPlayerObject 时兜底应用皮肤。</summary>
+        public static int ApplyToScene(string characterName)
+        {
+            if (string.IsNullOrEmpty(characterName)) return 0;
+            int count = 0;
+            foreach (var body in UnityEngine.Object.FindObjectsOfType<Body>())
+            {
+                if (body == null) continue;
+                GameObject host = body.transform.parent != null ? body.transform.parent.gameObject : body.gameObject;
+                ApplySkinToPlayer(host, characterName);
+                count++;
+            }
+            return count;
+        }
+
         /// <summary>
-        /// 按 limb 名末尾 F/B 后缀挑选 sprite：sided 副本 → 共享 base → 反向 sided 副本；都缺则保留原 sprite。
+        /// 按 limb 名末尾 F/B 后缀挑选 sprite：sided 副本 → 共享 base → 反向 sided 副本；都缺则回到原游戏 sprite。
         /// </summary>
         private static void ReplaceLimbSprite(Limb limb, Dictionary<string, Sprite> dict)
         {
             var renderer = limb.GetComponent<SpriteRenderer>();
-            if (renderer?.sprite == null) return;
-            string baseSprite = renderer.sprite.name;
+            if (renderer == null) return;
+            int id = renderer.GetInstanceID();
+            if (!_originalLimbSprites.ContainsKey(id) && renderer.sprite != null)
+                _originalLimbSprites[id] = renderer.sprite;
+            if (renderer.sprite == null && !_originalLimbSprites.TryGetValue(id, out _)) return;
+
+            Sprite reference = _originalLimbSprites.TryGetValue(id, out var orig) ? orig : renderer.sprite;
+            string baseSprite = reference?.name ?? string.Empty;
             string limbName = limb.gameObject.name ?? string.Empty;
             char lastChar = limbName.Length > 0 ? limbName[limbName.Length - 1] : '\0';
             if (lastChar == 'F' || lastChar == 'B')
             {
-                if (dict.TryGetValue(baseSprite + lastChar, out var sided))
-                {
-                    renderer.sprite = sided;
-                    return;
-                }
-                if (dict.TryGetValue(baseSprite, out var shared))
-                {
-                    renderer.sprite = shared;
-                    return;
-                }
+                if (dict.TryGetValue(baseSprite + lastChar, out var sided)) { renderer.sprite = sided; return; }
+                if (dict.TryGetValue(baseSprite, out var shared)) { renderer.sprite = shared; return; }
                 char opposite = lastChar == 'F' ? 'B' : 'F';
-                if (dict.TryGetValue(baseSprite + opposite, out var fallback))
-                {
-                    renderer.sprite = fallback;
-                }
+                if (dict.TryGetValue(baseSprite + opposite, out var fallback)) { renderer.sprite = fallback; return; }
+                renderer.sprite = reference;
                 return;
             }
-            if (dict.TryGetValue(baseSprite, out var direct))
-                renderer.sprite = direct;
+            if (dict.TryGetValue(baseSprite, out var direct)) { renderer.sprite = direct; return; }
+            renderer.sprite = reference;
         }
 
         private static Dictionary<string, Sprite> LoadCharacterSprites(string character)
@@ -124,6 +150,7 @@ namespace SkinSyncMod
             var dict = new Dictionary<string, Sprite>();
             string basePath = Path.Combine(Paths.PluginPath, "CustomSprites", character);
             if (!Directory.Exists(basePath)) return dict;
+            var baseSizes = BaseSizesLoader.Load(character);
             foreach (var filePath in Directory.GetFiles(basePath, "*.png", SearchOption.AllDirectories))
             {
                 string fileName = Path.GetFileNameWithoutExtension(filePath);
@@ -133,7 +160,12 @@ namespace SkinSyncMod
                 tex.filterMode = FilterMode.Point;
                 if (ImageConversion.LoadImage(tex, data))
                 {
-                    Sprite sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), PIXELS_PER_UNIT);
+                    float ppu = PIXELS_PER_UNIT;
+                    if (baseSizes.TryGetValue(fileName, out var baseSize) && baseSize.x > 0)
+                    {
+                        ppu = PIXELS_PER_UNIT * (tex.width / (float)baseSize.x);
+                    }
+                    Sprite sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), ppu);
                     sprite.name = fileName;
                     dict[fileName] = sprite;
                 }
@@ -144,25 +176,50 @@ namespace SkinSyncMod
         private static void ReplaceTailSprite(TailScript tail, Dictionary<string, Sprite> dict)
         {
             var renderer = tail.GetComponent<SpriteRenderer>();
-            if (renderer?.sprite != null && dict.TryGetValue(renderer.sprite.name, out var newSprite))
-                renderer.sprite = newSprite;
+            if (renderer == null) return;
+            int id = renderer.GetInstanceID();
+            if (!_originalTailSprites.ContainsKey(id) && renderer.sprite != null)
+                _originalTailSprites[id] = renderer.sprite;
+            Sprite reference = _originalTailSprites.TryGetValue(id, out var orig) ? orig : renderer.sprite;
+            if (reference == null) return;
+            renderer.sprite = dict.TryGetValue(reference.name, out var newSprite) ? newSprite : reference;
         }
 
         private static void ReplaceFacialExpressionSprites(FacialExpression face, Dictionary<string, Sprite> dict)
         {
-            face.defaultHead = GetReplacement(face.defaultHead, dict);
-            face.defaultHeadMouth = GetReplacement(face.defaultHeadMouth, dict);
-            face.defaultHeadMouthHalf = GetReplacement(face.defaultHeadMouthHalf, dict);
-            face.eyesGone = GetReplacement(face.eyesGone, dict);
-            face.eyesGoneHealed = GetReplacement(face.eyesGoneHealed, dict);
-
-            for (int i = 0; i < face.disfiguredHead.Length; i++)
-                face.disfiguredHead[i] = GetReplacement(face.disfiguredHead[i], dict);
-            for (int i = 0; i < face.disfiguredHeadHeal.Length; i++)
-                face.disfiguredHeadHeal[i] = GetReplacement(face.disfiguredHeadHeal[i], dict);
-            for (int i = 0; i < face.eyeList.Count; i++)
+            int id = face.GetInstanceID();
+            if (!_originalFaces.TryGetValue(id, out var orig))
             {
-                var eye = face.eyeList[i];
+                orig = new FacialOriginal
+                {
+                    DefaultHead = face.defaultHead,
+                    DefaultHeadMouth = face.defaultHeadMouth,
+                    DefaultHeadMouthHalf = face.defaultHeadMouthHalf,
+                    EyesGone = face.eyesGone,
+                    EyesGoneHealed = face.eyesGoneHealed,
+                    DisfiguredHead = (Sprite[])(face.disfiguredHead?.Clone() ?? new Sprite[0]),
+                    DisfiguredHeadHeal = (Sprite[])(face.disfiguredHeadHeal?.Clone() ?? new Sprite[0]),
+                    Eyes = face.eyeList != null ? face.eyeList.ToArray() : new Eye[0],
+                };
+                _originalFaces[id] = orig;
+            }
+
+            face.defaultHead = GetReplacement(orig.DefaultHead, dict);
+            face.defaultHeadMouth = GetReplacement(orig.DefaultHeadMouth, dict);
+            face.defaultHeadMouthHalf = GetReplacement(orig.DefaultHeadMouthHalf, dict);
+            face.eyesGone = GetReplacement(orig.EyesGone, dict);
+            face.eyesGoneHealed = GetReplacement(orig.EyesGoneHealed, dict);
+
+            int dhCount = Mathf.Min(face.disfiguredHead.Length, orig.DisfiguredHead.Length);
+            for (int i = 0; i < dhCount; i++)
+                face.disfiguredHead[i] = GetReplacement(orig.DisfiguredHead[i], dict);
+            int dhhCount = Mathf.Min(face.disfiguredHeadHeal.Length, orig.DisfiguredHeadHeal.Length);
+            for (int i = 0; i < dhhCount; i++)
+                face.disfiguredHeadHeal[i] = GetReplacement(orig.DisfiguredHeadHeal[i], dict);
+            int eyeCount = Mathf.Min(face.eyeList.Count, orig.Eyes.Length);
+            for (int i = 0; i < eyeCount; i++)
+            {
+                var eye = orig.Eyes[i];
                 eye.front = GetReplacement(eye.front, dict);
                 eye.back = GetReplacement(eye.back, dict);
                 face.eyeList[i] = eye;
