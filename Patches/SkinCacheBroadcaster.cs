@@ -6,12 +6,27 @@ using UnityEngine.SceneManagement;
 
 namespace SkinSyncMod.Patches
 {
-    /// <summary>主机端读取 SkinCacheStore，在每个客户端 body 就绪后向全员广播其上次使用的皮肤。</summary>
+    /// <summary>主机维护 netId → skinId 表；新客户端 NetBody 出现时把现有玩家皮肤单播给它。</summary>
     [DisallowMultipleComponent]
     public class SkinCacheBroadcaster : MonoBehaviour
     {
-        private readonly HashSet<uint> _restored = new HashSet<uint>();
+        private static readonly Dictionary<uint, string> _serverSkinTable = new Dictionary<uint, string>();
+        private readonly HashSet<uint> _seenClients = new HashSet<uint>();
+        private bool _localSeeded;
         private IDisposable _onPlayerLeftSub;
+
+        /// <summary>主机端：客户端上报 / 切皮肤后写入；其他模块也用此入口同步表。</summary>
+        public static void RecordSkin(uint netId, string skinId)
+        {
+            if (string.IsNullOrEmpty(skinId)) return;
+            _serverSkinTable[netId] = skinId;
+        }
+
+        /// <summary>主机端：玩家断线时调用清理。</summary>
+        public static void RemoveByNetId(uint netId)
+        {
+            _serverSkinTable.Remove(netId);
+        }
 
         private void OnEnable()
         {
@@ -28,12 +43,14 @@ namespace SkinSyncMod.Patches
 
         private void OnPlayerLeft(uint clientId)
         {
-            _restored.Remove(clientId);
+            _seenClients.Remove(clientId);
         }
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
-            _restored.Clear();
+            _seenClients.Clear();
+            _serverSkinTable.Clear();
+            _localSeeded = false;
         }
 
         private void Update()
@@ -41,19 +58,32 @@ namespace SkinSyncMod.Patches
             if (!KrokoshaBridge.IsServer()) return;
             if (SceneManager.GetActiveScene().name == "PreGen") return;
 
+            if (!_localSeeded)
+            {
+                string localSkin = SkinSync.Settings != null ? SkinSync.Settings.CurrentSkin.Value : null;
+                if (!string.IsNullOrEmpty(localSkin)
+                    && KrokoshaBridge.TryGetLocalNetBody(out _, out uint localNetId, out _))
+                {
+                    _serverSkinTable[localNetId] = localSkin;
+                    _localSeeded = true;
+                    SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 主机：本地皮肤已写表 (netId {localNetId} → {localSkin})");
+                }
+            }
+
             foreach (var entry in KrokoshaBridge.EnumeratePlayersWithBody())
             {
-                if (_restored.Contains(entry.ClientId)) continue;
-                if (entry.SteamId == 0UL) { _restored.Add(entry.ClientId); continue; }
                 if (entry.Chara == null) continue;
+                if (_seenClients.Contains(entry.ClientId)) continue;
+                _seenClients.Add(entry.ClientId);
 
-                string skinId = SkinCacheStore.Get(entry.SteamId);
-                _restored.Add(entry.ClientId);
-                if (string.IsNullOrEmpty(skinId)) continue;
-
-                MultiplayerSender.ServerBroadcastSkinChange(entry.NetId, skinId);
-                SkinApplier.ApplySkinToPlayer(entry.Chara, skinId);
-                Debug.Log($"[SkinSync] Restored cached skin {skinId} for steamId {entry.SteamId} (clientId {entry.ClientId})");
+                int sent = 0;
+                foreach (var kv in _serverSkinTable)
+                {
+                    if (kv.Key == entry.NetId) continue;
+                    MultiplayerSender.ServerSendSkinChangeToClient(entry.ClientId, kv.Key, kv.Value);
+                    sent++;
+                }
+                SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 主机：检测到 client {entry.ClientId} (netId {entry.NetId}) 加入；表共 {_serverSkinTable.Count} 条，单播 {sent} 条给它");
             }
         }
     }

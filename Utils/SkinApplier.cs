@@ -55,6 +55,9 @@ namespace SkinSyncMod
         public static void ApplySkinToPlayer(GameObject playerObj, string characterName)
         {
             if (playerObj == null) return;
+            if (string.IsNullOrEmpty(characterName)) return;
+
+            bool sameSkin = _byChara.TryGetValue(playerObj, out var current) && current == characterName;
 
             if (!_skinCache.TryGetValue(characterName, out var spriteDict))
             {
@@ -74,21 +77,24 @@ namespace SkinSyncMod
                 _wingsCache[characterName] = wingsCfg;
             }
 
-            foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
-                ReplaceLimbSprite(limb, spriteDict);
-
-            foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
-                ReplaceTailSprite(tail, spriteDict);
-
-            foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
-                ReplaceFacialExpressionSprites(face, spriteDict);
-
-            EnsureWingsAttached(playerObj, spriteDict, wingsCfg);
-
-            foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
+            if (!sameSkin)
             {
-                if (tail.GetComponent<TailFlowDeform>() == null)
-                    tail.gameObject.AddComponent<TailFlowDeform>();
+                foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
+                    ReplaceLimbSprite(limb, spriteDict);
+
+                foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
+                    ReplaceTailSprite(tail, spriteDict);
+
+                foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
+                    ReplaceFacialExpressionSprites(face, spriteDict);
+
+                EnsureWingsAttached(playerObj, spriteDict, wingsCfg);
+
+                foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
+                {
+                    if (tail.GetComponent<TailFlowDeform>() == null)
+                        tail.gameObject.AddComponent<TailFlowDeform>();
+                }
             }
 
             string accessoriesPath = Path.Combine(Paths.PluginPath, "CustomSprites", characterName, "accessories.json");
@@ -97,8 +103,11 @@ namespace SkinSyncMod
 
             _currentCharacter = characterName;
             _byChara[playerObj] = characterName;
-            ZonesAttacher.Apply(playerObj, characterName);
-            BloodAttacher.Apply(playerObj, characterName);
+            if (!sameSkin)
+            {
+                ZonesAttacher.Apply(playerObj, characterName);
+                BloodAttacher.Apply(playerObj, characterName);
+            }
         }
 
         /// <summary>遍历当前场景所有 Body，对每个挂载点调用 ApplySkinToPlayer；用于单机模式无固定 localPlayerObject 时兜底应用皮肤。</summary>

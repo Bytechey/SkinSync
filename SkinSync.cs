@@ -15,6 +15,20 @@ namespace SkinSyncMod
     {
         internal static Harmony harmony;
         internal static BepInEx.Logging.ManualLogSource Log;
+
+        /// <summary>同时写 BepInEx 日志和 Unity Debug.Log（让消息也进入游戏内 console）。</summary>
+        internal static void LogBoth(string msg)
+        {
+            Log?.LogInfo(msg);
+            UnityEngine.Debug.Log(msg);
+        }
+
+        /// <summary>同 LogBoth，但走 warning 级别。</summary>
+        internal static void LogWarnBoth(string msg)
+        {
+            Log?.LogWarning(msg);
+            UnityEngine.Debug.LogWarning(msg);
+        }
         private List<string> availableSkins = new List<string>();
         private int currentSkinIndex = 0;
 
@@ -42,9 +56,12 @@ namespace SkinSyncMod
             RegisterPatches();
             Settings = new SkinSyncSettings(Config);
             ScanAvailableSkins();
-            Logger.LogInfo($"SkinSync Mod loaded. Found {availableSkins.Count} skins. Krokosha={(KrokoshaBridge.IsAvailable ? "yes" : "no")}.");
+            LogBoth($"[SkinSync] SkinSync Mod loaded. Found {availableSkins.Count} skins. Krokosha={(KrokoshaBridge.IsAvailable ? "yes" : "no")}.");
             if (KrokoshaBridge.IsAvailable)
+            {
                 gameObject.AddComponent<SkinSyncMod.Patches.SkinCacheBroadcaster>();
+                gameObject.AddComponent<SkinSyncMod.Patches.PendingSkinApplier>();
+            }
             gameObject.AddComponent<SkinSyncMod.Patches.UpdateChecker>();
             gameObject.AddComponent<EquipmentHider>();
             EquipmentHider.Active = Settings.HideGameWearables.Value;
@@ -108,6 +125,7 @@ namespace SkinSyncMod
         private void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
         {
             _persistentApplied = null;
+            _localSkinReportedNetId = 0;
             localPlayerObject = null;
             localNetBodyBox = null;
             localNetId = 0;
@@ -419,7 +437,8 @@ namespace SkinSyncMod
                     localNetBodyBox = box;
                     localNetId = nid;
                     localChara = chara;
-                    Logger.LogInfo($"Multiplayer mode: found local NetBody (netId {localNetId})");
+                    LogBoth($"[SkinSync] 多人模式：找到本地 NetBody (netId {localNetId})");
+                    ReportLocalSkinIfNeeded();
                 }
             }
 
@@ -432,49 +451,17 @@ namespace SkinSyncMod
                 if (playerBody != null)
                 {
                     localPlayerObject = playerBody.transform.parent?.gameObject ?? playerBody.gameObject;
-                    Logger.LogInfo($"Singleplayer mode: found local player object via Body: {localPlayerObject.name}");
+                    LogBoth($"[SkinSync] 单机模式：通过 Body 找到本地玩家：{localPlayerObject.name}");
                 }
                 else
                 {
                     localPlayerObject = GameObject.FindGameObjectWithTag("Player");
                     if (localPlayerObject != null)
-                        Logger.LogInfo($"Singleplayer mode: found local player object via Tag: {localPlayerObject.name}");
+                        LogBoth($"[SkinSync] 单机模式：通过 Tag 找到本地玩家：{localPlayerObject.name}");
                 }
             }
 
             return localPlayerObject != null;
-        }
-
-        /// <summary>OnEnter 模式一键同步：把当前皮肤的所有配件覆盖 + 尾巴覆盖广播一次。</summary>
-        private void BroadcastAllForSkin(string skinID)
-        {
-            if (Settings == null || localNetBodyBox == null) return;
-            // 配件：扫 accessories.json 全部条目，对每个条目按合并值发一份。
-            if (Settings.SyncAccessories.Value)
-            {
-                string accPath = System.IO.Path.Combine(Paths.PluginPath, "CustomSprites", skinID, "accessories.json");
-                var entries = AccessoryConfigLoader.Load(accPath);
-                foreach (var e in entries)
-                {
-                    if (e == null || string.IsNullOrEmpty(e.Id)) continue;
-                    var ov = Settings.GetAccessoryOverride(skinID, e.Id);
-                    MultiplayerSender.SendAccessory(
-                        netId: localNetId,
-                        skinID: skinID,
-                        accId: e.Id,
-                        enabled: ov?.Enabled ?? e.Enabled,
-                        offX: ov?.OffX ?? e.OffX,
-                        offY: ov?.OffY ?? e.OffY,
-                        rotation: ov?.Rotation ?? e.Rotation,
-                        zOrder: ov?.ZOrder ?? e.ZOrder);
-                }
-            }
-            // 尾巴：当前 TailDeformConfig 的全字段。
-            if (Settings.SyncTailDeform.Value)
-            {
-                BroadcastTailDelta(skinID);
-            }
-            Logger.LogInfo($"OnEnter sync: pushed accessory + tail snapshot for {skinID}");
         }
 
         private void SwitchToSkin(string skinID)
@@ -508,29 +495,25 @@ namespace SkinSyncMod
                 if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "PreGen")
                 {
                     MultiplayerSender.SendSkinChange(localNetId, skinID);
-                    Logger.LogInfo($"[SkinSync] 角色加载模式：多人 — 切到 {skinID} 并已广播");
-                    // OnEnter 模式：连同当前皮肤的全部配件覆盖 + 尾巴覆盖一并广播。
-                    if (Settings != null && Settings.SyncMode.Value == "OnEnter")
-                    {
-                        BroadcastAllForSkin(skinID);
-                    }
+                    _localSkinReportedNetId = localNetId;
+                    LogBoth($"[SkinSync] 角色加载模式：多人 — 切到 {skinID} 并已广播");
                 }
                 else
                 {
-                    Logger.LogInfo($"[SkinSync] 角色加载模式：多人主菜单 — 仅本地应用 {skinID}，不广播");
+                    LogBoth($"[SkinSync] 角色加载模式：多人主菜单 — 仅本地应用 {skinID}，不广播");
                 }
             }
             else if (localPlayerObject != null)
             {
                 SkinApplier.ApplySkinToPlayer(localPlayerObject, skinID);
-                Logger.LogInfo($"[SkinSync] 角色加载模式：单机 — 切到 {skinID}（基于本地玩家）");
+                LogBoth($"[SkinSync] 角色加载模式：单机 — 切到 {skinID}（基于本地玩家）");
             }
             else
             {
                 int n = SkinApplier.ApplyToScene(skinID);
                 if (n > 0)
                 {
-                    Logger.LogInfo($"[SkinSync] 角色加载模式：单机兜底 — 切到 {skinID}（场景扫到 {n} 个 Body）");
+                    LogBoth($"[SkinSync] 角色加载模式：单机兜底 — 切到 {skinID}（场景扫到 {n} 个 Body）");
                     _switchAppliedToScene = true;
                 }
                 else
@@ -541,5 +524,19 @@ namespace SkinSyncMod
         }
 
         private bool _switchAppliedToScene;
+        private uint _localSkinReportedNetId;
+
+        /// <summary>子端进入游戏拿到本地 NetBody 后，把当前皮肤上报一次给服务端建表；只对相同 netId 报一次。</summary>
+        private void ReportLocalSkinIfNeeded()
+        {
+            if (localNetBodyBox == null) return;
+            if (_localSkinReportedNetId == localNetId) return;
+            string cached = Settings != null ? Settings.CurrentSkin.Value : null;
+            if (string.IsNullOrEmpty(cached)) return;
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return;
+            MultiplayerSender.SendSkinChange(localNetId, cached);
+            _localSkinReportedNetId = localNetId;
+            LogBoth($"[SkinSync] 多人模式：本地皮肤已上报 (netId {localNetId} → {cached})");
+        }
     }
 }
