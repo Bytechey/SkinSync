@@ -12,6 +12,23 @@ namespace SkinSyncMod
     {
         private static Dictionary<string, Dictionary<string, Sprite>> _skinCache = new Dictionary<string, Dictionary<string, Sprite>>();
         private static Dictionary<string, WingsConfigLoader.Config> _wingsCache = new Dictionary<string, WingsConfigLoader.Config>();
+        private static string _currentCharacter = null;
+        // 多人模式下每个 chara 当前应用的皮肤名——给 BloodPatches 等按 chara 反查 character。
+        private static readonly Dictionary<GameObject, string> _byChara = new Dictionary<GameObject, string>();
+
+        /// <summary>查指定 chara 当前已应用的皮肤名；未应用时返回 null。</summary>
+        public static string GetCharacterByChara(GameObject chara)
+        {
+            if (chara == null) return null;
+            return _byChara.TryGetValue(chara, out var name) ? name : null;
+        }
+
+        /// <summary>当前已应用的 character 对应 sprite 字典，供 ZoneFrameAnimator 等运行时组件解析帧名用。</summary>
+        public static Dictionary<string, Sprite> GetSpriteDict()
+        {
+            if (_currentCharacter != null && _skinCache.TryGetValue(_currentCharacter, out var d)) return d;
+            return null;
+        }
 
         private const float PIXELS_PER_UNIT = 8f;
         private const float UPTORSO_OFFSET_X = 6f;
@@ -58,6 +75,15 @@ namespace SkinSyncMod
                 if (tail.GetComponent<TailFlowDeform>() == null)
                     tail.gameObject.AddComponent<TailFlowDeform>();
             }
+
+            string accessoriesPath = Path.Combine(Paths.PluginPath, "CustomSprites", characterName, "accessories.json");
+            var accEntries = AccessoryConfigLoader.Load(accessoriesPath);
+            AccessoryAttacher.Apply(playerObj, accEntries, spriteDict, characterName);
+
+            _currentCharacter = characterName;
+            _byChara[playerObj] = characterName;
+            ZonesAttacher.Apply(playerObj, characterName);
+            BloodAttacher.Apply(playerObj, characterName);
         }
 
         /// <summary>

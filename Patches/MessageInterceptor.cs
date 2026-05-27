@@ -27,6 +27,16 @@ namespace SkinSyncMod.Patches
                 SkinMessageHandlers.OnServerSkinMessage(callerclientId, ref reader);
                 return false;
             }
+            if (msgId == SkinNetworkIDs.AccessorySyncMessageId)
+            {
+                SkinMessageHandlers.OnServerAccessorySync(callerclientId, ref reader);
+                return false;
+            }
+            if (msgId == SkinNetworkIDs.TailSyncMessageId)
+            {
+                SkinMessageHandlers.OnServerTailSync(callerclientId, ref reader);
+                return false;
+            }
 
             _positionField.SetValue(reader, originalPos);
             return true;
@@ -52,6 +62,16 @@ namespace SkinSyncMod.Patches
             {
                 Debug.Log($"[SkinSync] Client intercepted skin message ID {msgId}");
                 SkinMessageHandlers.OnClientSkinMessage(callerclientId, ref reader);
+                return false;
+            }
+            if (msgId == SkinNetworkIDs.AccessorySyncMessageId)
+            {
+                SkinMessageHandlers.OnClientAccessorySync(callerclientId, ref reader);
+                return false;
+            }
+            if (msgId == SkinNetworkIDs.TailSyncMessageId)
+            {
+                SkinMessageHandlers.OnClientTailSync(callerclientId, ref reader);
                 return false;
             }
 

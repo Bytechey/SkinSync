@@ -1,7 +1,5 @@
-using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
-using System.Text.RegularExpressions;
+using Newtonsoft.Json;
 using UnityEngine;
 
 namespace SkinSyncMod
@@ -35,53 +33,61 @@ namespace SkinSyncMod
             WingDR = new Piece { X = 0, Y = -12, Rotation = 0f, ZOrder = 4 },
         };
 
-        /// <summary>
-        /// 读取并解析 wings.json，文件缺失或失败时返回默认配置。
-        /// </summary>
+        /// <summary>读取并解析 wings.json，文件缺失或失败时返回默认配置。</summary>
         public static Config Load(string path)
         {
-            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return Defaults();
+            var def = Defaults();
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return def;
             try
             {
                 string text = File.ReadAllText(path);
-                var d = Defaults();
-                d.WingUL = ParseSection(text, "wingUL", d.WingUL);
-                d.WingDL = ParseSection(text, "wingDL", d.WingDL);
-                d.WingUR = ParseSection(text, "wingUR", d.WingUR);
-                d.WingDR = ParseSection(text, "wingDR", d.WingDR);
-                return d;
+                var raw = JsonConvert.DeserializeObject<RawConfig>(text);
+                if (raw == null) return def;
+                return new Config
+                {
+                    WingUL = ToPiece(raw.wingUL, def.WingUL),
+                    WingDL = ToPiece(raw.wingDL, def.WingDL),
+                    WingUR = ToPiece(raw.wingUR, def.WingUR),
+                    WingDR = ToPiece(raw.wingDR, def.WingDR),
+                };
             }
             catch (System.Exception ex)
             {
                 Debug.LogWarning("[SkinSync] wings.json parse failed: " + ex.Message);
-                return Defaults();
+                return def;
             }
         }
 
-        private static Piece ParseSection(string text, string name, Piece fallback)
+        private static Piece ToPiece(RawPiece r, Piece fallback)
         {
-            var section = Regex.Match(text, "\"" + name + "\"\\s*:\\s*\\{([^}]*)\\}");
-            if (!section.Success) return fallback;
-            string body = section.Groups[1].Value;
+            if (r == null) return fallback;
             return new Piece
             {
-                X = IntFrom(body, "x", fallback.X),
-                Y = IntFrom(body, "y", fallback.Y),
-                Rotation = FloatFrom(body, "rotation", fallback.Rotation),
-                ZOrder = IntFrom(body, "zOrder", fallback.ZOrder),
+                X = r.x ?? fallback.X,
+                Y = r.y ?? fallback.Y,
+                Rotation = r.rotation ?? fallback.Rotation,
+                ZOrder = r.zOrder ?? fallback.ZOrder,
             };
         }
 
-        private static int IntFrom(string body, string field, int fallback)
+        private class RawConfig
         {
-            var m = Regex.Match(body, "\"" + field + "\"\\s*:\\s*(-?\\d+)");
-            return m.Success && int.TryParse(m.Groups[1].Value, out int v) ? v : fallback;
+#pragma warning disable CS0649
+            public RawPiece wingUL;
+            public RawPiece wingDL;
+            public RawPiece wingUR;
+            public RawPiece wingDR;
+#pragma warning restore CS0649
         }
 
-        private static float FloatFrom(string body, string field, float fallback)
+        private class RawPiece
         {
-            var m = Regex.Match(body, "\"" + field + "\"\\s*:\\s*(-?\\d+(?:\\.\\d+)?)");
-            return m.Success && float.TryParse(m.Groups[1].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v : fallback;
+#pragma warning disable CS0649
+            public int? x;
+            public int? y;
+            public float? rotation;
+            public int? zOrder;
+#pragma warning restore CS0649
         }
     }
 }
