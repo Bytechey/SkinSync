@@ -74,5 +74,14 @@ namespace SkinSyncMod.Network
             msg.WriteTo(writer);
             KrokoshaBridge.ServerBroadcast(DeliveryMethod.ReliableOrdered, writer);
         }
+
+        public static void ServerSendSkinChangeToClient(uint targetClientId, uint netId, string skinID)
+        {
+            if (!KrokoshaBridge.IsAvailable) return;
+            var msg = new SkinChangeMessage { skinID = skinID, netId = netId };
+            var writer = new NetDataWriter();
+            msg.WriteTo(writer);
+            KrokoshaBridge.ServerSendToClient(targetClientId, DeliveryMethod.ReliableOrdered, writer);
+        }
     }
 }

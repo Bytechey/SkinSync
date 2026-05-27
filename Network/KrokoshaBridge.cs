@@ -25,9 +25,9 @@ namespace SkinSyncMod.Network
         private static Type _netBodyType;
         private static FieldInfo _netBodyAllInstances;
         private static MethodInfo _netBodyTryGetById;
-        private static FieldInfo _netBodyIsLocal;
-        private static FieldInfo _netBodyNetId;
-        private static FieldInfo _netBodyChara;
+        private static PropertyInfo _netBodyIsLocal;
+        private static PropertyInfo _netBodyNetId;
+        private static PropertyInfo _netBodyChara;
 
         private static Type _netPlayerType;
         private static FieldInfo _netPlayerLocalPlayer;
@@ -36,8 +36,8 @@ namespace SkinSyncMod.Network
         private static MethodInfo _netPlayerTryGetByClient;
         private static MethodInfo _netPlayerTryGetNetBody;
         private static FieldInfo _netPlayerSteamId;
-        private static FieldInfo _netPlayerClientId;
-        private static FieldInfo _netPlayerPlayerbody;
+        private static PropertyInfo _netPlayerClientId;
+        private static PropertyInfo _netPlayerPlayerbody;
 
         private static Type _krokoshaScavMpType;
         private static FieldInfo _krokoshaScavMpIsServerField;
@@ -94,9 +94,9 @@ namespace SkinSyncMod.Network
 
                 _netBodyAllInstances = _netBodyType.GetField("all_instances", AnyStatic);
                 _netBodyTryGetById = FindStaticMethodByArity(_netBodyType, "TryGetNetBodyFromId", 2);
-                _netBodyIsLocal = _netBodyType.GetField("is_local", AnyInstance);
-                _netBodyNetId = _netBodyType.GetField("netId", AnyInstance);
-                _netBodyChara = _netBodyType.GetField("chara", AnyInstance);
+                _netBodyIsLocal = _netBodyType.GetProperty("is_local", AnyInstance);
+                _netBodyNetId = _netBodyType.GetProperty("netId", AnyInstance);
+                _netBodyChara = _netBodyType.GetProperty("chara", AnyInstance);
 
                 _netPlayerLocalPlayer = _netPlayerType.GetField("LOCAL_PLAYER", AnyStatic);
                 _netPlayerClientIdDict = _netPlayerType.GetField("ClientIdToPlayerDict", AnyStatic);
@@ -104,8 +104,8 @@ namespace SkinSyncMod.Network
                 _netPlayerTryGetByClient = FindStaticMethodByArity(_netPlayerType, "TryGetPlayerFromClientId", 2);
                 _netPlayerTryGetNetBody = FindInstanceMethodByArity(_netPlayerType, "TryGetNetBody", 1);
                 _netPlayerSteamId = _netPlayerType.GetField("steam_id", AnyInstance);
-                _netPlayerClientId = _netPlayerType.GetField("clientId", AnyInstance);
-                _netPlayerPlayerbody = _netPlayerType.GetField("playerbody", AnyInstance);
+                _netPlayerClientId = _netPlayerType.GetProperty("clientId", AnyInstance);
+                _netPlayerPlayerbody = _netPlayerType.GetProperty("playerbody", AnyInstance);
 
                 if (_krokoshaScavMpType != null)
                 {
@@ -146,6 +146,32 @@ namespace SkinSyncMod.Network
             object allClients = ResolveAllClientIds();
             if (allClients == null) return;
             _netServerSendToClients.Invoke(null, new object[] { method, writer, allClients });
+        }
+
+        /// <summary>主机广播但跳过指定 clientId（消息来源），避免回发给发送方。</summary>
+        public static void ServerBroadcastExcept(uint excludeClientId, DeliveryMethod method, NetDataWriter writer)
+        {
+            if (!IsAvailable || _netServerSendToClients == null) return;
+            var all = ResolveAllClientIds() as System.Collections.IEnumerable;
+            if (all == null) return;
+            var list = new System.Collections.Generic.List<uint>();
+            foreach (var c in all)
+            {
+                uint cid = System.Convert.ToUInt32(c);
+                if (cid == excludeClientId) continue;
+                list.Add(cid);
+            }
+            if (list.Count == 0) return;
+            System.Collections.Generic.IReadOnlyList<uint> targets = list;
+            _netServerSendToClients.Invoke(null, new object[] { method, writer, targets });
+        }
+
+        /// <summary>主机单播给指定 clientId（其它玩家不会收到）。</summary>
+        public static void ServerSendToClient(uint clientId, DeliveryMethod method, NetDataWriter writer)
+        {
+            if (!IsAvailable || _netServerSendToClients == null) return;
+            System.Collections.Generic.IReadOnlyList<uint> single = new uint[] { clientId };
+            _netServerSendToClients.Invoke(null, new object[] { method, writer, single });
         }
 
         /// <summary>当前是否处于 KrokMP 主机模式；KrokMP 不可用时返回 false。</summary>
@@ -269,12 +295,33 @@ namespace SkinSyncMod.Network
             catch { return false; }
         }
 
-        private static uint ReadUInt(FieldInfo fi, object instance)
+        private static uint ReadUInt(MemberInfo m, object instance)
         {
-            if (fi == null || instance == null) return 0;
-            object v = fi.GetValue(instance);
+            if (m == null || instance == null) return 0;
+            object v = null;
+            try
+            {
+                if (m is FieldInfo fi) v = fi.GetValue(instance);
+                else if (m is PropertyInfo pi) v = pi.GetValue(instance);
+            }
+            catch { return 0; }
             if (v == null) return 0;
             try { return Convert.ToUInt32(v); } catch { return 0; }
+        }
+
+        /// <summary>读 NetPlayer.LOCAL_PLAYER.clientId；KrokMP 不可用或本地玩家未就绪返回 false。</summary>
+        public static bool TryGetLocalClientId(out uint clientId)
+        {
+            clientId = 0;
+            if (!IsAvailable) return false;
+            try
+            {
+                object localPlr = _netPlayerLocalPlayer?.GetValue(null);
+                if (localPlr == null) return false;
+                clientId = ReadUInt(_netPlayerClientId, localPlr);
+                return clientId != 0;
+            }
+            catch { return false; }
         }
 
         /// <summary>读 NetPlayer.LOCAL_PLAYER.steam_id；KrokMP 不可用或本地玩家未就绪返回 0。</summary>
@@ -386,7 +433,7 @@ namespace SkinSyncMod.Network
                 Expression cidExpr;
                 if (_netPlayerClientId != null && _netPlayerClientId.DeclaringType.IsAssignableFrom(plrType))
                 {
-                    cidExpr = Expression.Field(plrParam, _netPlayerClientId);
+                    cidExpr = Expression.Property(plrParam, _netPlayerClientId);
                     if (cidExpr.Type != typeof(uint))
                         cidExpr = Expression.Convert(cidExpr, typeof(uint));
                 }
