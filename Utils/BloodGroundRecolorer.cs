@@ -1,96 +1,129 @@
 using System.Collections.Generic;
-using System.IO;
-using BepInEx;
 using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 给场景中刚生成的 GroundBlood / wallblood / blockblood / wallvomit / blockvomit 实例按本地玩家
-    /// 当前皮肤的 blood.json 染色。地面 / 墙面血迹由 BleedParticle.Update 在粒子末帧实例化预制 prefab，
-    /// sprite 本身就是血迹图——通过覆盖 SpriteRenderer.color 保留 alpha 抖动同时染上自定义色。
-    /// 全局单例 watcher（挂在 Plugin GameObject 上），与 chara 解耦——地面血迹是 world-级别。
-    /// </summary>
+    /// <summary>全局 watcher：按位置反查 character 给落地血迹（GroundBlood / wallblood / blockblood / wallvomit / blockvomit）与爆血粒子（BloodExplosion）染色。</summary>
     [DisallowMultipleComponent]
     public class BloodGroundRecolorer : MonoBehaviour
     {
         private const float TickIntervalSec = 0.25f;
+        private const float OwnerSearchRadius = 12f;
+        private const int MaxAttempts = 16;
         private float _nextTick;
-        // 缓存本地皮肤名 + 解析后的 BloodConfig，避免每次都读 JSON。
-        private string _cachedSkin;
-        private Color _cachedDark = Color.white;
-        private Color _cachedLight = Color.white;
-        private bool _cachedAvailable;
-        // GroundBlood 是组件，wallblood 等只是 GO + SpriteRenderer——用 instanceID 防重复处理。
-        private readonly HashSet<int> _processed = new HashSet<int>();
+        private readonly Dictionary<int, int> _spriteAttempts = new Dictionary<int, int>();
+        private readonly Dictionary<int, int> _particleAttempts = new Dictionary<int, int>();
+        private readonly HashSet<int> _doneSprites = new HashSet<int>();
+        private readonly HashSet<int> _doneParticles = new HashSet<int>();
+
+        private struct CachedColors
+        {
+            public Color Light;
+            public bool Available;
+        }
+        private readonly Dictionary<string, CachedColors> _spriteColorCache = new Dictionary<string, CachedColors>();
 
         private void Update()
         {
             if (Time.unscaledTime < _nextTick) return;
             _nextTick = Time.unscaledTime + TickIntervalSec;
 
-            string skin = SkinSync.Settings != null ? SkinSync.Settings.CurrentSkin.Value : null;
-            if (string.IsNullOrEmpty(skin)) return;
-            if (skin != _cachedSkin) RefreshConfigCache(skin);
-            if (!_cachedAvailable) return;
+            ScanGroundSprites();
+            ScanBloodExplosionParticles();
+        }
 
-            // GroundBlood 组件——FindObjectsOfType 返回当前激活组件。120s 后游戏自销毁。
+        private void ScanGroundSprites()
+        {
             foreach (var gb in FindObjectsOfType<GroundBlood>())
             {
                 if (gb == null || gb.gameObject == null) continue;
                 int id = gb.gameObject.GetInstanceID();
-                if (_processed.Contains(id)) continue;
-                ApplyColor(gb.gameObject);
-                _processed.Add(id);
+                if (_doneSprites.Contains(id)) continue;
+                if (BumpAndCheckGiveUp(_spriteAttempts, id)) { _doneSprites.Add(id); continue; }
+                if (TryApplyByOwner(gb.gameObject, gb.transform.position)) _doneSprites.Add(id);
             }
 
-            // wallblood / blockblood / wallvomit / blockvomit 没有专用组件，用 SpriteRenderer.sprite.name 识别。
-            // 注意 FindObjectsOfType<SpriteRenderer> 量很大（场景内所有 sprite），按 sprite name 前缀过滤即可。
             foreach (var sr in FindObjectsOfType<SpriteRenderer>())
             {
                 if (sr == null || sr.sprite == null) continue;
                 int id = sr.gameObject.GetInstanceID();
-                if (_processed.Contains(id)) continue;
-                string n = sr.sprite.name;
-                if (string.IsNullOrEmpty(n)) continue;
-                if (!IsBloodSpriteName(n)) continue;
-                ApplyColor(sr.gameObject, sr);
-                _processed.Add(id);
+                if (_doneSprites.Contains(id)) continue;
+                if (!IsBloodLikeSpriteName(sr.sprite.name)) continue;
+                if (BumpAndCheckGiveUp(_spriteAttempts, id)) { _doneSprites.Add(id); continue; }
+                if (TryApplyByOwner(sr.gameObject, sr.transform.position, sr)) _doneSprites.Add(id);
             }
         }
 
-        private static bool IsBloodSpriteName(string n)
+        private void ScanBloodExplosionParticles()
+        {
+            foreach (var ps in FindObjectsOfType<ParticleSystem>())
+            {
+                if (ps == null) continue;
+                int id = ps.GetInstanceID();
+                if (_doneParticles.Contains(id)) continue;
+                string n = ps.gameObject.name ?? "";
+                if (n.IndexOf("BloodExplosion", System.StringComparison.OrdinalIgnoreCase) < 0) continue;
+                if (BumpAndCheckGiveUp(_particleAttempts, id)) { _doneParticles.Add(id); continue; }
+                if (!TryResolveCharacter(ps.transform.position, out string character)) continue;
+                BloodAttacher.ApplyToParticleByCharacter(ps, character);
+                _doneParticles.Add(id);
+            }
+        }
+
+        private static bool IsBloodLikeSpriteName(string n)
         {
             return n.IndexOf("wallblood", System.StringComparison.OrdinalIgnoreCase) >= 0
-                || n.IndexOf("blockblood", System.StringComparison.OrdinalIgnoreCase) >= 0;
-            // wallvomit / blockvomit 是呕吐残留，本系列也是黄色血——按需可加；先只染血色。
+                || n.IndexOf("blockblood", System.StringComparison.OrdinalIgnoreCase) >= 0
+                || n.IndexOf("wallvomit", System.StringComparison.OrdinalIgnoreCase) >= 0
+                || n.IndexOf("blockvomit", System.StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        private void RefreshConfigCache(string skin)
+        private bool TryApplyByOwner(GameObject go, Vector2 pos, SpriteRenderer providedSr = null)
         {
-            _cachedSkin = skin;
-            _cachedAvailable = false;
-            string skinDir = Path.Combine(Paths.PluginPath, "CustomSprites", skin);
-            var cfg = BloodConfigLoader.Load(skinDir);
-            if (cfg == null) return;
-            // 优先用 ParticleStartColor 当地面血色；缺则用 BloodLight 兜底；都没有则不染。
-            Color32? main = cfg.ParticleStartColor ?? cfg.BloodLight;
-            Color32? dark = cfg.ParticleEndColor ?? cfg.BloodDark ?? main;
-            if (!main.HasValue) return;
-            _cachedLight = (Color)main.Value;
-            _cachedDark = dark.HasValue ? (Color)dark.Value : _cachedLight;
-            _cachedAvailable = true;
-        }
-
-        private void ApplyColor(GameObject go, SpriteRenderer providedSr = null)
-        {
+            if (!TryResolveCharacter(pos, out string character)) return false;
+            if (!TryGetSpriteColor(character, out Color light)) return false;
             var sr = providedSr ?? go.GetComponent<SpriteRenderer>();
-            if (sr == null) return;
-            // 保留游戏给的 alpha 抖动（Random.Range(0.2f, 0.8f) 等），仅替换 RGB——sprite 自身灰阶图样保留。
+            if (sr == null) return false;
             float a = sr.color.a;
-            // 地面血迹偏深、墙面偏浅；这里都用 light 色——简单可预期；用户想区分时可在 blood.json 加 groundColor 字段（待加）。
-            sr.color = new Color(_cachedLight.r, _cachedLight.g, _cachedLight.b, a);
-            _ = _cachedDark;
+            sr.color = new Color(light.r, light.g, light.b, a);
+            return true;
+        }
+
+        private static bool TryResolveCharacter(Vector2 pos, out string character)
+        {
+            if (SkinApplier.TryGetCharacterByPosition(pos, OwnerSearchRadius, out character)) return true;
+            return SkinApplier.TryGetAnyAppliedCharacter(out character);
+        }
+
+        private static bool BumpAndCheckGiveUp(Dictionary<int, int> attempts, int id)
+        {
+            attempts.TryGetValue(id, out int n);
+            n++;
+            attempts[id] = n;
+            return n > MaxAttempts;
+        }
+
+        private bool TryGetSpriteColor(string character, out Color light)
+        {
+            light = Color.white;
+            if (_spriteColorCache.TryGetValue(character, out var cached))
+            {
+                light = cached.Light;
+                return cached.Available;
+            }
+            var entry = new CachedColors();
+            if (BloodAttacher.TryLoadCharacterBlood(character, out var cfg, out _))
+            {
+                Color32? main = cfg.ParticleStartColor ?? cfg.BloodLight;
+                if (main.HasValue)
+                {
+                    entry.Light = (Color)main.Value;
+                    entry.Available = true;
+                }
+            }
+            _spriteColorCache[character] = entry;
+            light = entry.Light;
+            return entry.Available;
         }
     }
 }

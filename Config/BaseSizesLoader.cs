@@ -17,7 +17,7 @@ namespace SkinSyncMod
             if (string.IsNullOrEmpty(characterName)) return new Dictionary<string, Vector2Int>();
             if (_cache.TryGetValue(characterName, out var cached)) return cached;
             var dict = new Dictionary<string, Vector2Int>();
-            string path = Path.Combine(Paths.PluginPath, "CustomSprites", characterName, "baseSizes.json");
+            string path = Path.Combine(SkinPathResolver.GetSkinDir(characterName), "baseSizes.json");
             if (!File.Exists(path)) { _cache[characterName] = dict; return dict; }
             try
             {

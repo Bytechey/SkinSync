@@ -51,6 +51,7 @@ namespace SkinSyncMod
         private Vector2 _settingsScroll;
         private Vector2 _skinsScroll;
         private Vector2 _accessoriesScroll;
+        private Vector2 _aboutScroll;
 
         private bool _capturingPanel;
         private bool _capturingNext;
@@ -156,9 +157,9 @@ namespace SkinSyncMod
             float statusH = 60f;
             var bodyRect = new Rect(24f, bodyTop, WindowWidth - 48f, WindowHeight - bodyTop - statusH);
             GUILayout.BeginArea(bodyRect);
-            if (_tab == 0) DrawSettingsTab();
-            else if (_tab == 1) DrawSkinsTab();
-            else DrawCurrentTab();
+            if (_tab == 1) DrawSkinsTab();
+            else if (_tab == 2) DrawAboutTab();
+            else DrawSettingsTab();
             GUILayout.EndArea();
 
             BlackWhiteSkin.DrawHLine(new Rect(0f, WindowHeight - statusH, WindowWidth, 4f));
@@ -168,15 +169,26 @@ namespace SkinSyncMod
                 : SkinSyncI18n.F("status.current_skin", current);
             GUI.Label(new Rect(28f, WindowHeight - statusH + 16f, WindowWidth - 56f, 32f), status);
 
+            string version = SkinSync.Version;
+            if (!string.IsNullOrEmpty(version))
+            {
+                GUI.Label(new Rect(WindowWidth - 248f, WindowHeight - statusH + 16f, 224f, 32f),
+                    "v" + version, VersionLabelStyle);
+            }
+
             GUI.DragWindow(new Rect(0f, 0f, WindowWidth - CloseBtnSize - 24f, TitleBarHeight));
         }
+
+        private static GUIStyle _versionLabelStyle;
+        private static GUIStyle VersionLabelStyle =>
+            _versionLabelStyle ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleRight };
 
         private void DrawTabs()
         {
             float tabW = 280f, tabH = 64f, top = TitleBarHeight + 14f;
             DrawTabButton(new Rect(28f, top, tabW, tabH), SkinSyncI18n.T("tab.settings"), 0);
             DrawTabButton(new Rect(28f + (tabW + 16f), top, tabW, tabH), SkinSyncI18n.T("tab.skins"), 1);
-            DrawTabButton(new Rect(28f + (tabW + 16f) * 2f, top, tabW, tabH), SkinSyncI18n.T("tab.current"), 2);
+            DrawTabButton(new Rect(28f + (tabW + 16f) * 2f, top, tabW, tabH), SkinSyncI18n.T("tab.about"), 2);
         }
 
         private void DrawTabButton(Rect rect, string label, int idx)
@@ -195,6 +207,7 @@ namespace SkinSyncMod
                 GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
 
             GUILayout.Space(8f);
+#if false
             GUILayout.Label(SkinSyncI18n.T("sec.visual"), BlackWhiteSkin.HeaderStyle);
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
             bool hideWear = DrawSwitch(SkinSyncI18n.T("sw.hide_game_wearables"), _cfg.HideGameWearables.Value);
@@ -212,6 +225,7 @@ namespace SkinSyncMod
             GUILayout.EndVertical();
 
             GUILayout.Space(12f);
+#endif
             GUILayout.Label(SkinSyncI18n.T("sec.sync"), BlackWhiteSkin.HeaderStyle);
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
             bool mpAvailable = SkinSync.IsMultiplayerSession;
@@ -251,10 +265,12 @@ namespace SkinSyncMod
             GUILayout.EndHorizontal();
             GUILayout.Space(6f);
 
+#if false
             bool syncAcc = DrawSwitch(SkinSyncI18n.T("sw.sync_accessories"), _cfg.SyncAccessories.Value);
             if (syncAcc != _cfg.SyncAccessories.Value) _cfg.SyncAccessories.Value = syncAcc;
             bool syncTail = DrawSwitch(SkinSyncI18n.T("sw.sync_tail"), _cfg.SyncTailDeform.Value);
             if (syncTail != _cfg.SyncTailDeform.Value) _cfg.SyncTailDeform.Value = syncTail;
+#endif
             GUI.enabled = prevEnabled;
             GUILayout.EndVertical();
 
@@ -362,7 +378,7 @@ namespace SkinSyncMod
 
             // 背景（深灰）+ 白色矩形边框，与面板风格一致。
             GUI.DrawTexture(cellRect, BlackWhiteSkin.LineTex, ScaleMode.StretchToFill, false, 0f,
-                new Color(0.06f, 0.06f, 0.06f, 0.92f), 0f, 0f);
+                new Color(0.06f, 0.06f, 0.06f, 0.42f), 0f, 0f);
             BlackWhiteSkin.DrawBorder(cellRect, 2f);
 
             // 预览图：cell 顶部居中。
@@ -370,13 +386,13 @@ namespace SkinSyncMod
             float imgY = cellRect.y + CellInnerPad;
             Rect imgRect = new Rect(imgX, imgY, imgSize, imgSize);
             GUI.DrawTexture(imgRect, BlackWhiteSkin.LineTex, ScaleMode.StretchToFill, false, 0f,
-                new Color(0f, 0f, 0f, 0.6f), 0f, 0f);
+                new Color(0f, 0f, 0f, 0.28f), 0f, 0f);
             BlackWhiteSkin.DrawBorder(imgRect, 2f);
 
             Texture2D tex = null;
             try
             {
-                string skinDir = System.IO.Path.Combine(BepInEx.Paths.PluginPath, "CustomSprites", skin);
+                string skinDir = SkinSyncMod.SkinPathResolver.GetSkinDir(skin);
                 tex = SkinPreviewRenderer.GetOrBuild(skin, skinDir, _cfg);
             }
             catch (System.Exception ex)
@@ -406,6 +422,128 @@ namespace SkinSyncMod
                 _onApplySkin?.Invoke(skin);
             }
             GUI.enabled = prevEnabled;
+        }
+
+        private const string UrlModRepo = "https://github.com/Bytechey/SkinSync";
+        private const string UrlModVideo = "https://www.bilibili.com/video/BV1p1GJ64EAG";
+
+        private static GUIStyle _centerTitleStyle;
+        private static GUIStyle CenterTitleStyle =>
+            _centerTitleStyle ??= new GUIStyle(BlackWhiteSkin.HeaderStyle)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 44,
+                fontStyle = FontStyle.Bold,
+            };
+        private static GUIStyle _centerLabelStyle;
+        private static GUIStyle CenterLabelStyle =>
+            _centerLabelStyle ??= new GUIStyle(BlackWhiteSkin.HeaderStyle)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 30,
+                fontStyle = FontStyle.Bold,
+                wordWrap = true,
+            };
+        private static GUIStyle _nameButtonStyle;
+        private static GUIStyle NameButtonStyle
+        {
+            get
+            {
+                if (_nameButtonStyle != null) return _nameButtonStyle;
+                var s = new GUIStyle(BlackWhiteSkin.HeaderStyle)
+                {
+                    alignment = TextAnchor.MiddleCenter,
+                    fontSize = 32,
+                    fontStyle = FontStyle.Bold,
+                    border = new RectOffset(0, 0, 0, 0),
+                    margin = new RectOffset(0, 0, 0, 0),
+                    padding = new RectOffset(6, 6, 6, 6),
+                };
+                s.normal.background = null;
+                s.hover.background = null;
+                s.active.background = null;
+                s.focused.background = null;
+                s.onNormal.background = null;
+                s.onHover.background = null;
+                s.onActive.background = null;
+                s.normal.textColor = Color.white;
+                s.hover.textColor = new Color(0.6f, 0.85f, 1f);
+                s.active.textColor = new Color(0.4f, 0.7f, 1f);
+                s.focused.textColor = Color.white;
+                _nameButtonStyle = s;
+                return s;
+            }
+        }
+
+        private void DrawAboutTab()
+        {
+            _aboutScroll = GUILayout.BeginScrollView(_aboutScroll,
+                GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
+
+            GUILayout.Space(12f);
+            GUILayout.Label(SkinSyncI18n.T("about.title"), CenterTitleStyle, GUILayout.ExpandWidth(true));
+            GUILayout.Space(6f);
+            GUILayout.Label(SkinSyncI18n.T("about.desc"), CenterLabelStyle, GUILayout.ExpandWidth(true));
+            GUILayout.Label(SkinSyncI18n.F("about.version", SkinSync.Version), CenterLabelStyle, GUILayout.ExpandWidth(true));
+
+            GUILayout.Space(16f);
+            GUILayout.Label(SkinSyncI18n.T("about.sec_links"), CenterTitleStyle, GUILayout.ExpandWidth(true));
+            GUILayout.Space(6f);
+            DrawLinkButton(SkinSyncI18n.T("about.link_mod_repo"), UrlModRepo);
+            DrawLinkButton(SkinSyncI18n.T("about.link_mod_video"), UrlModVideo);
+
+            GUILayout.Space(16f);
+            GUILayout.Label(SkinSyncI18n.T("about.sec_credits"), CenterTitleStyle, GUILayout.ExpandWidth(true));
+            GUILayout.Space(6f);
+            DrawNameButton("Bytechey", "https://github.com/Bytechey");
+            DrawNameButton("huanxin996", "https://github.com/huanxin996");
+
+            GUILayout.Space(16f);
+            GUILayout.Label(SkinSyncI18n.T("about.testers"), CenterTitleStyle, GUILayout.ExpandWidth(true));
+            GUILayout.Space(6f);
+            DrawCreditLine(".....");
+
+            GUILayout.Space(16f);
+            GUILayout.Label(SkinSyncI18n.T("about.sec_deps"), CenterTitleStyle, GUILayout.ExpandWidth(true));
+            GUILayout.Space(6f);
+            DrawLinkButton("KrokoshaCasualtiesMP", "https://github.com/Krokosha666/cas-unk-krokosha-multiplayer-coop");
+            DrawLinkButton("BepInEx", "https://github.com/BepInEx/BepInEx");
+            DrawLinkButton("HarmonyX", "https://github.com/BepInEx/HarmonyX");
+
+            GUILayout.Space(20f);
+            GUILayout.EndScrollView();
+        }
+
+        private void DrawLinkButton(string label, string url)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button(label, BlackWhiteSkin.TabStyle,
+                GUILayout.MinWidth(560f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            {
+                try { Application.OpenURL(url); } catch { }
+            }
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+            GUILayout.Space(6f);
+        }
+
+        private void DrawCreditLine(string text)
+        {
+            GUILayout.Label(text, CenterLabelStyle, GUILayout.ExpandWidth(true), GUILayout.MinHeight(36f));
+        }
+
+        private void DrawNameButton(string name, string url)
+        {
+            GUILayout.BeginHorizontal();
+            GUILayout.FlexibleSpace();
+            if (GUILayout.Button(name, NameButtonStyle, GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f)))
+            {
+                try { Application.OpenURL(url); } catch { }
+            }
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+            GUILayout.Space(4f);
         }
 
         // 当前角色 tab：折叠态字典（key = "tail" 或 "acc:<id>"），默认全部折叠。

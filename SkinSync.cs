@@ -40,6 +40,19 @@ namespace SkinSyncMod
         internal static SkinSyncSettings Settings { get; private set; }
         internal static bool IsMultiplayerSession => KrokoshaBridge.IsAvailable;
 
+        /// <summary>从 BepInPlugin attribute 动态读取的 mod 版本号；读取失败返回空串。</summary>
+        internal static string Version
+        {
+            get
+            {
+                if (_version != null) return _version;
+                var attr = (BepInPlugin)System.Attribute.GetCustomAttribute(typeof(SkinSync), typeof(BepInPlugin));
+                _version = attr != null ? attr.Version.ToString() : "";
+                return _version;
+            }
+        }
+        private static string _version;
+
         private static SkinSync _instance;
 
         private SkinSyncWindow _window;
@@ -110,6 +123,8 @@ namespace SkinSyncMod
             harmony.CreateClassProcessor(typeof(SkinSyncAdaptiveButtonClickedGuard)).Patch();
             harmony.CreateClassProcessor(typeof(SkinSyncPlayerCameraHandleInputGuard)).Patch();
             harmony.CreateClassProcessor(typeof(SkinSyncPreRunScriptStartPatch)).Patch();
+            harmony.CreateClassProcessor(typeof(Patches.BleedParticleStartPatch)).Patch();
+            harmony.CreateClassProcessor(typeof(Patches.LimbAwakeBleedColorPatch)).Patch();
 
             if (KrokoshaBridge.IsAvailable)
             {
@@ -146,6 +161,7 @@ namespace SkinSyncMod
         private void ScanAvailableSkins()
         {
             availableSkins.Clear();
+            SkinPathResolver.Invalidate();
             string customSpritesPath = Path.Combine(Paths.PluginPath, "CustomSprites");
             if (!Directory.Exists(customSpritesPath))
             {
@@ -290,7 +306,7 @@ namespace SkinSyncMod
             var rows = new List<SkinSyncWindow.AccessoryRow>();
             string skin = ResolveCurrentSkin();
             if (string.IsNullOrEmpty(skin)) return rows;
-            string path = System.IO.Path.Combine(Paths.PluginPath, "CustomSprites", skin, "accessories.json");
+            string path = System.IO.Path.Combine(SkinPathResolver.GetSkinDir(skin), "accessories.json");
             var entries = AccessoryConfigLoader.Load(path);
             foreach (var e in entries)
             {
@@ -338,7 +354,7 @@ namespace SkinSyncMod
             if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return;
             if (localNetBodyBox == null) return;
             // 取合并后值（用户只改一个字段时其他字段也要发完整快照）。
-            string accPath = System.IO.Path.Combine(Paths.PluginPath, "CustomSprites", skin, "accessories.json");
+            string accPath = System.IO.Path.Combine(SkinPathResolver.GetSkinDir(skin), "accessories.json");
             var entries = AccessoryConfigLoader.Load(accPath);
             AccessoryConfigLoader.Entry baseEntry = null;
             foreach (var e in entries) { if (e.Id == accId) { baseEntry = e; break; } }
