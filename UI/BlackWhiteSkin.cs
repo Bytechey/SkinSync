@@ -96,12 +96,12 @@ namespace SkinSyncMod
         {
             if (_skin != null) return;
 
-            _bgPanel = MakeColorTex(0, 0, 0, 235);
-            _bgButton = MakeColorTex(0, 0, 0, 220);
-            _bgButtonHover = MakeColorTex(40, 40, 40, 235);
-            _bgCard = MakeColorTex(15, 15, 15, 230);
-            _bgTab = MakeColorTex(0, 0, 0, 220);
-            _bgTabActive = MakeColorTex(255, 255, 255, 235);
+            _bgPanel = MakeColorTex(0, 0, 0, 125);
+            _bgButton = MakeBorderedTex(0, 0, 0, 150, 255, 255, 255, 255, 2);
+            _bgButtonHover = MakeBorderedTex(60, 60, 60, 190, 255, 255, 255, 255, 2);
+            _bgCard = MakeColorTex(15, 15, 15, 105);
+            _bgTab = MakeBorderedTex(0, 0, 0, 150, 255, 255, 255, 255, 2);
+            _bgTabActive = MakeBorderedTex(255, 255, 255, 235, 255, 255, 255, 255, 2);
             _line = MakeColorTex(255, 255, 255, 255);
 
             _skin = ScriptableObject.CreateInstance<GUISkin>();
@@ -131,6 +131,7 @@ namespace SkinSyncMod
             _skin.button.fontSize = 20;
             _skin.button.fontStyle = FontStyle.Bold;
             _skin.button.padding = new RectOffset(14, 14, 10, 10);
+            _skin.button.border = new RectOffset(2, 2, 2, 2);
             _skin.label.fontSize = 20;
             _skin.label.fontStyle = FontStyle.Bold;
             _skin.textField.fontSize = 20;
@@ -230,6 +231,32 @@ namespace SkinSyncMod
             var t = new Texture2D(2, 2, TextureFormat.RGBA32, false) { hideFlags = HideFlags.HideAndDontSave };
             var c = new Color32(r, g, b, a);
             var pixels = new Color32[4] { c, c, c, c };
+            t.SetPixels32(pixels);
+            t.Apply();
+            return t;
+        }
+
+        /// <summary>生成带白边的九宫格纹理：外圈 borderPx 像素为边色，内部为填充色。配 GUIStyle.border 用。</summary>
+        private static Texture2D MakeBorderedTex(byte fr, byte fg, byte fb, byte fa,
+            byte br, byte bg, byte bb, byte ba, int borderPx)
+        {
+            int size = borderPx * 2 + 2;
+            var t = new Texture2D(size, size, TextureFormat.RGBA32, false)
+            {
+                hideFlags = HideFlags.HideAndDontSave,
+                filterMode = FilterMode.Point,
+            };
+            var fill = new Color32(fr, fg, fb, fa);
+            var edge = new Color32(br, bg, bb, ba);
+            var pixels = new Color32[size * size];
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    bool isEdge = x < borderPx || x >= size - borderPx || y < borderPx || y >= size - borderPx;
+                    pixels[y * size + x] = isEdge ? edge : fill;
+                }
+            }
             t.SetPixels32(pixels);
             t.Apply();
             return t;

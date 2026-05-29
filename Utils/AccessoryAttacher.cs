@@ -22,6 +22,16 @@ namespace SkinSyncMod
             public string RequireSlot;
             public bool DesiredEnabled;
             public Body Body;
+            public string MountLimb;
+            public string SpriteBaseName;
+            public List<SecondaryRef> Secondaries;
+        }
+
+        internal sealed class SecondaryRef
+        {
+            public string MountLimb;
+            public string SpriteBaseName;
+            public GameObject Go;
         }
         internal static readonly Dictionary<string, MountMeta> Meta = new Dictionary<string, MountMeta>();
 
@@ -31,6 +41,7 @@ namespace SkinSyncMod
             if (playerObj == null) return;
             Body body = playerObj.GetComponentInChildren<Body>(true);
             if (body == null) return;
+            bool isRight = body.isRight;
 
             ClearExisting(body);
             Mounted.Clear();
@@ -44,7 +55,8 @@ namespace SkinSyncMod
             {
                 Limb limb = body.LimbByName(entry.Limb);
                 if (limb == null) { Debug.LogWarning($"[SkinSync] accessory {entry.Id} target limb {entry.Limb} not found"); continue; }
-                if (sprites == null || !sprites.TryGetValue(entry.Sprite, out Sprite sprite) || sprite == null)
+                Sprite sprite = ResolveAccessorySprite(sprites, entry.Sprite, entry.Limb, isRight);
+                if (sprite == null)
                 {
                     Debug.LogWarning($"[SkinSync] accessory {entry.Id} sprite {entry.Sprite} not loaded");
                     continue;
@@ -78,12 +90,15 @@ namespace SkinSyncMod
                     litMat: litMat);
                 go.SetActive(effEnabled);
                 Mounted[entry.Id] = go;
-                Meta[entry.Id] = new MountMeta
+                var meta = new MountMeta
                 {
                     RequireSlot = entry.RequireWornSlot,
                     DesiredEnabled = effEnabled,
                     Body = body,
+                    MountLimb = entry.Limb,
+                    SpriteBaseName = entry.Sprite,
                 };
+                Meta[entry.Id] = meta;
 
                 if (entry.SecondaryLimbs != null)
                 {
@@ -91,7 +106,8 @@ namespace SkinSyncMod
                     {
                         Limb secLimb = body.LimbByName(sec.Limb);
                         if (secLimb == null) { Debug.LogWarning($"[SkinSync] accessory {entry.Id} secondary limb {sec.Limb} not found"); continue; }
-                        if (!sprites.TryGetValue(sec.Sprite, out Sprite secSprite) || secSprite == null)
+                        Sprite secSprite = ResolveAccessorySprite(sprites, sec.Sprite, sec.Limb, isRight);
+                        if (secSprite == null)
                         {
                             Debug.LogWarning($"[SkinSync] accessory {entry.Id} secondary sprite {sec.Sprite} not loaded");
                             continue;
@@ -105,6 +121,13 @@ namespace SkinSyncMod
                             zOffset: sec.ZOrder,
                             litMat: litMat);
                         secGo.transform.SetParent(go.transform, worldPositionStays: true);
+                        if (meta.Secondaries == null) meta.Secondaries = new List<SecondaryRef>();
+                        meta.Secondaries.Add(new SecondaryRef
+                        {
+                            MountLimb = sec.Limb,
+                            SpriteBaseName = sec.Sprite,
+                            Go = secGo,
+                        });
                     }
                 }
             }
@@ -131,6 +154,44 @@ namespace SkinSyncMod
             if (litMat != null) sr.sharedMaterial = litMat;
             ShadowAttacher.Ensure(go);
             return go;
+        }
+
+        /// <summary>朝向变化时调：只重选所有 Mounted 的 SpriteRenderer.sprite。</summary>
+        public static void RefreshSidedSprites(GameObject playerObj, Dictionary<string, Sprite> sprites, bool isRight)
+        {
+            if (playerObj == null || sprites == null) return;
+            foreach (var kv in Mounted)
+            {
+                if (!Meta.TryGetValue(kv.Key, out var meta) || meta == null) continue;
+                if (kv.Value == null) continue;
+                var sr = kv.Value.GetComponent<SpriteRenderer>();
+                if (sr != null)
+                {
+                    var s = ResolveAccessorySprite(sprites, meta.SpriteBaseName, meta.MountLimb, isRight);
+                    if (s != null) sr.sprite = s;
+                }
+                if (meta.Secondaries == null) continue;
+                foreach (var sec in meta.Secondaries)
+                {
+                    if (sec == null || sec.Go == null) continue;
+                    var secSr = sec.Go.GetComponent<SpriteRenderer>();
+                    if (secSr == null) continue;
+                    var s = ResolveAccessorySprite(sprites, sec.SpriteBaseName, sec.MountLimb, isRight);
+                    if (s != null) secSr.sprite = s;
+                }
+            }
+        }
+
+        private static Sprite ResolveAccessorySprite(Dictionary<string, Sprite> sprites, string baseName, string limbName, bool isRight)
+        {
+            if (sprites == null || string.IsNullOrEmpty(baseName)) return null;
+            char side = '\0';
+            if (!string.IsNullOrEmpty(limbName))
+            {
+                char last = limbName[limbName.Length - 1];
+                if (last == 'F' || last == 'B') side = last;
+            }
+            return SkinApplier.ResolveSidedSprite(sprites, baseName, side, isRight);
         }
 
         /// <summary>调试面板调它切单件显隐；不存在 id 静默忽略。</summary>

@@ -38,6 +38,42 @@ namespace SkinSyncMod
             return _byChara.TryGetValue(chara, out var name) ? name : null;
         }
 
+        /// <summary>按 world 坐标找半径内最近 Body 对应的 character；用于落地血迹 / 爆血粒子按 owner 染色。</summary>
+        public static bool TryGetCharacterByPosition(Vector2 pos, float radius, out string character)
+        {
+            character = null;
+            float bestDist = radius;
+            foreach (var body in UnityEngine.Object.FindObjectsOfType<Body>())
+            {
+                if (body == null) continue;
+                float d = Vector2.Distance(pos, body.transform.position);
+                if (d > bestDist) continue;
+                GameObject host = body.transform.parent != null ? body.transform.parent.gameObject : body.gameObject;
+                if (_byChara.TryGetValue(host, out var name))
+                {
+                    bestDist = d;
+                    character = name;
+                }
+            }
+            return character != null;
+        }
+
+        /// <summary>已应用 character 数=1 时直接返回该 character；用作 world 血迹 / 粒子无 owner 链路时的兜底。</summary>
+        public static bool TryGetAnyAppliedCharacter(out string character)
+        {
+            character = null;
+            string only = null;
+            foreach (var kv in _byChara)
+            {
+                if (string.IsNullOrEmpty(kv.Value)) continue;
+                if (only == null) { only = kv.Value; continue; }
+                if (only != kv.Value) return false;
+            }
+            if (only == null) return false;
+            character = only;
+            return true;
+        }
+
         /// <summary>当前已应用的 character 对应 sprite 字典，供 ZoneFrameAnimator 等运行时组件解析帧名用。</summary>
         public static Dictionary<string, Sprite> GetSpriteDict()
         {
@@ -72,21 +108,24 @@ namespace SkinSyncMod
 
             if (!_wingsCache.TryGetValue(characterName, out var wingsCfg))
             {
-                string wingsJsonPath = Path.Combine(Paths.PluginPath, "CustomSprites", characterName, "wings.json");
+                string wingsJsonPath = Path.Combine(SkinPathResolver.GetSkinDir(characterName), "wings.json");
                 wingsCfg = WingsConfigLoader.Load(wingsJsonPath);
                 _wingsCache[characterName] = wingsCfg;
             }
 
             if (!sameSkin)
             {
+                Body bodyForDir = playerObj.GetComponentInChildren<Body>(true);
+                bool isRight = bodyForDir != null ? bodyForDir.isRight : true;
+
                 foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
-                    ReplaceLimbSprite(limb, spriteDict);
+                    ReplaceLimbSprite(limb, spriteDict, isRight);
 
                 foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
-                    ReplaceTailSprite(tail, spriteDict);
+                    ReplaceTailSprite(tail, spriteDict, isRight);
 
                 foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
-                    ReplaceFacialExpressionSprites(face, spriteDict);
+                    ReplaceFacialExpressionSprites(face, spriteDict, isRight);
 
                 EnsureWingsAttached(playerObj, spriteDict, wingsCfg);
 
@@ -97,7 +136,7 @@ namespace SkinSyncMod
                 }
             }
 
-            string accessoriesPath = Path.Combine(Paths.PluginPath, "CustomSprites", characterName, "accessories.json");
+            string accessoriesPath = Path.Combine(SkinPathResolver.GetSkinDir(characterName), "accessories.json");
             var accEntries = AccessoryConfigLoader.Load(accessoriesPath);
             AccessoryAttacher.Apply(playerObj, accEntries, spriteDict, characterName);
 
@@ -108,6 +147,31 @@ namespace SkinSyncMod
                 ZonesAttacher.Apply(playerObj, characterName);
                 BloodAttacher.Apply(playerObj, characterName);
             }
+            EnsureLimbDirWatcher(playerObj);
+        }
+
+        /// <summary>朝向变化时调：仅重选 SpriteRenderer.sprite，不重建 GameObject、不重跑 wings/zones/blood/accessories 挂载。</summary>
+        public static void RefreshSidedSprites(GameObject playerObj, bool isRight)
+        {
+            if (playerObj == null) return;
+            if (!_byChara.TryGetValue(playerObj, out var character)) return;
+            if (!_skinCache.TryGetValue(character, out var spriteDict)) return;
+
+            foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
+                ReplaceLimbSprite(limb, spriteDict, isRight);
+            foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
+                ReplaceTailSprite(tail, spriteDict, isRight);
+            foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
+                ReplaceFacialExpressionSprites(face, spriteDict, isRight);
+
+            AccessoryAttacher.RefreshSidedSprites(playerObj, spriteDict, isRight);
+        }
+
+        private static void EnsureLimbDirWatcher(GameObject playerObj)
+        {
+            if (playerObj == null) return;
+            if (playerObj.GetComponent<LimbDirWatcher>() == null)
+                playerObj.AddComponent<LimbDirWatcher>();
         }
 
         /// <summary>遍历当前场景所有 Body，对每个挂载点调用 ApplySkinToPlayer；用于单机模式无固定 localPlayerObject 时兜底应用皮肤。</summary>
@@ -125,10 +189,28 @@ namespace SkinSyncMod
             return count;
         }
 
-        /// <summary>
-        /// 按 limb 名末尾 F/B 后缀挑选 sprite：sided 副本 → 共享 base → 反向 sided 副本；都缺则回到原游戏 sprite。
-        /// </summary>
-        private static void ReplaceLimbSprite(Limb limb, Dictionary<string, Sprite> dict)
+        /// <summary>统一 sprite 选择：朝右优先 R_ 套；候选键序覆盖 base+side 与 base 两层 + 反向 side 兜底；无命中返回 null。</summary>
+        internal static Sprite ResolveSidedSprite(Dictionary<string, Sprite> dict, string baseName, char side, bool isRight)
+        {
+            if (dict == null || string.IsNullOrEmpty(baseName)) return null;
+            bool hasSide = side == 'F' || side == 'B';
+            if (isRight)
+            {
+                if (hasSide && dict.TryGetValue("R_" + baseName + side, out var a)) return a;
+                if (dict.TryGetValue("R_" + baseName, out var b)) return b;
+            }
+            if (hasSide && dict.TryGetValue(baseName + side, out var c)) return c;
+            if (dict.TryGetValue(baseName, out var d)) return d;
+            if (hasSide)
+            {
+                char opp = side == 'F' ? 'B' : 'F';
+                if (isRight && dict.TryGetValue("R_" + baseName + opp, out var e)) return e;
+                if (dict.TryGetValue(baseName + opp, out var f)) return f;
+            }
+            return null;
+        }
+
+        private static void ReplaceLimbSprite(Limb limb, Dictionary<string, Sprite> dict, bool isRight)
         {
             var renderer = limb.GetComponent<SpriteRenderer>();
             if (renderer == null) return;
@@ -141,23 +223,16 @@ namespace SkinSyncMod
             string baseSprite = reference?.name ?? string.Empty;
             string limbName = limb.gameObject.name ?? string.Empty;
             char lastChar = limbName.Length > 0 ? limbName[limbName.Length - 1] : '\0';
-            if (lastChar == 'F' || lastChar == 'B')
-            {
-                if (dict.TryGetValue(baseSprite + lastChar, out var sided)) { renderer.sprite = sided; return; }
-                if (dict.TryGetValue(baseSprite, out var shared)) { renderer.sprite = shared; return; }
-                char opposite = lastChar == 'F' ? 'B' : 'F';
-                if (dict.TryGetValue(baseSprite + opposite, out var fallback)) { renderer.sprite = fallback; return; }
-                renderer.sprite = reference;
-                return;
-            }
-            if (dict.TryGetValue(baseSprite, out var direct)) { renderer.sprite = direct; return; }
-            renderer.sprite = reference;
+            char side = (lastChar == 'F' || lastChar == 'B') ? lastChar : '\0';
+
+            var resolved = ResolveSidedSprite(dict, baseSprite, side, isRight);
+            renderer.sprite = resolved ?? reference;
         }
 
         private static Dictionary<string, Sprite> LoadCharacterSprites(string character)
         {
             var dict = new Dictionary<string, Sprite>();
-            string basePath = Path.Combine(Paths.PluginPath, "CustomSprites", character);
+            string basePath = SkinPathResolver.GetSkinDir(character);
             if (!Directory.Exists(basePath)) return dict;
             var baseSizes = BaseSizesLoader.Load(character);
             foreach (var filePath in Directory.GetFiles(basePath, "*.png", SearchOption.AllDirectories))
@@ -182,7 +257,7 @@ namespace SkinSyncMod
             return dict;
         }
 
-        private static void ReplaceTailSprite(TailScript tail, Dictionary<string, Sprite> dict)
+        private static void ReplaceTailSprite(TailScript tail, Dictionary<string, Sprite> dict, bool isRight)
         {
             var renderer = tail.GetComponent<SpriteRenderer>();
             if (renderer == null) return;
@@ -191,10 +266,10 @@ namespace SkinSyncMod
                 _originalTailSprites[id] = renderer.sprite;
             Sprite reference = _originalTailSprites.TryGetValue(id, out var orig) ? orig : renderer.sprite;
             if (reference == null) return;
-            renderer.sprite = dict.TryGetValue(reference.name, out var newSprite) ? newSprite : reference;
+            renderer.sprite = ResolveSidedSprite(dict, reference.name, '\0', isRight) ?? reference;
         }
 
-        private static void ReplaceFacialExpressionSprites(FacialExpression face, Dictionary<string, Sprite> dict)
+        private static void ReplaceFacialExpressionSprites(FacialExpression face, Dictionary<string, Sprite> dict, bool isRight)
         {
             int id = face.GetInstanceID();
             if (!_originalFaces.TryGetValue(id, out var orig))
@@ -213,32 +288,32 @@ namespace SkinSyncMod
                 _originalFaces[id] = orig;
             }
 
-            face.defaultHead = GetReplacement(orig.DefaultHead, dict);
-            face.defaultHeadMouth = GetReplacement(orig.DefaultHeadMouth, dict);
-            face.defaultHeadMouthHalf = GetReplacement(orig.DefaultHeadMouthHalf, dict);
-            face.eyesGone = GetReplacement(orig.EyesGone, dict);
-            face.eyesGoneHealed = GetReplacement(orig.EyesGoneHealed, dict);
+            face.defaultHead = GetReplacement(orig.DefaultHead, dict, isRight);
+            face.defaultHeadMouth = GetReplacement(orig.DefaultHeadMouth, dict, isRight);
+            face.defaultHeadMouthHalf = GetReplacement(orig.DefaultHeadMouthHalf, dict, isRight);
+            face.eyesGone = GetReplacement(orig.EyesGone, dict, isRight);
+            face.eyesGoneHealed = GetReplacement(orig.EyesGoneHealed, dict, isRight);
 
             int dhCount = Mathf.Min(face.disfiguredHead.Length, orig.DisfiguredHead.Length);
             for (int i = 0; i < dhCount; i++)
-                face.disfiguredHead[i] = GetReplacement(orig.DisfiguredHead[i], dict);
+                face.disfiguredHead[i] = GetReplacement(orig.DisfiguredHead[i], dict, isRight);
             int dhhCount = Mathf.Min(face.disfiguredHeadHeal.Length, orig.DisfiguredHeadHeal.Length);
             for (int i = 0; i < dhhCount; i++)
-                face.disfiguredHeadHeal[i] = GetReplacement(orig.DisfiguredHeadHeal[i], dict);
+                face.disfiguredHeadHeal[i] = GetReplacement(orig.DisfiguredHeadHeal[i], dict, isRight);
             int eyeCount = Mathf.Min(face.eyeList.Count, orig.Eyes.Length);
             for (int i = 0; i < eyeCount; i++)
             {
                 var eye = orig.Eyes[i];
-                eye.front = GetReplacement(eye.front, dict);
-                eye.back = GetReplacement(eye.back, dict);
+                eye.front = GetReplacement(eye.front, dict, isRight);
+                eye.back = GetReplacement(eye.back, dict, isRight);
                 face.eyeList[i] = eye;
             }
         }
 
-        private static Sprite GetReplacement(Sprite original, Dictionary<string, Sprite> dict)
+        private static Sprite GetReplacement(Sprite original, Dictionary<string, Sprite> dict, bool isRight)
         {
             if (original == null) return null;
-            return dict.TryGetValue(original.name, out var replacement) ? replacement : original;
+            return ResolveSidedSprite(dict, original.name, '\0', isRight) ?? original;
         }
 
         /// <summary>

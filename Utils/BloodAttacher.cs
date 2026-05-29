@@ -21,7 +21,7 @@ namespace SkinSyncMod
         public static void Apply(GameObject playerObj, string characterName)
         {
             if (playerObj == null || string.IsNullOrEmpty(characterName)) return;
-            string skinDir = Path.Combine(Paths.PluginPath, "CustomSprites", characterName);
+            string skinDir = SkinPathResolver.GetSkinDir(characterName);
             var cfg = BloodConfigLoader.Load(skinDir);
             if (cfg == null) return;
 
@@ -41,18 +41,45 @@ namespace SkinSyncMod
             var existing = playerObj.GetComponent<BloodVomitWatcher>();
             if (existing == null) existing = playerObj.AddComponent<BloodVomitWatcher>();
             existing.Configure(body, characterName);
+
+            // 给 limb 上每个 BleedParticle 换一份染色的 wallBleed / groundBleed prefab 副本。
+            foreach (var bp in body.GetComponentsInChildren<BleedParticle>(true))
+            {
+                Patches.BleedParticleRecolor.RecolorByCharacter(bp, characterName);
+            }
         }
 
         /// <summary>给运行时新生成的 ParticleSystem（vomitBlood 等）按 character 重染色——给 BloodVomitWatcher 用。</summary>
         public static void RecolorParticleByCharacter(ParticleSystem ps, string characterName)
         {
             if (ps == null || string.IsNullOrEmpty(characterName)) return;
-            string skinDir = Path.Combine(Paths.PluginPath, "CustomSprites", characterName);
+            string skinDir = SkinPathResolver.GetSkinDir(characterName);
             var cfg = BloodConfigLoader.Load(skinDir);
             if (cfg == null) return;
             string fullSpritePath = Path.Combine(skinDir, "Blood/BloodParticle.png");
             Texture2D customTex = LoadTexture(fullSpritePath);
             ApplyToParticle(ps, cfg, customTex);
+        }
+
+        /// <summary>读指定 character 的 blood.json 与自定义粒子贴图（缺失返回 null）；BloodGroundRecolorer 复用。</summary>
+        internal static bool TryLoadCharacterBlood(string characterName, out BloodConfigLoader.Config cfg, out Texture2D customTex)
+        {
+            cfg = null;
+            customTex = null;
+            if (string.IsNullOrEmpty(characterName)) return false;
+            string skinDir = SkinPathResolver.GetSkinDir(characterName);
+            cfg = BloodConfigLoader.Load(skinDir);
+            if (cfg == null) return false;
+            customTex = LoadTexture(Path.Combine(skinDir, "Blood/BloodParticle.png"));
+            return true;
+        }
+
+        /// <summary>给落地 / 爆血粒子按 character 重染色，复用 ApplyToParticle。</summary>
+        internal static void ApplyToParticleByCharacter(ParticleSystem ps, string characterName)
+        {
+            if (ps == null) return;
+            if (!TryLoadCharacterBlood(characterName, out var cfg, out var tex)) return;
+            ApplyToParticle(ps, cfg, tex);
         }
 
         private static void ApplyToLimb(Limb limb, BloodConfigLoader.Config cfg, Texture2D customTex)
@@ -62,12 +89,31 @@ namespace SkinSyncMod
             ApplyToParticle(_bleedField?.GetValue(limb) as ParticleSystem, cfg, customTex);
             ApplyToParticle(_waterBleedField?.GetValue(limb) as ParticleSystem, cfg, customTex);
 
-            // limb material 的 _BloodDark / _BloodLight uniform。
+            // limb material 的 _BloodDark / _BloodLight uniform；blood.json 缺则用 particle 色兜底。
             var sr = limb.GetComponent<SpriteRenderer>();
             var mat = sr != null ? sr.sharedMaterial : null;
             if (mat == null) return;
-            if (cfg.BloodDark.HasValue) mat.SetColor("_BloodDark", (Color)cfg.BloodDark.Value);
-            if (cfg.BloodLight.HasValue) mat.SetColor("_BloodLight", (Color)cfg.BloodLight.Value);
+            Color32? darkSrc = cfg.BloodDark ?? cfg.ParticleEndColor ?? cfg.ParticleStartColor;
+            Color32? lightSrc = cfg.BloodLight ?? cfg.ParticleStartColor ?? cfg.ParticleEndColor;
+            if (darkSrc.HasValue)
+            {
+                Color c = darkSrc.Value; c.a = 1f;
+                mat.SetColor("_BloodDark", c);
+            }
+            if (lightSrc.HasValue)
+            {
+                Color c = lightSrc.Value; c.a = 1f;
+                mat.SetColor("_BloodLight", c);
+            }
+            SkinSyncMod.SkinSync.LogBoth($"[SkinSync] limb {limb.gameObject.name} 受伤血色：dark={(darkSrc.HasValue ? darkSrc.Value.ToString() : "n/a")} light={(lightSrc.HasValue ? lightSrc.Value.ToString() : "n/a")} mat={mat.name}");
+        }
+
+        /// <summary>给单个 limb 按 character 设受伤血色 + 染 BleedParticle prefab；Limb.Awake patch 用。</summary>
+        internal static void ApplyToLimbByCharacter(Limb limb, string characterName)
+        {
+            if (limb == null || string.IsNullOrEmpty(characterName)) return;
+            if (!TryLoadCharacterBlood(characterName, out var cfg, out var tex)) return;
+            ApplyToLimb(limb, cfg, tex);
         }
 
         private static void ApplyToParticle(ParticleSystem ps, BloodConfigLoader.Config cfg, Texture2D customTex)

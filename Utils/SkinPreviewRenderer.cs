@@ -423,7 +423,8 @@ namespace SkinSyncMod
 
                 // F/B sided：zOrder ≥ 0 → F，< 0 → B；缺 sided 则回退 base。
                 char side = entry.ZOrder >= 0 ? 'F' : 'B';
-                string sided = SidedCandidateName(entry.PartName, side);
+                string actualBase = ResolveActualPartName(skinDir, entry.Cat, entry.PartName);
+                string sided = SidedCandidateNameByLemma(actualBase, side);
                 Pixels pix = default;
                 if (!string.IsNullOrEmpty(sided))
                 {
@@ -431,7 +432,7 @@ namespace SkinSyncMod
                 }
                 if (pix.W == 0)
                 {
-                    pix = LoadPng(Path.Combine(skinDir, CategoryDir(entry.Cat), entry.PartName + ".png"));
+                    pix = LoadPng(Path.Combine(skinDir, CategoryDir(entry.Cat), actualBase + ".png"));
                 }
                 if (pix.W == 0) continue;
 
@@ -443,12 +444,82 @@ namespace SkinSyncMod
                 // 区块光 / 粒子 / 动画——sided 名称优先，缺则回退 base 名（与后端 renderZoneLightsForPart 行为一致）。
                 string renderedName = !string.IsNullOrEmpty(sided) && File.Exists(
                     Path.Combine(skinDir, CategoryDir(entry.Cat), sided + ".png"))
-                    ? sided : entry.PartName;
+                    ? sided : actualBase;
                 SkinPreviewZones.Render(canvas, CompositeW, CompositeH,
                     skinDir, CategoryDir(entry.Cat), renderedName,
                     pix.W, pix.H, centerX, centerY, effRot, entry.FlipX, 0f);
             }
             return canvas;
+        }
+
+        /// <summary>SidedCandidateName 接受 actual base 名，但内部白名单是 experiment* 硬编码——这里宽化为按尾缀匹配。</summary>
+        private static string SidedCandidateNameByLemma(string actualBase, char side)
+        {
+            if (side != 'F' && side != 'B') return null;
+            string[] lemmas = { "UpArm", "DownArm", "Thigh", "Crus", "Foot" };
+            foreach (var l in lemmas)
+                if (actualBase.EndsWith(l)) return actualBase + side;
+            return null;
+        }
+
+        /// <summary>把 DefaultAssembly 里的 experiment* 硬编码 partName 换成皮肤目录里实际存在的同部位 PNG 名。</summary>
+        private static string ResolveActualPartName(string skinDir, Category cat, string defaultName)
+        {
+            // 按 default 文件名末尾 lemma（"UpArm" / "DownArm" / ...）在分类目录里找第一个匹配 PNG。
+            string lemma = StripExperimentLemma(defaultName);
+            if (string.IsNullOrEmpty(lemma)) return defaultName;
+            // 直接命中 default 名优先，避免反复扫盘。
+            string defaultPath = Path.Combine(skinDir, CategoryDir(cat), defaultName + ".png");
+            if (File.Exists(defaultPath)) return defaultName;
+            string catDir = Path.Combine(skinDir, CategoryDir(cat));
+            if (!Directory.Exists(catDir)) return defaultName;
+            var hit = ResolvePartNameCache.Resolve(catDir, lemma);
+            return hit ?? defaultName;
+        }
+
+        private static string StripExperimentLemma(string name)
+        {
+            const string p = "experiment";
+            return name.StartsWith(p, System.StringComparison.Ordinal) ? name.Substring(p.Length) : name;
+        }
+
+        private static class ResolvePartNameCache
+        {
+            private static readonly Dictionary<string, Dictionary<string, string>> _byCatDir =
+                new Dictionary<string, Dictionary<string, string>>();
+
+            public static string Resolve(string catDir, string lemma)
+            {
+                if (!_byCatDir.TryGetValue(catDir, out var map))
+                {
+                    map = BuildMap(catDir);
+                    _byCatDir[catDir] = map;
+                }
+                return map.TryGetValue(lemma, out var name) ? name : null;
+            }
+
+            private static Dictionary<string, string> BuildMap(string catDir)
+            {
+                var map = new Dictionary<string, string>();
+                if (!Directory.Exists(catDir)) return map;
+                string[] lemmas = { "UpArm", "DownArm", "HandF", "HandB", "Hand", "Thigh", "Crus", "Foot", "UpTorso", "DownTorso", "HeadBack", "Head", "Tail", "Nosebleed" };
+                string[] eyeLemmas = { "EyeOpen", "EyeClosed", "EyeHalfClosed", "EyeSad", "EyeHappy", "EyeScared", "EyePanic", "EyeLookBack", "EyeGone", "EyeGoneHealed" };
+                foreach (var f in Directory.GetFiles(catDir, "*.png"))
+                {
+                    string name = Path.GetFileNameWithoutExtension(f);
+                    if (string.IsNullOrEmpty(name)) continue;
+                    if (name.StartsWith("R_")) continue;
+                    foreach (var l in lemmas)
+                    {
+                        if (!map.ContainsKey(l) && name.EndsWith(l, System.StringComparison.Ordinal)) { map[l] = name; break; }
+                    }
+                    foreach (var l in eyeLemmas)
+                    {
+                        if (!map.ContainsKey(l) && name.EndsWith(l, System.StringComparison.Ordinal)) { map[l] = name; break; }
+                    }
+                }
+                return map;
+            }
         }
 
         // 配件分支：partName 形如 `__acc:<id>` 或 `__acc:<id>#<idx>`，读 entry / sec 的 sprite 与 offX/offY。

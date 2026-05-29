@@ -16,6 +16,7 @@ namespace SkinSyncMod
             ["tab.settings"] = "设置",
             ["tab.skins"] = "角色",
             ["tab.current"] = "当前角色设置",
+            ["tab.about"] = "关于",
             ["status.current_skin"] = "当前皮肤：{0}",
             ["status.no_skin"] = "尚未选择皮肤",
 
@@ -103,6 +104,16 @@ namespace SkinSyncMod
             ["slot.torso"] = "上衣",
             ["slot.torsofront"] = "胸甲",
             ["slot.wraps"] = "绷带",
+
+            ["about.title"] = "皮肤同步",
+            ["about.desc"] = "为《Casualties: Unknown》提供自定义皮肤、配件、血液与多人同步。",
+            ["about.version"] = "版本：{0}",
+            ["about.sec_links"] = "链接",
+            ["about.link_mod_repo"] = "皮肤 Mod 仓库",
+            ["about.link_mod_video"] = "皮肤 Mod 演示视频",
+            ["about.sec_credits"] = "开发人员",
+            ["about.testers"] = "测试人员",
+            ["about.sec_deps"] = "依赖与致谢",
         };
 
         private static readonly Dictionary<string, string> _en = new Dictionary<string, string>
@@ -112,6 +123,7 @@ namespace SkinSyncMod
             ["tab.settings"] = "Settings",
             ["tab.skins"] = "Skins",
             ["tab.current"] = "Current Skin",
+            ["tab.about"] = "About",
             ["status.current_skin"] = "Current skin: {0}",
             ["status.no_skin"] = "No skin selected",
 
@@ -199,6 +211,16 @@ namespace SkinSyncMod
             ["slot.torso"] = "Torso",
             ["slot.torsofront"] = "Torso front",
             ["slot.wraps"] = "Wraps",
+
+            ["about.title"] = "Skin Sync",
+            ["about.desc"] = "Custom skins, accessories, blood and multiplayer sync for Casualties: Unknown.",
+            ["about.version"] = "Version: {0}",
+            ["about.sec_links"] = "Links",
+            ["about.link_mod_repo"] = "Skin Mod repository",
+            ["about.link_mod_video"] = "Skin Mod demo video",
+            ["about.sec_credits"] = "Developers",
+            ["about.testers"] = "Playtesters",
+            ["about.sec_deps"] = "Dependencies & thanks",
         };
 
         private static Dictionary<string, string> Current

@@ -24,7 +24,7 @@ namespace SkinSyncMod
 
             ClearExisting(body);
 
-            string skinDir = Path.Combine(Paths.PluginPath, "CustomSprites", characterName);
+            string skinDir = SkinPathResolver.GetSkinDir(characterName);
             if (!Directory.Exists(skinDir)) return;
 
             foreach (var limb in body.GetComponentsInChildren<Limb>(true))
