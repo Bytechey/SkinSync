@@ -28,9 +28,10 @@ namespace SkinSyncMod
         private Vector3[] _verts;
         private Vector2[] _uvs;
         private int[] _tris;
-        private Vector2 _axisDirLocal;
         private float _axisLen;
         private float _halfWide;
+        private float[] _segHalf;
+        private float[] _segCenter;
 
         private void Awake()
         {
@@ -74,27 +75,15 @@ namespace SkinSyncMod
         }
 
         /// <summary>
-        /// 按当前 sprite 重建 ribbon 拓扑、UV 与物理链长度，仅采样 PNG 中 pivot 到尾尖的一半。
+        /// 按当前 sprite 重建 ribbon 拓扑：逐段扫描实际像素求主轴范围与每段半宽 / 垂直中心，UV 贴合内容；扫描失败回退整张 bounds 等宽。
         /// </summary>
         private void RebuildForSprite(Sprite sprite)
         {
             _cachedSpriteId = sprite.GetInstanceID();
             var bounds = sprite.bounds;
-            if (bounds.size.x >= bounds.size.y)
-            {
-                _axisDirLocal = Vector2.left;
-                _axisLen = bounds.extents.x;
-                _halfWide = bounds.extents.y;
-            }
-            else
-            {
-                _axisDirLocal = Vector2.down;
-                _axisLen = bounds.extents.y;
-                _halfWide = bounds.extents.x;
-            }
-
+            bool axisIsHorizontal = bounds.size.x >= bounds.size.y;
             int n = Mathf.Max(2, TailDeformConfig.Segments);
-            _segLen = _axisLen / n;
+
             int vCount = (n + 1) * 2;
             int tCount = n * 6;
             _verts = new Vector3[vCount];
@@ -102,6 +91,8 @@ namespace SkinSyncMod
             _tris = new int[tCount];
             _bonePos = new Vector2[n + 1];
             _bonePrev = new Vector2[n + 1];
+            _segHalf = new float[n + 1];
+            _segCenter = new float[n + 1];
 
             for (int i = 0; i < n; i++)
             {
@@ -116,16 +107,156 @@ namespace SkinSyncMod
 
             var tex = sprite.texture;
             var texRect = sprite.textureRect;
+            if (!BuildProfileFromPixels(sprite, axisIsHorizontal, n))
+                BuildFallbackProfile(bounds, axisIsHorizontal, n, tex, texRect);
+
+            _mat.mainTexture = tex;
+            _mr.sortingLayerID = _sr.sortingLayerID;
+            _mr.sortingOrder = _sr.sortingOrder;
+            _mat.color = _sr.color;
+            _physicsInited = false;
+        }
+
+        /// <summary>逐段扫描贴图像素，填充主轴方向 / 长度、每段半宽 _segHalf、垂直中心 _segCenter 与逐段 UV；纹理不可读返回 false。</summary>
+        private bool BuildProfileFromPixels(Sprite sprite, bool axisIsHorizontal, int n)
+        {
+            var tex = sprite.texture;
+            Color32[] pixels;
+            try { pixels = tex.GetPixels32(); }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"[SkinSync] tail texture not readable, fallback to bounds ribbon: {e.Message}");
+                return false;
+            }
+
+            var texRect = sprite.textureRect;
+            int rx = Mathf.RoundToInt(texRect.x);
+            int ry = Mathf.RoundToInt(texRect.y);
+            int rw = Mathf.RoundToInt(texRect.width);
+            int rh = Mathf.RoundToInt(texRect.height);
+            if (rw <= 0 || rh <= 0) return false;
+            int texW = tex.width;
+            float texWf = tex.width;
+            float texHf = tex.height;
+            float ppu = sprite.pixelsPerUnit;
+
+            int axisCount = axisIsHorizontal ? rw : rh;
+            int crossCount = axisIsHorizontal ? rh : rw;
+
+            int firstAxis = -1, lastAxis = -1;
+            for (int a = 0; a < axisCount; a++)
+            {
+                if (AxisLineHasPixel(pixels, texW, rx, ry, axisIsHorizontal, a, crossCount))
+                {
+                    if (firstAxis < 0) firstAxis = a;
+                    lastAxis = a;
+                }
+            }
+            if (firstAxis < 0) return false;
+
+            float pivotAxisPx = axisIsHorizontal ? sprite.pivot.x : sprite.pivot.y;
+            bool rootAtLow = Mathf.Abs(firstAxis - pivotAxisPx) <= Mathf.Abs(lastAxis - pivotAxisPx);
+
+            int contentLenPx = lastAxis - firstAxis + 1;
+            _axisLen = contentLenPx / ppu;
+            _segLen = _axisLen / n;
+
+            float pivotCrossPx = axisIsHorizontal ? sprite.pivot.y : sprite.pivot.x;
+
+            for (int i = 0; i <= n; i++)
+            {
+                float tt = (float)i / n;
+                int axisPx = rootAtLow
+                    ? firstAxis + Mathf.RoundToInt(tt * (contentLenPx - 1))
+                    : lastAxis - Mathf.RoundToInt(tt * (contentLenPx - 1));
+
+                int lo, hi;
+                ScanCrossExtent(pixels, texW, rx, ry, axisIsHorizontal, axisPx, crossCount, out lo, out hi);
+                if (hi < lo)
+                {
+                    _segHalf[i] = 0f;
+                    _segCenter[i] = 0f;
+                }
+                else
+                {
+                    float crossMidPx = (lo + hi + 1) * 0.5f;
+                    _segHalf[i] = ((hi - lo + 1) * 0.5f) / ppu;
+                    _segCenter[i] = (crossMidPx - pivotCrossPx) / ppu;
+                }
+
+                float axisUV, crossLoUV, crossHiUV;
+                if (axisIsHorizontal)
+                {
+                    axisUV = (rx + axisPx + 0.5f) / texWf;
+                    crossLoUV = (hi < lo ? ry : ry + lo) / texHf;
+                    crossHiUV = (hi < lo ? ry + crossCount : ry + hi + 1) / texHf;
+                    _uvs[i * 2 + 0] = new Vector2(axisUV, crossLoUV);
+                    _uvs[i * 2 + 1] = new Vector2(axisUV, crossHiUV);
+                }
+                else
+                {
+                    axisUV = (ry + axisPx + 0.5f) / texHf;
+                    crossLoUV = (hi < lo ? rx : rx + lo) / texWf;
+                    crossHiUV = (hi < lo ? rx + crossCount : rx + hi + 1) / texWf;
+                    _uvs[i * 2 + 0] = new Vector2(crossLoUV, axisUV);
+                    _uvs[i * 2 + 1] = new Vector2(crossHiUV, axisUV);
+                }
+            }
+            return true;
+        }
+
+        private static bool AxisLineHasPixel(Color32[] pixels, int texW, int rx, int ry, bool axisIsHorizontal, int a, int crossCount)
+        {
+            for (int c = 0; c < crossCount; c++)
+            {
+                int px = axisIsHorizontal ? rx + a : rx + c;
+                int py = axisIsHorizontal ? ry + c : ry + a;
+                if (pixels[py * texW + px].a > 10) return true;
+            }
+            return false;
+        }
+
+        private static void ScanCrossExtent(Color32[] pixels, int texW, int rx, int ry, bool axisIsHorizontal, int a, int crossCount, out int lo, out int hi)
+        {
+            lo = int.MaxValue; hi = int.MinValue;
+            for (int c = 0; c < crossCount; c++)
+            {
+                int px = axisIsHorizontal ? rx + a : rx + c;
+                int py = axisIsHorizontal ? ry + c : ry + a;
+                if (pixels[py * texW + px].a > 10)
+                {
+                    if (c < lo) lo = c;
+                    if (c > hi) hi = c;
+                }
+            }
+            if (hi < lo) { lo = 0; hi = -1; }
+        }
+
+        private void BuildFallbackProfile(Bounds bounds, bool axisIsHorizontal, int n, Texture2D tex, Rect texRect)
+        {
+            if (axisIsHorizontal)
+            {
+                _axisLen = bounds.extents.x;
+                _halfWide = bounds.extents.y;
+            }
+            else
+            {
+                _axisLen = bounds.extents.y;
+                _halfWide = bounds.extents.x;
+            }
+            _segLen = _axisLen / n;
+
             float u0 = texRect.x / tex.width;
             float u1 = (texRect.x + texRect.width) / tex.width;
             float v0n = texRect.y / tex.height;
             float v1n = (texRect.y + texRect.height) / tex.height;
             float uMid = (u0 + u1) * 0.5f;
             float vMid = (v0n + v1n) * 0.5f;
-            bool axisIsHorizontal = Mathf.Abs(_axisDirLocal.x) > 0.5f;
             for (int i = 0; i <= n; i++)
             {
                 float t = (float)i / n;
+                _segHalf[i] = _halfWide;
+                _segCenter[i] = 0f;
                 if (axisIsHorizontal)
                 {
                     float u = Mathf.Lerp(uMid, u0, t);
@@ -139,11 +270,6 @@ namespace SkinSyncMod
                     _uvs[i * 2 + 1] = new Vector2(u1, v);
                 }
             }
-            _mat.mainTexture = tex;
-            _mr.sortingLayerID = _sr.sortingLayerID;
-            _mr.sortingOrder = _sr.sortingOrder;
-            _mat.color = _sr.color;
-            _physicsInited = false;
         }
 
         private void InitBonesAt(Vector2 root, Vector2 worldAxisDir)
@@ -297,8 +423,9 @@ namespace SkinSyncMod
                 else dir = (_smoothPos[i] - _smoothPos[i - 1]).normalized;
                 if (dir.sqrMagnitude < 1e-6f) dir = worldAxis;
                 Vector2 perp = new Vector2(-dir.y, dir.x) * perpSign;
-                Vector2 left = _smoothPos[i] - perp * _halfWide;
-                Vector2 right = _smoothPos[i] + perp * _halfWide;
+                Vector2 center = _smoothPos[i] + perp * _segCenter[i];
+                Vector2 left = center - perp * _segHalf[i];
+                Vector2 right = center + perp * _segHalf[i];
                 _verts[i * 2 + 0] = meshTf.InverseTransformPoint(left);
                 _verts[i * 2 + 1] = meshTf.InverseTransformPoint(right);
             }

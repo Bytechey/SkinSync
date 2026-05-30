@@ -233,7 +233,11 @@ namespace SkinSyncMod
         {
             var dict = new Dictionary<string, Sprite>();
             string basePath = SkinPathResolver.GetSkinDir(character);
-            if (!Directory.Exists(basePath)) return dict;
+            if (!Directory.Exists(basePath))
+            {
+                SkinSync.LogBoth($"[SkinSync] 本机缺少皮肤目录 {character}（{basePath}），无法显示该玩家皮肤；请将该皮肤包放入 plugins/CustomSprites/{character}");
+                return dict;
+            }
             var baseSizes = BaseSizesLoader.Load(character);
             foreach (var filePath in Directory.GetFiles(basePath, "*.png", SearchOption.AllDirectories))
             {
