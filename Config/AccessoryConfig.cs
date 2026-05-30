@@ -54,7 +54,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] accessories.json parse failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("accessories.json parse failed: " + ex.Message);
             }
             return list;
         }

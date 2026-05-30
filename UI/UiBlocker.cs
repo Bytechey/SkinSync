@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using BepInEx.Logging;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -19,7 +18,7 @@ namespace SkinSyncMod
 
         internal static bool IsBlocking => _isBlocking;
 
-        internal static void Block(ManualLogSource log)
+        internal static void Block()
         {
             try
             {
@@ -35,11 +34,11 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                log?.LogWarning($"[SkinSync] UiBlocker.Block 失败：{ex.Message}");
+                ModLog.Warning($"UiBlocker.Block 失败：{ex.Message}");
             }
         }
 
-        internal static void EnforceBlocked(ManualLogSource log)
+        internal static void EnforceBlocked()
         {
             if (!_isBlocking) return;
             try
@@ -53,7 +52,7 @@ namespace SkinSyncMod
             catch { }
         }
 
-        internal static void Unblock(ManualLogSource log)
+        internal static void Unblock()
         {
             try
             {
@@ -66,7 +65,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                log?.LogWarning($"[SkinSync] UiBlocker.Unblock 失败：{ex.Message}");
+                ModLog.Warning($"UiBlocker.Unblock 失败：{ex.Message}");
             }
         }
     }

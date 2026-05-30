@@ -56,11 +56,11 @@ namespace SkinSyncMod
                     if (skin.Length == 0) continue;
                     _cache[sid] = skin;
                 }
-                Debug.Log($"[SkinSync] SkinCacheStore loaded {_cache.Count} entries from {FilePath}");
+                SkinSyncMod.ModLog.Info($"SkinCacheStore loaded {_cache.Count} entries from {FilePath}");
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] SkinCacheStore load failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("SkinCacheStore load failed: " + ex.Message);
             }
         }
 
@@ -76,7 +76,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] SkinCacheStore save failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("SkinCacheStore save failed: " + ex.Message);
             }
         }
     }

@@ -34,12 +34,12 @@ namespace SkinSyncMod.Patches
                 if (KrokoshaBridge.TryGetNetBodyFromId(kv.Key, out _, out GameObject chara, out _) && chara != null)
                 {
                     SkinApplier.ApplySkinToPlayer(chara, kv.Value);
-                    SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 延迟应用：netId {kv.Key} → {kv.Value} 成功");
+                    SkinSyncMod.ModLog.Info($"延迟应用：netId {kv.Key} → {kv.Value} 成功");
                     (done ?? (done = new List<uint>())).Add(kv.Key);
                 }
                 else if (_enqueuedAt.TryGetValue(kv.Key, out float at) && Time.unscaledTime - at > MaxWaitSec)
                 {
-                    SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 延迟应用：netId {kv.Key} → {kv.Value} 超过 {MaxWaitSec}s 未注册，放弃");
+                    SkinSyncMod.ModLog.Info($"延迟应用：netId {kv.Key} → {kv.Value} 超过 {MaxWaitSec}s 未注册，放弃");
                     (expired ?? (expired = new List<uint>())).Add(kv.Key);
                 }
             }

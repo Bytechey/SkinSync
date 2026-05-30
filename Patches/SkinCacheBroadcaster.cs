@@ -66,7 +66,7 @@ namespace SkinSyncMod.Patches
                 {
                     _serverSkinTable[localNetId] = localSkin;
                     _localSeeded = true;
-                    SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 主机：本地皮肤已写表 (netId {localNetId} → {localSkin})");
+                    SkinSyncMod.ModLog.Info($"主机：本地皮肤已写表 (netId {localNetId} → {localSkin})");
                 }
             }
 
@@ -83,7 +83,7 @@ namespace SkinSyncMod.Patches
                     MultiplayerSender.ServerSendSkinChangeToClient(entry.ClientId, kv.Key, kv.Value);
                     sent++;
                 }
-                SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 主机：检测到 client {entry.ClientId} (netId {entry.NetId}) 加入；表共 {_serverSkinTable.Count} 条，单播 {sent} 条给它");
+                SkinSyncMod.ModLog.Info($"主机：检测到 client {entry.ClientId} (netId {entry.NetId}) 加入；表共 {_serverSkinTable.Count} 条，单播 {sent} 条给它");
             }
         }
     }

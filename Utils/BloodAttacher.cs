@@ -105,7 +105,7 @@ namespace SkinSyncMod
                 Color c = lightSrc.Value; c.a = 1f;
                 mat.SetColor("_BloodLight", c);
             }
-            SkinSyncMod.SkinSync.LogBoth($"[SkinSync] limb {limb.gameObject.name} 受伤血色：dark={(darkSrc.HasValue ? darkSrc.Value.ToString() : "n/a")} light={(lightSrc.HasValue ? lightSrc.Value.ToString() : "n/a")} mat={mat.name}");
+            SkinSyncMod.ModLog.Info($"limb {limb.gameObject.name} 受伤血色：dark={(darkSrc.HasValue ? darkSrc.Value.ToString() : "n/a")} light={(lightSrc.HasValue ? lightSrc.Value.ToString() : "n/a")} mat={mat.name}");
         }
 
         /// <summary>给单个 limb 按 character 设受伤血色 + 染 BleedParticle prefab；Limb.Awake patch 用。</summary>
@@ -224,7 +224,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] Load blood particle texture failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("Load blood particle texture failed: " + ex.Message);
                 return null;
             }
         }

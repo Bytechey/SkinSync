@@ -1,4 +1,4 @@
-﻿using BepInEx;
+using BepInEx;
 using HarmonyLib;
 using SkinSyncMod.Network;
 using SkinSyncMod.Patches;
@@ -14,21 +14,7 @@ namespace SkinSyncMod
     public class SkinSync : BaseUnityPlugin
     {
         internal static Harmony harmony;
-        internal static BepInEx.Logging.ManualLogSource Log;
 
-        /// <summary>同时写 BepInEx 日志和 Unity Debug.Log（让消息也进入游戏内 console）。</summary>
-        internal static void LogBoth(string msg)
-        {
-            Log?.LogInfo(msg);
-            UnityEngine.Debug.Log(msg);
-        }
-
-        /// <summary>同 LogBoth，但走 warning 级别。</summary>
-        internal static void LogWarnBoth(string msg)
-        {
-            Log?.LogWarning(msg);
-            UnityEngine.Debug.LogWarning(msg);
-        }
         private List<string> availableSkins = new List<string>();
         private int currentSkinIndex = 0;
 
@@ -61,15 +47,17 @@ namespace SkinSyncMod
         private void Awake()
         {
             _instance = this;
-            Log = Logger;
+            ModLog.Init(Logger);
             gameObject.hideFlags = HideFlags.HideAndDontSave;
             UnityEngine.Object.DontDestroyOnLoad(gameObject);
             harmony = new Harmony("com.Bytechey.skinsync");
-            KrokoshaBridge.Init(Logger);
+            KrokoshaBridge.Init();
             RegisterPatches();
             Settings = new SkinSyncSettings(Config);
+            ModLog.ShowInConsole = Settings.ShowLogInConsole.Value;
+            Settings.ShowLogInConsole.SettingChanged += (_, __) => ModLog.ShowInConsole = Settings.ShowLogInConsole.Value;
             ScanAvailableSkins();
-            LogBoth($"[SkinSync] SkinSync Mod loaded. Found {availableSkins.Count} skins. Krokosha={(KrokoshaBridge.IsAvailable ? "yes" : "no")}.");
+            ModLog.Info($"SkinSync Mod loaded. Found {availableSkins.Count} skins. Krokosha={(KrokoshaBridge.IsAvailable ? "yes" : "no")}.");
             if (KrokoshaBridge.IsAvailable)
             {
                 gameObject.AddComponent<SkinSyncMod.Patches.SkinCacheBroadcaster>();
@@ -109,10 +97,10 @@ namespace SkinSyncMod
                 onSetAccessoryTransform: SetAccessoryTransform,
                 onSaveTail: SaveCurrentTailToSettings,
                 onResetTail: ResetCurrentTailToDefaults,
-                onOpened: () => UiBlocker.Block(Logger),
-                onClosed: () => UiBlocker.Unblock(Logger));
+                onOpened: () => UiBlocker.Block(),
+                onClosed: () => UiBlocker.Unblock());
 
-            MenuButtonInjector.Setup(Logger, () => _window.OpenPanel());
+            MenuButtonInjector.Setup(() => _window.OpenPanel());
             UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
             Application.quitting += OnApplicationQuitting;
         }
@@ -153,7 +141,7 @@ namespace SkinSyncMod
             if (_quitting) return;
             _quitting = true;
             try { MenuButtonInjector.Dispose(); } catch { }
-            try { UiBlocker.Unblock(Logger); } catch { }
+            try { UiBlocker.Unblock(); } catch { }
             try { UnityEngine.SceneManagement.SceneManager.sceneLoaded -= OnSceneLoaded; } catch { }
             try { Application.quitting -= OnApplicationQuitting; } catch { }
         }
@@ -165,7 +153,7 @@ namespace SkinSyncMod
             string customSpritesPath = Path.Combine(Paths.PluginPath, "CustomSprites");
             if (!Directory.Exists(customSpritesPath))
             {
-                Logger.LogWarning($"CustomSprites folder not found at {customSpritesPath}");
+                ModLog.Warning($"CustomSprites folder not found at {customSpritesPath}");
                 return;
             }
 
@@ -179,9 +167,9 @@ namespace SkinSyncMod
             availableSkins.AddRange(dirs);
 
             if (availableSkins.Count == 0)
-                Logger.LogWarning("No skin folders found in CustomSprites.");
+                ModLog.Warning("No skin folders found in CustomSprites.");
             else
-                Logger.LogInfo($"Available skins: {string.Join(", ", availableSkins)}");
+                ModLog.Info($"Available skins: {string.Join(", ", availableSkins)}");
         }
 
         /// <summary>把字符串里的数字段当整数比，剩下按字母（忽略大小写）比；让 st1/st2/st10 按数值顺序。</summary>
@@ -215,7 +203,7 @@ namespace SkinSyncMod
         private void Update()
         {
             if (_quitting) return;
-            UiBlocker.EnforceBlocked(Logger);
+            UiBlocker.EnforceBlocked();
 
             if (SkinSyncSettings.TriggeredThisFrame(Settings.TogglePanelHotkey))
             {
@@ -247,7 +235,7 @@ namespace SkinSyncMod
             else if (SkinSyncSettings.TriggeredThisFrame(Settings.RescanSkinsHotkey))
             {
                 ScanAvailableSkins();
-                Logger.LogInfo("Rescanned skins.");
+                ModLog.Info("Rescanned skins.");
             }
         }
 
@@ -260,7 +248,7 @@ namespace SkinSyncMod
 
         private void OnDisable()
         {
-            try { UiBlocker.Unblock(Logger); } catch { }
+            try { UiBlocker.Unblock(); } catch { }
         }
 
         private string _persistentApplied;
@@ -453,7 +441,7 @@ namespace SkinSyncMod
                     localNetBodyBox = box;
                     localNetId = nid;
                     localChara = chara;
-                    LogBoth($"[SkinSync] 多人模式：找到本地 NetBody (netId {localNetId})");
+                    ModLog.Info($"多人模式：找到本地 NetBody (netId {localNetId})");
                     ReportLocalSkinIfNeeded();
                 }
             }
@@ -467,13 +455,13 @@ namespace SkinSyncMod
                 if (playerBody != null)
                 {
                     localPlayerObject = playerBody.transform.parent?.gameObject ?? playerBody.gameObject;
-                    LogBoth($"[SkinSync] 单机模式：通过 Body 找到本地玩家：{localPlayerObject.name}");
+                    ModLog.Info($"单机模式：通过 Body 找到本地玩家：{localPlayerObject.name}");
                 }
                 else
                 {
                     localPlayerObject = GameObject.FindGameObjectWithTag("Player");
                     if (localPlayerObject != null)
-                        LogBoth($"[SkinSync] 单机模式：通过 Tag 找到本地玩家：{localPlayerObject.name}");
+                        ModLog.Info($"单机模式：通过 Tag 找到本地玩家：{localPlayerObject.name}");
                 }
             }
 
@@ -497,7 +485,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Logger.LogWarning("[SkinSync] write SkinCacheStore failed: " + ex.Message);
+                ModLog.Warning("write SkinCacheStore failed: " + ex.Message);
             }
 
             // 预览缓存失效——切皮肤后再展开角色 tab 立即看新缩略图。
@@ -512,24 +500,24 @@ namespace SkinSyncMod
                 {
                     MultiplayerSender.SendSkinChange(localNetId, skinID);
                     _localSkinReportedNetId = localNetId;
-                    LogBoth($"[SkinSync] 角色加载模式：多人 — 切到 {skinID} 并已广播");
+                    ModLog.Info($"角色加载模式：多人 — 切到 {skinID} 并已广播");
                 }
                 else
                 {
-                    LogBoth($"[SkinSync] 角色加载模式：多人主菜单 — 仅本地应用 {skinID}，不广播");
+                    ModLog.Info($"角色加载模式：多人主菜单 — 仅本地应用 {skinID}，不广播");
                 }
             }
             else if (localPlayerObject != null)
             {
                 SkinApplier.ApplySkinToPlayer(localPlayerObject, skinID);
-                LogBoth($"[SkinSync] 角色加载模式：单机 — 切到 {skinID}（基于本地玩家）");
+                ModLog.Info($"角色加载模式：单机 — 切到 {skinID}（基于本地玩家）");
             }
             else
             {
                 int n = SkinApplier.ApplyToScene(skinID);
                 if (n > 0)
                 {
-                    LogBoth($"[SkinSync] 角色加载模式：单机兜底 — 切到 {skinID}（场景扫到 {n} 个 Body）");
+                    ModLog.Info($"角色加载模式：单机兜底 — 切到 {skinID}（场景扫到 {n} 个 Body）");
                     _switchAppliedToScene = true;
                 }
                 else
@@ -552,7 +540,7 @@ namespace SkinSyncMod
             if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return;
             MultiplayerSender.SendSkinChange(localNetId, cached);
             _localSkinReportedNetId = localNetId;
-            LogBoth($"[SkinSync] 多人模式：本地皮肤已上报 (netId {localNetId} → {cached})");
+            ModLog.Info($"多人模式：本地皮肤已上报 (netId {localNetId} → {cached})");
         }
     }
 }
