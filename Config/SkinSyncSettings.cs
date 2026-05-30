@@ -24,8 +24,9 @@ namespace SkinSyncMod
         internal ConfigEntry<bool> HideGameWearables { get; }
         internal ConfigEntry<bool> RequireEquipmentForAccessories { get; }
 
-        // —— 日志 —— //
+        // —— 杂项 —— //
         internal ConfigEntry<bool> ShowLogInConsole { get; }
+        internal ConfigEntry<bool> AcceptUpdateNotice { get; }
 
         // —— 多人同步 —— //
         /// <summary>"OnEnter"=自己进游戏一键同步全部；"Passive"=仅响应改动事件不主动批量同步。</summary>
@@ -101,8 +102,10 @@ namespace SkinSyncMod
             RequireEquipmentForAccessories = config.Bind("Visual", "RequireEquipmentForAccessories", true,
                 "配件 accessories.json 中配了 requireWornSlot 时，玩家未穿戴对应装备 slot 则隐藏该配件。关闭此开关让配件无视依赖永远显示。");
 
-            ShowLogInConsole = config.Bind("Logging", "ShowInConsole", false,
+            ShowLogInConsole = config.Bind("Misc", "ShowInConsole", false,
                 "是否把模组日志同步打印到游戏内控制台（` 键打开）。关闭时仅写入 BepInEx 日志。");
+            AcceptUpdateNotice = config.Bind("Misc", "AcceptUpdateNotice", true,
+                "是否在启动时检查 GitHub 新版本并在游戏内提示。关闭则不检测不提示。");
 
             SyncMode = config.Bind("Sync", "Mode", "OnEnter",
                 "多人同步策略。OnEnter=自己进入游戏时一键同步皮肤+配件+尾巴；Passive=仅在改动配件/尾巴时被动广播。");

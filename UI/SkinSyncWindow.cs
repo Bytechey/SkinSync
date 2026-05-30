@@ -289,10 +289,16 @@ namespace SkinSyncMod
             GUILayout.EndVertical();
 
             GUILayout.Space(12f);
-            GUILayout.Label(SkinSyncI18n.T("sec.logging"), BlackWhiteSkin.HeaderStyle);
+            GUILayout.Label(SkinSyncI18n.T("sec.misc"), BlackWhiteSkin.HeaderStyle);
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
             bool showLog = DrawSwitch(SkinSyncI18n.T("sw.show_log_in_console"), _cfg.ShowLogInConsole.Value);
             if (showLog != _cfg.ShowLogInConsole.Value) _cfg.ShowLogInConsole.Value = showLog;
+            bool acceptUpdate = DrawSwitch(SkinSyncI18n.T("sw.accept_update_notice"), _cfg.AcceptUpdateNotice.Value);
+            if (acceptUpdate != _cfg.AcceptUpdateNotice.Value)
+            {
+                _cfg.AcceptUpdateNotice.Value = acceptUpdate;
+                SkinSyncMod.Patches.UpdateChecker.Enabled = acceptUpdate;
+            }
             GUILayout.EndVertical();
 
             GUILayout.Space(20f);

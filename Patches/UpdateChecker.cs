@@ -21,9 +21,11 @@ namespace SkinSyncMod.Patches
         private static string _latestTag = "";
         private static bool _updateAvailable;
 
+        internal static bool Enabled = true;
+
         private void Start()
         {
-            if (_checked) return;
+            if (_checked || !Enabled) return;
             _checked = true;
 
             try
@@ -84,7 +86,7 @@ namespace SkinSyncMod.Patches
 
         private void OnGUI()
         {
-            if (!_updateAvailable) return;
+            if (!_updateAvailable || !Enabled) return;
 
             var style = new GUIStyle(GUI.skin.label)
             {

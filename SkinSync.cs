@@ -56,6 +56,8 @@ namespace SkinSyncMod
             Settings = new SkinSyncSettings(Config);
             ModLog.ShowInConsole = Settings.ShowLogInConsole.Value;
             Settings.ShowLogInConsole.SettingChanged += (_, __) => ModLog.ShowInConsole = Settings.ShowLogInConsole.Value;
+            SkinSyncMod.Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
+            Settings.AcceptUpdateNotice.SettingChanged += (_, __) => SkinSyncMod.Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
             ScanAvailableSkins();
             ModLog.Info($"SkinSync Mod loaded. Found {availableSkins.Count} skins. Krokosha={(KrokoshaBridge.IsAvailable ? "yes" : "no")}.");
             if (KrokoshaBridge.IsAvailable)
