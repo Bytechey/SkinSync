@@ -12,6 +12,7 @@ namespace SkinSyncMod.Patches
         [HarmonyPostfix]
         public static void Postfix(BleedParticle __instance)
         {
+            if (!BloodRenderConfig.Enabled) return;
             try { BleedParticleRecolor.RecolorByOwner(__instance); }
             catch { }
         }
@@ -24,6 +25,7 @@ namespace SkinSyncMod.Patches
         [HarmonyPostfix]
         public static void Postfix(Limb __instance)
         {
+            if (!BloodRenderConfig.Enabled) return;
             try
             {
                 if (__instance == null) return;

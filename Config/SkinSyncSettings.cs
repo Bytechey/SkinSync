@@ -23,6 +23,7 @@ namespace SkinSyncMod
 
         internal ConfigEntry<bool> HideGameWearables { get; }
         internal ConfigEntry<bool> RequireEquipmentForAccessories { get; }
+        internal ConfigEntry<bool> RenderCustomBlood { get; }
 
         // —— 杂项 —— //
         internal ConfigEntry<bool> ShowLogInConsole { get; }
@@ -99,8 +100,11 @@ namespace SkinSyncMod
             HideGameWearables = config.Bind("Visual", "HideGameWearables", false,
                 "隐藏游戏中玩家穿戴的装备 sprite（保留装备逻辑：装甲值 / 保暖等仍正常生效），避免装备遮挡 SkinSync 配件。");
 
-            RequireEquipmentForAccessories = config.Bind("Visual", "RequireEquipmentForAccessories", true,
+            RequireEquipmentForAccessories = config.Bind("Visual", "RequireEquipmentForAccessories", false,
                 "配件 accessories.json 中配了 requireWornSlot 时，玩家未穿戴对应装备 slot 则隐藏该配件。关闭此开关让配件无视依赖永远显示。");
+
+            RenderCustomBlood = config.Bind("Visual", "RenderCustomBlood", false,
+                "是否按皮肤 blood.json 渲染自定义血液（受伤血色 / 流血 / 落地血迹 / 爆血 / 呕吐）。关闭时全部回退游戏默认并停止每帧扫描，避免性能开销。");
 
             ShowLogInConsole = config.Bind("Misc", "ShowInConsole", false,
                 "是否把模组日志同步打印到游戏内控制台（` 键打开）。关闭时仅写入 BepInEx 日志。");
