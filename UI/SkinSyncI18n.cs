@@ -21,6 +21,8 @@ namespace SkinSyncMod
             ["status.no_skin"] = "尚未选择皮肤",
 
             ["sec.hotkeys"] = "快捷键",
+            ["sec.logging"] = "日志",
+            ["sw.show_log_in_console"] = "在游戏控制台显示模组日志",
             ["sec.visual"] = "视觉",
             ["sw.hide_game_wearables"] = "隐藏游戏装备 sprite（保留装甲 / 保暖等逻辑）",
             ["sw.require_equipment"] = "配件配了 requireWornSlot 时，仅穿戴对应装备 slot 才显示",
@@ -128,6 +130,8 @@ namespace SkinSyncMod
             ["status.no_skin"] = "No skin selected",
 
             ["sec.hotkeys"] = "Hotkeys",
+            ["sec.logging"] = "Logging",
+            ["sw.show_log_in_console"] = "Show mod logs in game console",
             ["sec.visual"] = "Visual",
             ["sw.hide_game_wearables"] = "Hide game wearable sprites (keep armor / isolation logic)",
             ["sw.require_equipment"] = "Show requireWornSlot accessories only when wearing the slot equipment",

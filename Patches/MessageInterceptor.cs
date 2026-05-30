@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using LiteNetLib.Utils;
 using SkinSyncMod.Network;
 using System.Reflection;
@@ -25,7 +25,7 @@ namespace SkinSyncMod.Patches
 
             if (msgId == SkinNetworkIDs.SkinChangeMessageId)
             {
-                SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 服务端拦截皮肤消息 ID {msgId}");
+                SkinSyncMod.ModLog.Info($"服务端拦截皮肤消息 ID {msgId}");
                 SkinMessageHandlers.OnServerSkinMessage(callerclientId, ref reader);
                 return false;
             }
@@ -64,7 +64,7 @@ namespace SkinSyncMod.Patches
 
             if (msgId == SkinNetworkIDs.SkinChangeMessageId)
             {
-                SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 客户端拦截皮肤消息 ID {msgId}");
+                SkinSyncMod.ModLog.Info($"客户端拦截皮肤消息 ID {msgId}");
                 SkinMessageHandlers.OnClientSkinMessage(callerclientId, ref reader);
                 return false;
             }

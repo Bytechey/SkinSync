@@ -1,6 +1,5 @@
 using System;
 using System.Reflection;
-using BepInEx.Logging;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -16,14 +15,12 @@ namespace SkinSyncMod
     {
         private const string InjectedName = "SkinSync_MenuButton";
 
-        private static ManualLogSource _log;
         private static Action _onClick;
         /// <summary>注入后的按钮 RectTransform；patch AdaptiveButton.overlayActive 时用来阻穿透。</summary>
         internal static RectTransform InjectedRect;
 
-        internal static void Setup(ManualLogSource log, Action onClick)
+        internal static void Setup(Action onClick)
         {
-            _log = log;
             _onClick = onClick;
             // SkinSync 主 Harmony 实例已经 PatchAll 过 [HarmonyPatch] 类型，
             // PreRunScriptStartPatch 会自动被收，无需在此再 new 一个 Harmony。
@@ -40,20 +37,20 @@ namespace SkinSyncMod
             if (scene.name != "PreGen") return;
             if (PreRunScript.instance == null) return;
             try { InjectOnce(PreRunScript.instance); }
-            catch (Exception ex) { _log?.LogWarning("[SkinSync] sceneLoaded 注入失败：" + ex.Message); }
+            catch (Exception ex) { ModLog.Warning("sceneLoaded 注入失败：" + ex.Message); }
         }
 
         internal static void OnPreRunScriptStarted(PreRunScript pre)
         {
             try { InjectOnce(pre); }
-            catch (Exception ex) { _log?.LogWarning("[SkinSync] 主菜单按钮注入失败：" + ex.Message); }
+            catch (Exception ex) { ModLog.Warning("主菜单按钮注入失败：" + ex.Message); }
         }
 
         private static void InjectOnce(PreRunScript pre)
         {
             if (pre == null || pre.loadButton == null)
             {
-                _log?.LogWarning("[SkinSync] PreRunScript / loadButton 为空，跳过注入。");
+                ModLog.Warning("PreRunScript / loadButton 为空，跳过注入。");
                 return;
             }
 
@@ -99,13 +96,13 @@ namespace SkinSyncMod
             clone.transform.SetAsLastSibling();
             InjectedRect = rt;
 
-            _log?.LogInfo($"[SkinSync] 主菜单按钮已注入：parent={parent.name}");
+            ModLog.Info($"主菜单按钮已注入：parent={parent.name}");
         }
 
         private static void InvokeOnClick()
         {
             try { _onClick?.Invoke(); }
-            catch (Exception ex) { _log?.LogWarning("[SkinSync] 按钮点击异常：" + ex.Message); }
+            catch (Exception ex) { ModLog.Warning("按钮点击异常：" + ex.Message); }
         }
 
         private static void DestroyLocalizers(GameObject clone)

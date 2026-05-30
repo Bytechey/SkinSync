@@ -1,4 +1,4 @@
-﻿using BepInEx;
+using BepInEx;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
@@ -100,7 +100,7 @@ namespace SkinSyncMod
                 spriteDict = LoadCharacterSprites(characterName);
                 if (spriteDict == null || spriteDict.Count == 0)
                 {
-                    SkinSyncMod.SkinSync.Log?.LogWarning($"[SkinSync] No sprites found for character {characterName}");
+                    SkinSyncMod.ModLog.Warning($"No sprites found for character {characterName}");
                     return;
                 }
                 _skinCache[characterName] = spriteDict;
@@ -235,7 +235,7 @@ namespace SkinSyncMod
             string basePath = SkinPathResolver.GetSkinDir(character);
             if (!Directory.Exists(basePath))
             {
-                SkinSync.LogBoth($"[SkinSync] 本机缺少皮肤目录 {character}（{basePath}），无法显示该玩家皮肤；请将该皮肤包放入 plugins/CustomSprites/{character}");
+                SkinSyncMod.ModLog.Info($"本机缺少皮肤目录 {character}（{basePath}），无法显示该玩家皮肤；请将该皮肤包放入 plugins/CustomSprites/{character}");
                 return dict;
             }
             var baseSizes = BaseSizesLoader.Load(character);

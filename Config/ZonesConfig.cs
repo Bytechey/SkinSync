@@ -83,7 +83,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] zones.json parse failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("zones.json parse failed: " + ex.Message);
                 return (null, null);
             }
             var geom = ComputeGeometry(maskPath, spriteW, spriteH);

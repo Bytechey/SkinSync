@@ -125,7 +125,7 @@ namespace SkinSyncMod
             try { pixels = tex.GetPixels32(); }
             catch (System.Exception e)
             {
-                Debug.LogWarning($"[SkinSync] tail texture not readable, fallback to bounds ribbon: {e.Message}");
+                SkinSyncMod.ModLog.Warning($"tail texture not readable, fallback to bounds ribbon: {e.Message}");
                 return false;
             }
 

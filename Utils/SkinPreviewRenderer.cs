@@ -133,7 +133,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] preview LoadWings failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("preview LoadWings failed: " + ex.Message);
             }
             return res;
         }
@@ -190,7 +190,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] preview LoadPng failed: " + path + " : " + ex.Message);
+                SkinSyncMod.ModLog.Warning("preview LoadPng failed: " + path + " : " + ex.Message);
             }
             return p;
         }

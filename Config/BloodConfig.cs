@@ -73,7 +73,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] blood.json parse failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("blood.json parse failed: " + ex.Message);
                 return null;
             }
         }

@@ -54,7 +54,7 @@ namespace SkinSyncMod.Network
         public static Type NetPlayerType => _netPlayerType;
 
         /// <summary>启动时调用一次；探测 KrokoshaCasualtiesMP 程序集并缓存反射句柄。</summary>
-        public static void Init(ManualLogSource logger)
+        public static void Init()
         {
             if (_initialized) return;
             _initialized = true;
@@ -68,7 +68,7 @@ namespace SkinSyncMod.Network
                 }
                 if (krokoshaAsm == null)
                 {
-                    logger?.LogInfo("KrokoshaBridge: KrokoshaCasualtiesMP not found, multiplayer features disabled.");
+                    SkinSyncMod.ModLog.Info("KrokoshaBridge: KrokoshaCasualtiesMP not found, multiplayer features disabled.");
                     return;
                 }
 
@@ -80,7 +80,7 @@ namespace SkinSyncMod.Network
 
                 if (_netType == null || _netBodyType == null || _netPlayerType == null)
                 {
-                    logger?.LogWarning("KrokoshaBridge: critical types missing, multiplayer features disabled.");
+                    SkinSyncMod.ModLog.Warning("KrokoshaBridge: critical types missing, multiplayer features disabled.");
                     return;
                 }
 
@@ -123,11 +123,11 @@ namespace SkinSyncMod.Network
                 }
 
                 IsAvailable = true;
-                logger?.LogInfo("KrokoshaBridge: KrokoshaCasualtiesMP detected, multiplayer features enabled.");
+                SkinSyncMod.ModLog.Info("KrokoshaBridge: KrokoshaCasualtiesMP detected, multiplayer features enabled.");
             }
             catch (Exception ex)
             {
-                logger?.LogWarning("KrokoshaBridge: init failed: " + ex);
+                SkinSyncMod.ModLog.Warning("KrokoshaBridge: init failed: " + ex);
                 IsAvailable = false;
             }
         }

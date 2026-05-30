@@ -33,7 +33,7 @@ namespace SkinSyncMod.Patches
             }
             catch (Exception ex)
             {
-                Debug.LogWarning("[SkinSync] UpdateChecker init failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("UpdateChecker init failed: " + ex.Message);
                 return;
             }
 
@@ -49,7 +49,7 @@ namespace SkinSyncMod.Patches
 
                 if (www.result != UnityWebRequest.Result.Success)
                 {
-                    Debug.LogWarning("[SkinSync] Update check failed: " + www.error);
+                    SkinSyncMod.ModLog.Warning("Update check failed: " + www.error);
                     yield break;
                 }
 
@@ -65,11 +65,11 @@ namespace SkinSyncMod.Patches
                 if (IsNewer(_currentVersion, _latestTag))
                 {
                     _updateAvailable = true;
-                    Debug.LogWarning($"[SkinSync] Update available: {_currentVersion} -> {_latestTag}");
+                    SkinSyncMod.ModLog.Warning($"Update available: {_currentVersion} -> {_latestTag}");
                 }
                 else
                 {
-                    Debug.Log($"[SkinSync] Up to date. Current: {_currentVersion}, Latest: {_latestTag}");
+                    SkinSyncMod.ModLog.Info($"Up to date. Current: {_currentVersion}, Latest: {_latestTag}");
                 }
             }
         }

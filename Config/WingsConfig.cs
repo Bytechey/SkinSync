@@ -53,7 +53,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning("[SkinSync] wings.json parse failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("wings.json parse failed: " + ex.Message);
                 return def;
             }
         }

@@ -288,6 +288,13 @@ namespace SkinSyncMod
             CaptureKeyDownIfNeeded();
             GUILayout.EndVertical();
 
+            GUILayout.Space(12f);
+            GUILayout.Label(SkinSyncI18n.T("sec.logging"), BlackWhiteSkin.HeaderStyle);
+            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
+            bool showLog = DrawSwitch(SkinSyncI18n.T("sw.show_log_in_console"), _cfg.ShowLogInConsole.Value);
+            if (showLog != _cfg.ShowLogInConsole.Value) _cfg.ShowLogInConsole.Value = showLog;
+            GUILayout.EndVertical();
+
             GUILayout.Space(20f);
             GUILayout.EndScrollView();
         }
@@ -397,7 +404,7 @@ namespace SkinSyncMod
             }
             catch (System.Exception ex)
             {
-                UnityEngine.Debug.LogWarning("[SkinSync] preview build failed for " + skin + ": " + ex.Message);
+                SkinSyncMod.ModLog.Warning("preview build failed for " + skin + ": " + ex.Message);
             }
             if (tex != null)
             {

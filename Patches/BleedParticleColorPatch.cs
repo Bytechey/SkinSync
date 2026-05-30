@@ -67,7 +67,7 @@ namespace SkinSyncMod.Patches
             Color32? main = cfg.ParticleStartColor ?? cfg.BloodLight;
             if (!main.HasValue) return;
             ApplyColor(inst, (Color)main.Value);
-            SkinSyncMod.SkinSync.LogBoth($"[SkinSync] BleedParticle prefab 已染色：{character} → ({main.Value.r},{main.Value.g},{main.Value.b})");
+            SkinSyncMod.ModLog.Info($"BleedParticle prefab 已染色：{character} → ({main.Value.r},{main.Value.g},{main.Value.b})");
         }
 
         public static void RecolorByOwner(BleedParticle inst)

@@ -1,4 +1,4 @@
-﻿using LiteNetLib;
+using LiteNetLib;
 using LiteNetLib.Utils;
 using SkinSyncMod.Network;
 using UnityEngine;
@@ -18,7 +18,7 @@ namespace SkinSyncMod
             bool hasLocal = KrokoshaBridge.TryGetLocalNetBody(out _, out uint localNetId, out _);
             bool hasCid = KrokoshaBridge.TryGetLocalClientId(out uint localCid);
             bool isLocalEcho = (hasLocal && localNetId == msg.netId) || (hasCid && localCid == msg.netId);
-            SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 客户端收到皮肤切换：{msg.skinID} (msg.netId {msg.netId}, local netId {(hasLocal ? localNetId.ToString() : "n/a")}, local clientId {(hasCid ? localCid.ToString() : "n/a")}, echo={isLocalEcho})");
+            SkinSyncMod.ModLog.Info($"客户端收到皮肤切换：{msg.skinID} (msg.netId {msg.netId}, local netId {(hasLocal ? localNetId.ToString() : "n/a")}, local clientId {(hasCid ? localCid.ToString() : "n/a")}, echo={isLocalEcho})");
 
             if (!isLocalEcho)
             {
@@ -36,11 +36,11 @@ namespace SkinSyncMod
         {
             SkinChangeMessage msg = new SkinChangeMessage();
             msg.Deserialize(reader);
-            SkinSyncMod.SkinSync.LogBoth($"[SkinSync] 服务端收到客户端 {callerId} 的皮肤切换请求：{msg.skinID} (netId {msg.netId})");
+            SkinSyncMod.ModLog.Info($"服务端收到客户端 {callerId} 的皮肤切换请求：{msg.skinID} (netId {msg.netId})");
 
             if (callerId != msg.netId)
             {
-                Debug.LogWarning($"[SkinSync] Cheat attempt: client {callerId} tried to change skin for {msg.netId}");
+                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} tried to change skin for {msg.netId}");
                 return;
             }
 
@@ -62,7 +62,7 @@ namespace SkinSyncMod
             if (!KrokoshaBridge.TryGetNetBodyFromId(netId, out _, out GameObject playerObj, out _))
             {
                 Patches.PendingSkinApplier.Enqueue(netId, characterName);
-                SkinSyncMod.SkinSync.LogBoth($"[SkinSync] NetBody netId {netId} 暂未注册，已加入待应用队列：{characterName}");
+                SkinSyncMod.ModLog.Info($"NetBody netId {netId} 暂未注册，已加入待应用队列：{characterName}");
                 return;
             }
             if (playerObj == null)
@@ -92,7 +92,7 @@ namespace SkinSyncMod
             msg.Deserialize(reader);
             if (callerId != msg.netId)
             {
-                Debug.LogWarning($"[SkinSync] Cheat attempt: client {callerId} tried accessory sync for {msg.netId}");
+                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} tried accessory sync for {msg.netId}");
                 return;
             }
             ApplyAccessoryOverride(msg);
@@ -135,7 +135,7 @@ namespace SkinSyncMod
             msg.Deserialize(reader);
             if (callerId != msg.netId)
             {
-                Debug.LogWarning($"[SkinSync] Cheat attempt: client {callerId} tried tail sync for {msg.netId}");
+                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} tried tail sync for {msg.netId}");
                 return;
             }
             ApplyTailOverride(msg);

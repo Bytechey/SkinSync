@@ -54,11 +54,11 @@ namespace SkinSyncMod
             foreach (var entry in entries)
             {
                 Limb limb = body.LimbByName(entry.Limb);
-                if (limb == null) { Debug.LogWarning($"[SkinSync] accessory {entry.Id} target limb {entry.Limb} not found"); continue; }
+                if (limb == null) { SkinSyncMod.ModLog.Warning($"accessory {entry.Id} target limb {entry.Limb} not found"); continue; }
                 Sprite sprite = ResolveAccessorySprite(sprites, entry.Sprite, entry.Limb, isRight);
                 if (sprite == null)
                 {
-                    Debug.LogWarning($"[SkinSync] accessory {entry.Id} sprite {entry.Sprite} not loaded");
+                    SkinSyncMod.ModLog.Warning($"accessory {entry.Id} sprite {entry.Sprite} not loaded");
                     continue;
                 }
 
@@ -105,11 +105,11 @@ namespace SkinSyncMod
                     foreach (var sec in entry.SecondaryLimbs)
                     {
                         Limb secLimb = body.LimbByName(sec.Limb);
-                        if (secLimb == null) { Debug.LogWarning($"[SkinSync] accessory {entry.Id} secondary limb {sec.Limb} not found"); continue; }
+                        if (secLimb == null) { SkinSyncMod.ModLog.Warning($"accessory {entry.Id} secondary limb {sec.Limb} not found"); continue; }
                         Sprite secSprite = ResolveAccessorySprite(sprites, sec.Sprite, sec.Limb, isRight);
                         if (secSprite == null)
                         {
-                            Debug.LogWarning($"[SkinSync] accessory {entry.Id} secondary sprite {sec.Sprite} not loaded");
+                            SkinSyncMod.ModLog.Warning($"accessory {entry.Id} secondary sprite {sec.Sprite} not loaded");
                             continue;
                         }
                         var secGo = AttachOne(
