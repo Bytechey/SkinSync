@@ -25,6 +25,7 @@ namespace SkinSyncMod
 
         private void Update()
         {
+            if (!BloodRenderConfig.Enabled) return;
             if (Time.unscaledTime < _nextTick) return;
             _nextTick = Time.unscaledTime + TickIntervalSec;
 
@@ -91,8 +92,18 @@ namespace SkinSyncMod
 
         private static bool TryResolveCharacter(Vector2 pos, out string character)
         {
-            if (SkinApplier.TryGetCharacterByPosition(pos, OwnerSearchRadius, out character)) return true;
-            return SkinApplier.TryGetAnyAppliedCharacter(out character);
+            if (SkinApplier.TryGetCharacterByPosition(pos, OwnerSearchRadius, out character))
+            {
+                SkinSyncMod.ModLog.Info($"血迹 owner 反查：位置 {pos} → {character}（按距离）");
+                return true;
+            }
+            if (SkinApplier.TryGetAnyAppliedCharacter(out character))
+            {
+                SkinSyncMod.ModLog.Info($"血迹 owner 反查：位置 {pos} → {character}（单角色兜底）");
+                return true;
+            }
+            SkinSyncMod.ModLog.Info($"血迹 owner 反查失败：位置 {pos}（多角色且半径 {OwnerSearchRadius} 内无匹配 Body）");
+            return false;
         }
 
         private static bool BumpAndCheckGiveUp(Dictionary<int, int> attempts, int id)

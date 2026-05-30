@@ -25,6 +25,7 @@ namespace SkinSyncMod
 
         private void Update()
         {
+            if (!BloodRenderConfig.Enabled) return;
             if (_body == null || string.IsNullOrEmpty(_character)) return;
             if (Time.unscaledTime < _nextTick) return;
             _nextTick = Time.unscaledTime + TickIntervalSec;

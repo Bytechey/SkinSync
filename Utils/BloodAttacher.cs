@@ -17,32 +17,43 @@ namespace SkinSyncMod
         private static readonly System.Reflection.FieldInfo _waterBleedField =
             typeof(Limb).GetField("waterBleedPart", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
 
-        /// <summary>Apply：每个 Body 切皮肤后调一次。读 blood.json 缺则跳过保留游戏默认。</summary>
+        private static readonly System.Collections.Generic.Dictionary<int, (Color dark, Color light)> _origLimbBlood
+            = new System.Collections.Generic.Dictionary<int, (Color dark, Color light)>();
+        private static readonly System.Collections.Generic.Dictionary<int, ParticleState> _origParticles
+            = new System.Collections.Generic.Dictionary<int, ParticleState>();
+
+        private struct ParticleState
+        {
+            public ParticleSystem.MinMaxGradient StartColor;
+            public float StartSize;
+            public float StartLifetime;
+            public bool ColorOverLifetimeEnabled;
+            public bool TextureSheetEnabled;
+            public Material RendererMaterial;
+        }
+
+        /// <summary>Apply：切皮肤时染全部 limb；blood.json 缺失则把受伤血色与流血粒子恢复游戏默认。</summary>
         public static void Apply(GameObject playerObj, string characterName)
         {
             if (playerObj == null || string.IsNullOrEmpty(characterName)) return;
+            if (!BloodRenderConfig.Enabled) return;
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
             var cfg = BloodConfigLoader.Load(skinDir);
-            if (cfg == null) return;
-
-            // 自定义粒子 sprite 路径固定为 Blood/BloodParticle.png（相对 skinDir）；
-            // 文件不存在时 LoadTexture 返回 null，ApplyToParticle 内会保留游戏默认贴图。
-            string fullSpritePath = Path.Combine(skinDir, "Blood/BloodParticle.png");
-            Texture2D customTex = LoadTexture(fullSpritePath);
 
             Body body = playerObj.GetComponentInChildren<Body>(true);
             if (body == null) return;
+
+            Texture2D customTex = cfg != null ? LoadTexture(Path.Combine(skinDir, "Blood/BloodParticle.png")) : null;
             foreach (var limb in body.GetComponentsInChildren<Limb>(true))
             {
                 ApplyToLimb(limb, cfg, customTex);
             }
 
-            // 挂 BloodVomitWatcher 监视 vomit / blood 粒子并染色（B 类）。
-            var existing = playerObj.GetComponent<BloodVomitWatcher>();
-            if (existing == null) existing = playerObj.AddComponent<BloodVomitWatcher>();
-            existing.Configure(body, characterName);
+            var watcher = playerObj.GetComponent<BloodVomitWatcher>();
+            if (watcher == null) watcher = playerObj.AddComponent<BloodVomitWatcher>();
+            watcher.Configure(body, characterName);
 
-            // 给 limb 上每个 BleedParticle 换一份染色的 wallBleed / groundBleed prefab 副本。
+            if (cfg == null) return;
             foreach (var bp in body.GetComponentsInChildren<BleedParticle>(true))
             {
                 Patches.BleedParticleRecolor.RecolorByCharacter(bp, characterName);
@@ -53,6 +64,7 @@ namespace SkinSyncMod
         public static void RecolorParticleByCharacter(ParticleSystem ps, string characterName)
         {
             if (ps == null || string.IsNullOrEmpty(characterName)) return;
+            if (!BloodRenderConfig.Enabled) return;
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
             var cfg = BloodConfigLoader.Load(skinDir);
             if (cfg == null) return;
@@ -66,6 +78,7 @@ namespace SkinSyncMod
         {
             cfg = null;
             customTex = null;
+            if (!BloodRenderConfig.Enabled) return false;
             if (string.IsNullOrEmpty(characterName)) return false;
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
             cfg = BloodConfigLoader.Load(skinDir);
@@ -85,14 +98,27 @@ namespace SkinSyncMod
         private static void ApplyToLimb(Limb limb, BloodConfigLoader.Config cfg, Texture2D customTex)
         {
             if (limb == null) return;
-            // 反射取 ParticleSystem 字段——Limb.Awake 里已 Instantiate 过 BleedParticle。
-            ApplyToParticle(_bleedField?.GetValue(limb) as ParticleSystem, cfg, customTex);
-            ApplyToParticle(_waterBleedField?.GetValue(limb) as ParticleSystem, cfg, customTex);
+            ApplyToParticle(_bleedField?.GetValue(limb) as ParticleSystem, cfg, customTex, persistent: true);
+            ApplyToParticle(_waterBleedField?.GetValue(limb) as ParticleSystem, cfg, customTex, persistent: true);
 
-            // limb material 的 _BloodDark / _BloodLight uniform；blood.json 缺则用 particle 色兜底。
             var sr = limb.GetComponent<SpriteRenderer>();
             var mat = sr != null ? sr.sharedMaterial : null;
             if (mat == null) return;
+
+            int matId = mat.GetInstanceID();
+            if (!_origLimbBlood.ContainsKey(matId))
+            {
+                _origLimbBlood[matId] = (mat.GetColor("_BloodDark"), mat.GetColor("_BloodLight"));
+            }
+
+            if (cfg == null)
+            {
+                var orig = _origLimbBlood[matId];
+                mat.SetColor("_BloodDark", orig.dark);
+                mat.SetColor("_BloodLight", orig.light);
+                return;
+            }
+
             Color32? darkSrc = cfg.BloodDark ?? cfg.ParticleEndColor ?? cfg.ParticleStartColor;
             Color32? lightSrc = cfg.BloodLight ?? cfg.ParticleStartColor ?? cfg.ParticleEndColor;
             if (darkSrc.HasValue)
@@ -116,10 +142,40 @@ namespace SkinSyncMod
             ApplyToLimb(limb, cfg, tex);
         }
 
-        private static void ApplyToParticle(ParticleSystem ps, BloodConfigLoader.Config cfg, Texture2D customTex)
+        private static void ApplyToParticle(ParticleSystem ps, BloodConfigLoader.Config cfg, Texture2D customTex, bool persistent = false)
         {
             if (ps == null) return;
             var main = ps.main;
+
+            if (persistent)
+            {
+                int psId = ps.GetInstanceID();
+                if (!_origParticles.ContainsKey(psId))
+                {
+                    var rd0 = ps.GetComponent<ParticleSystemRenderer>();
+                    _origParticles[psId] = new ParticleState
+                    {
+                        StartColor = main.startColor,
+                        StartSize = main.startSize.constant,
+                        StartLifetime = main.startLifetime.constant,
+                        ColorOverLifetimeEnabled = ps.colorOverLifetime.enabled,
+                        TextureSheetEnabled = ps.textureSheetAnimation.enabled,
+                        RendererMaterial = rd0 != null ? rd0.sharedMaterial : null,
+                    };
+                }
+                if (cfg == null)
+                {
+                    var s = _origParticles[psId];
+                    main.startColor = s.StartColor;
+                    main.startSize = s.StartSize;
+                    main.startLifetime = s.StartLifetime;
+                    var col0 = ps.colorOverLifetime; col0.enabled = s.ColorOverLifetimeEnabled;
+                    var tsa0 = ps.textureSheetAnimation; tsa0.enabled = s.TextureSheetEnabled;
+                    var rd1 = ps.GetComponent<ParticleSystemRenderer>();
+                    if (rd1 != null && s.RendererMaterial != null) rd1.sharedMaterial = s.RendererMaterial;
+                    return;
+                }
+            }
 
             // 起始颜色：随机池非空时走 RandomColor 模式；否则按单色 / 渐变。
             if (cfg.RandomColors != null && cfg.RandomColors.Length > 0)

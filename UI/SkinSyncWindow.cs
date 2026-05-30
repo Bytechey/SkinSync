@@ -222,6 +222,12 @@ namespace SkinSyncMod
                 _cfg.RequireEquipmentForAccessories.Value = requireEq;
                 AccessoryEnforcer.Active = requireEq;
             }
+            bool renderBlood = DrawSwitch(SkinSyncI18n.T("sw.render_custom_blood"), _cfg.RenderCustomBlood.Value);
+            if (renderBlood != _cfg.RenderCustomBlood.Value)
+            {
+                _cfg.RenderCustomBlood.Value = renderBlood;
+                BloodRenderConfig.Enabled = renderBlood;
+            }
             GUILayout.EndVertical();
 
             GUILayout.Space(12f);

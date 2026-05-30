@@ -70,6 +70,8 @@ namespace SkinSyncMod
             EquipmentHider.Active = Settings.HideGameWearables.Value;
             gameObject.AddComponent<AccessoryEnforcer>();
             AccessoryEnforcer.Active = Settings.RequireEquipmentForAccessories.Value;
+            BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value;
+            Settings.RenderCustomBlood.SettingChanged += (_, __) => BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value;
             gameObject.AddComponent<BloodGroundRecolorer>();
 
             _overlay = new InGameOverlay();
