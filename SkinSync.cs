@@ -72,6 +72,8 @@ namespace SkinSyncMod
             AccessoryEnforcer.Active = Settings.RequireEquipmentForAccessories.Value;
             BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value;
             Settings.RenderCustomBlood.SettingChanged += (_, __) => BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value;
+            TailDeformConfig.Enabled = Settings.TailDeformEnabled.Value;
+            Settings.TailDeformEnabled.SettingChanged += (_, __) => TailDeformConfig.Enabled = Settings.TailDeformEnabled.Value;
 
             _overlay = new InGameOverlay();
             _window = new SkinSyncWindow(
@@ -366,7 +368,6 @@ namespace SkinSyncMod
         internal static void ApplyTailOverrideToConfig(SkinSyncSettings.TailDeformOverride ov)
         {
             // 默认值（与 TailDeformConfig 出厂相同）
-            TailDeformConfig.Enabled = ov?.Enabled ?? true;
             TailDeformConfig.FrontGuard = ov?.FrontGuard ?? true;
             TailDeformConfig.Segments = ov?.Segments ?? 10;
             TailDeformConfig.ConstraintIters = ov?.ConstraintIters ?? 6;
@@ -393,7 +394,6 @@ namespace SkinSyncMod
             if (string.IsNullOrEmpty(skin)) return;
             var ov = new SkinSyncSettings.TailDeformOverride
             {
-                Enabled = TailDeformConfig.Enabled,
                 FrontGuard = TailDeformConfig.FrontGuard,
                 Segments = TailDeformConfig.Segments,
                 ConstraintIters = TailDeformConfig.ConstraintIters,

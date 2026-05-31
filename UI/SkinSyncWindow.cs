@@ -217,9 +217,15 @@ namespace SkinSyncMod
                 GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
 
             GUILayout.Space(8f);
-#if DEBUG
             GUILayout.Label(SkinSyncI18n.T("sec.visual"), BlackWhiteSkin.HeaderStyle);
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
+            bool tailDeform = DrawSwitch(SkinSyncI18n.T("sw.tail_deform"), _cfg.TailDeformEnabled.Value);
+            if (tailDeform != _cfg.TailDeformEnabled.Value)
+            {
+                _cfg.TailDeformEnabled.Value = tailDeform;
+                TailDeformConfig.Enabled = tailDeform;
+            }
+#if DEBUG
             bool hideWear = DrawSwitch(SkinSyncI18n.T("sw.hide_game_wearables"), _cfg.HideGameWearables.Value);
             if (hideWear != _cfg.HideGameWearables.Value)
             {
@@ -238,10 +244,10 @@ namespace SkinSyncMod
                 _cfg.RenderCustomBlood.Value = renderBlood;
                 BloodRenderConfig.Enabled = renderBlood;
             }
+#endif
             GUILayout.EndVertical();
 
             GUILayout.Space(12f);
-#endif
             GUILayout.Label(SkinSyncI18n.T("sec.sync"), BlackWhiteSkin.HeaderStyle);
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
             bool mpAvailable = SkinSync.IsMultiplayerSession;
@@ -627,7 +633,7 @@ namespace SkinSyncMod
             const string key = "tail";
             if (!_currentExpanded.ContainsKey(key)) _currentExpanded[key] = false;
             bool expanded = _currentExpanded[key];
-            string statusText = TailDeformConfig.Enabled
+            string statusText = _cfg.TailDeformEnabled.Value
                 ? SkinSyncI18n.T("lbl.tail_on")
                 : SkinSyncI18n.T("lbl.tail_off");
             string label = (expanded ? "▼  " : "▶  ") + SkinSyncI18n.T("sec.tail") + "    " + statusText;
@@ -640,9 +646,6 @@ namespace SkinSyncMod
 
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
             bool changed = false;
-
-            bool en = DrawSwitch(SkinSyncI18n.T("tail.enabled"), TailDeformConfig.Enabled);
-            if (en != TailDeformConfig.Enabled) { TailDeformConfig.Enabled = en; changed = true; }
 
             bool fg = DrawSwitch(SkinSyncI18n.T("tail.front_guard"), TailDeformConfig.FrontGuard);
             if (fg != TailDeformConfig.FrontGuard) { TailDeformConfig.FrontGuard = fg; changed = true; }

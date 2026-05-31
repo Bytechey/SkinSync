@@ -154,14 +154,15 @@ namespace SkinSyncMod
             }
             if (firstAxis < 0) return false;
 
-            float pivotAxisPx = axisIsHorizontal ? sprite.pivot.x : sprite.pivot.y;
+            // pivot 是整图坐标，扫描得到的轴/cross 是 texRect 局部坐标（Tight sprite 的 texRect 非整图），统一减去 texRect 原点。
+            float pivotAxisPx = (axisIsHorizontal ? sprite.pivot.x : sprite.pivot.y) - (axisIsHorizontal ? texRect.x : texRect.y);
             bool rootAtLow = Mathf.Abs(firstAxis - pivotAxisPx) <= Mathf.Abs(lastAxis - pivotAxisPx);
 
             int contentLenPx = lastAxis - firstAxis + 1;
             _axisLen = contentLenPx / ppu;
             _segLen = _axisLen / n;
 
-            float pivotCrossPx = axisIsHorizontal ? sprite.pivot.y : sprite.pivot.x;
+            float pivotCrossPx = (axisIsHorizontal ? sprite.pivot.y : sprite.pivot.x) - (axisIsHorizontal ? texRect.y : texRect.x);
 
             for (int i = 0; i <= n; i++)
             {
@@ -202,6 +203,11 @@ namespace SkinSyncMod
                     _uvs[i * 2 + 1] = new Vector2(crossHiUV, axisUV);
                 }
             }
+
+            // segCenter 以根端段为基准归零：根部贴合物理链锚点，段间保留相对偏移，避免内容偏离 pivot 时整条尾巴飞离接缝。
+            float baseCenter = _segCenter[0];
+            for (int i = 0; i <= n; i++) _segCenter[i] -= baseCenter;
+
             return true;
         }
 
@@ -418,11 +424,13 @@ namespace SkinSyncMod
             Transform meshTf = _meshGo.transform;
             for (int i = 0; i < n; i++)
             {
-                Vector2 dir;
-                if (i < n - 1) dir = (_smoothPos[i + 1] - _smoothPos[i]).normalized;
-                else dir = (_smoothPos[i] - _smoothPos[i - 1]).normalized;
-                if (dir.sqrMagnitude < 1e-6f) dir = worldAxis;
-                Vector2 perp = new Vector2(-dir.y, dir.x) * perpSign;
+                Vector2 tangent;
+                if (i == 0) tangent = _smoothPos[1] - _smoothPos[0];
+                else if (i == n - 1) tangent = _smoothPos[n - 1] - _smoothPos[n - 2];
+                else tangent = (_smoothPos[i + 1] - _smoothPos[i]).normalized + (_smoothPos[i] - _smoothPos[i - 1]).normalized;
+                if (tangent.sqrMagnitude < 1e-6f) tangent = worldAxis;
+                tangent.Normalize();
+                Vector2 perp = new Vector2(-tangent.y, tangent.x) * perpSign;
                 Vector2 center = _smoothPos[i] + perp * _segCenter[i];
                 Vector2 left = center - perp * _segHalf[i];
                 Vector2 right = center + perp * _segHalf[i];

@@ -28,6 +28,7 @@ namespace SkinSyncMod
             ["sw.hide_game_wearables"] = "隐藏游戏装备 sprite（保留装甲 / 保暖等逻辑）",
             ["sw.require_equipment"] = "配件配了 requireWornSlot 时，仅穿戴对应装备 slot 才显示",
             ["sw.render_custom_blood"] = "按皮肤配置渲染自定义血液（关闭可省性能）",
+            ["sw.tail_deform"] = "启用尾巴形变（关闭显示原 sprite）",
 
             ["sec.sync"] = "多人同步",
             ["sync.no_krokmp_hint"] = "未找到 KrokMP 多人联机模组，多人同步选项不可用",
@@ -139,6 +140,7 @@ namespace SkinSyncMod
             ["sw.hide_game_wearables"] = "Hide game wearable sprites (keep armor / isolation logic)",
             ["sw.require_equipment"] = "Show requireWornSlot accessories only when wearing the slot equipment",
             ["sw.render_custom_blood"] = "Render custom blood from skin config (turn off to save performance)",
+            ["sw.tail_deform"] = "Enable tail deform (off = show plain sprite)",
 
             ["sec.sync"] = "Multiplayer sync",
             ["sync.no_krokmp_hint"] = "KrokMP multiplayer mod not found — multiplayer sync options are disabled",
