@@ -171,7 +171,7 @@ namespace SkinSyncMod
             // 同时写到该 skin 的 settings 覆盖，让本端下次切回该皮肤继续保持参数。
             var ov = new SkinSyncSettings.TailDeformOverride
             {
-                Enabled = msg.enabled, FrontGuard = msg.frontGuard,
+                FrontGuard = msg.frontGuard,
                 Segments = msg.segments, ConstraintIters = msg.constraintIters,
                 Damping = msg.damping, Stiffness = msg.stiffness,
                 SpeedDamping = msg.speedDamping,

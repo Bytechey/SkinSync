@@ -24,6 +24,7 @@ namespace SkinSyncMod
         internal ConfigEntry<bool> HideGameWearables { get; }
         internal ConfigEntry<bool> RequireEquipmentForAccessories { get; }
         internal ConfigEntry<bool> RenderCustomBlood { get; }
+        internal ConfigEntry<bool> TailDeformEnabled { get; }
 
         // —— 杂项 —— //
         internal ConfigEntry<bool> ShowLogInConsole { get; }
@@ -48,7 +49,6 @@ namespace SkinSyncMod
         /// <summary>尾巴形变 per-skin 覆盖。任意字段为 null 时用 TailDeformDefaults 默认。</summary>
         internal sealed class TailDeformOverride
         {
-            public bool? Enabled;
             public bool? FrontGuard;
             public int? Segments;
             public int? ConstraintIters;
@@ -105,6 +105,9 @@ namespace SkinSyncMod
 
             RenderCustomBlood = config.Bind("Visual", "RenderCustomBlood", false,
                 "是否按皮肤 blood.json 渲染自定义血液（受伤血色 / 流血 / 落地血迹 / 爆血 / 呕吐）。关闭时全部回退游戏默认并停止每帧扫描，避免性能开销。");
+
+            TailDeformEnabled = config.Bind("Visual", "TailDeformEnabled", true,
+                "是否启用尾巴物理形变。关闭时尾巴显示原始 sprite 不做摆动。");
 
             ShowLogInConsole = config.Bind("Misc", "ShowInConsole", false,
                 "是否把模组日志同步打印到游戏内控制台（` 键打开）。关闭时仅写入 BepInEx 日志。");
@@ -315,7 +318,6 @@ namespace SkinSyncMod
         {
             switch (key)
             {
-                case "Enabled": if (bool.TryParse(val, out bool en)) ov.Enabled = en; break;
                 case "FrontGuard": if (bool.TryParse(val, out bool fg)) ov.FrontGuard = fg; break;
                 case "Segments": if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out int sg)) ov.Segments = sg; break;
                 case "ConstraintIters": if (int.TryParse(val, NumberStyles.Integer, CultureInfo.InvariantCulture, out int ci)) ov.ConstraintIters = ci; break;
@@ -345,7 +347,6 @@ namespace SkinSyncMod
                 var ov = kv.Value;
                 if (ov == null) continue;
                 var parts = new List<string>();
-                if (ov.Enabled.HasValue) parts.Add("Enabled=" + ov.Enabled.Value);
                 if (ov.FrontGuard.HasValue) parts.Add("FrontGuard=" + ov.FrontGuard.Value);
                 AddIntPart(parts, "Segments", ov.Segments);
                 AddIntPart(parts, "ConstraintIters", ov.ConstraintIters);
