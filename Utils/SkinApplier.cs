@@ -81,6 +81,33 @@ namespace SkinSyncMod
             return null;
         }
 
+        private static System.Action<GameObject, bool> _skinApplied;
+
+        /// <summary>注册皮肤应用回调；每次某玩家应用皮肤后回调 (playerObj, 是否含翅膀)。供 ExtraLimbs 等外部 mod 反射订阅。</summary>
+        public static void RegisterSkinAppliedListener(System.Action<GameObject, bool> cb)
+        {
+            if (cb == null) return;
+            _skinApplied -= cb;
+            _skinApplied += cb;
+        }
+
+        public static void UnregisterSkinAppliedListener(System.Action<GameObject, bool> cb)
+        {
+            if (cb == null) return;
+            _skinApplied -= cb;
+        }
+
+        /// <summary>判定玩家当前是否挂有翅膀（SkinSync 的 HwWings 容器存在）。</summary>
+        public static bool HasWings(GameObject playerObj)
+        {
+            if (playerObj == null) return false;
+            Body body = playerObj.GetComponentInChildren<Body>(true);
+            if (body == null) return false;
+            foreach (var tf in body.GetComponentsInChildren<Transform>(true))
+                if (tf != null && tf.name == "HwWings") return true;
+            return false;
+        }
+
         private const float PIXELS_PER_UNIT = 8f;
         private const float UPTORSO_OFFSET_X = 6f;
         private const float UPTORSO_OFFSET_Y = -10f;
@@ -148,6 +175,7 @@ namespace SkinSyncMod
                 BloodAttacher.Apply(playerObj, characterName);
             }
             EnsureLimbDirWatcher(playerObj);
+            _skinApplied?.Invoke(playerObj, HasWings(playerObj));
         }
 
         /// <summary>朝向变化时调：仅重选 SpriteRenderer.sprite，不重建 GameObject、不重跑 wings/zones/blood/accessories 挂载。</summary>
