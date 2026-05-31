@@ -72,7 +72,6 @@ namespace SkinSyncMod
             AccessoryEnforcer.Active = Settings.RequireEquipmentForAccessories.Value;
             BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value;
             Settings.RenderCustomBlood.SettingChanged += (_, __) => BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value;
-            gameObject.AddComponent<BloodGroundRecolorer>();
 
             _overlay = new InGameOverlay();
             _window = new SkinSyncWindow(
@@ -115,7 +114,7 @@ namespace SkinSyncMod
             harmony.CreateClassProcessor(typeof(SkinSyncAdaptiveButtonClickedGuard)).Patch();
             harmony.CreateClassProcessor(typeof(SkinSyncPlayerCameraHandleInputGuard)).Patch();
             harmony.CreateClassProcessor(typeof(SkinSyncPreRunScriptStartPatch)).Patch();
-            harmony.CreateClassProcessor(typeof(Patches.BleedParticleStartPatch)).Patch();
+            harmony.CreateClassProcessor(typeof(Patches.BleedSpawnTranspiler)).Patch();
             harmony.CreateClassProcessor(typeof(Patches.LimbAwakeBleedColorPatch)).Patch();
 
             if (KrokoshaBridge.IsAvailable)

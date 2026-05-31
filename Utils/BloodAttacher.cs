@@ -52,12 +52,6 @@ namespace SkinSyncMod
             var watcher = playerObj.GetComponent<BloodVomitWatcher>();
             if (watcher == null) watcher = playerObj.AddComponent<BloodVomitWatcher>();
             watcher.Configure(body, characterName);
-
-            if (cfg == null) return;
-            foreach (var bp in body.GetComponentsInChildren<BleedParticle>(true))
-            {
-                Patches.BleedParticleRecolor.RecolorByCharacter(bp, characterName);
-            }
         }
 
         /// <summary>给运行时新生成的 ParticleSystem（vomitBlood 等）按 character 重染色——给 BloodVomitWatcher 用。</summary>
@@ -73,7 +67,7 @@ namespace SkinSyncMod
             ApplyToParticle(ps, cfg, customTex);
         }
 
-        /// <summary>读指定 character 的 blood.json 与自定义粒子贴图（缺失返回 null）；BloodGroundRecolorer 复用。</summary>
+        /// <summary>读指定 character 的 blood.json 与自定义粒子贴图（缺失返回 null）。</summary>
         internal static bool TryLoadCharacterBlood(string characterName, out BloodConfigLoader.Config cfg, out Texture2D customTex)
         {
             cfg = null;
@@ -85,14 +79,6 @@ namespace SkinSyncMod
             if (cfg == null) return false;
             customTex = LoadTexture(Path.Combine(skinDir, "Blood/BloodParticle.png"));
             return true;
-        }
-
-        /// <summary>给落地 / 爆血粒子按 character 重染色，复用 ApplyToParticle。</summary>
-        internal static void ApplyToParticleByCharacter(ParticleSystem ps, string characterName)
-        {
-            if (ps == null) return;
-            if (!TryLoadCharacterBlood(characterName, out var cfg, out var tex)) return;
-            ApplyToParticle(ps, cfg, tex);
         }
 
         private static void ApplyToLimb(Limb limb, BloodConfigLoader.Config cfg, Texture2D customTex)

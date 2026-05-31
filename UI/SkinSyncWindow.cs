@@ -158,7 +158,12 @@ namespace SkinSyncMod
             var bodyRect = new Rect(24f, bodyTop, WindowWidth - 48f, WindowHeight - bodyTop - statusH);
             GUILayout.BeginArea(bodyRect);
             if (_tab == 1) DrawSkinsTab();
+#if DEBUG
+            else if (_tab == 2) DrawCurrentTab();
+            else if (_tab == 3) DrawAboutTab();
+#else
             else if (_tab == 2) DrawAboutTab();
+#endif
             else DrawSettingsTab();
             GUILayout.EndArea();
 
@@ -188,7 +193,12 @@ namespace SkinSyncMod
             float tabW = 280f, tabH = 64f, top = TitleBarHeight + 14f;
             DrawTabButton(new Rect(28f, top, tabW, tabH), SkinSyncI18n.T("tab.settings"), 0);
             DrawTabButton(new Rect(28f + (tabW + 16f), top, tabW, tabH), SkinSyncI18n.T("tab.skins"), 1);
+#if DEBUG
+            DrawTabButton(new Rect(28f + (tabW + 16f) * 2f, top, tabW, tabH), SkinSyncI18n.T("tab.current"), 2);
+            DrawTabButton(new Rect(28f + (tabW + 16f) * 3f, top, tabW, tabH), SkinSyncI18n.T("tab.about"), 3);
+#else
             DrawTabButton(new Rect(28f + (tabW + 16f) * 2f, top, tabW, tabH), SkinSyncI18n.T("tab.about"), 2);
+#endif
         }
 
         private void DrawTabButton(Rect rect, string label, int idx)
@@ -207,7 +217,7 @@ namespace SkinSyncMod
                 GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
 
             GUILayout.Space(8f);
-#if false
+#if DEBUG
             GUILayout.Label(SkinSyncI18n.T("sec.visual"), BlackWhiteSkin.HeaderStyle);
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
             bool hideWear = DrawSwitch(SkinSyncI18n.T("sw.hide_game_wearables"), _cfg.HideGameWearables.Value);
@@ -271,7 +281,7 @@ namespace SkinSyncMod
             GUILayout.EndHorizontal();
             GUILayout.Space(6f);
 
-#if false
+#if DEBUG
             bool syncAcc = DrawSwitch(SkinSyncI18n.T("sw.sync_accessories"), _cfg.SyncAccessories.Value);
             if (syncAcc != _cfg.SyncAccessories.Value) _cfg.SyncAccessories.Value = syncAcc;
             bool syncTail = DrawSwitch(SkinSyncI18n.T("sw.sync_tail"), _cfg.SyncTailDeform.Value);
