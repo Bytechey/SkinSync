@@ -54,11 +54,20 @@ namespace SkinSyncMod
             _mat = refSr != null && refSr.sharedMaterial != null
                 ? new Material(refSr.sharedMaterial)
                 : new Material(Shader.Find("Sprites/Default"));
+            ResetTransientLimbUniforms(_mat);
             _mr.sharedMaterial = _mat;
             _mesh = new Mesh { name = "TailDeformMesh" };
             _mesh.MarkDynamic();
             _mf.sharedMesh = _mesh;
-            ShadowAttacher.Ensure(_meshGo);
+        }
+
+        /// <summary>克隆肢体 lit material 后归零 Limb.Update 每帧驱动的 transient uniform，避免偷到肢体瞬时状态（如 Dirtyness）卡死污渍 alpha 形成断口。</summary>
+        private static void ResetTransientLimbUniforms(Material mat)
+        {
+            if (mat == null) return;
+            string[] keys = { "_BloodOverlay", "_SkinDamage", "_MuscleDamage", "_InfectionPercent", "_SnowAmount", "_Dirtyness", "_Wetness", "_Pain" };
+            foreach (var k in keys)
+                if (mat.HasProperty(k)) mat.SetFloat(k, 0f);
         }
 
         private SpriteRenderer FindLitMaterialSource()
