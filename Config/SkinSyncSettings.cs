@@ -29,6 +29,7 @@ namespace SkinSyncMod
         // —— 杂项 —— //
         internal ConfigEntry<bool> ShowLogInConsole { get; }
         internal ConfigEntry<bool> AcceptUpdateNotice { get; }
+        internal ConfigEntry<string> PreferredLanguage { get; }
 
         // —— 多人同步 —— //
         /// <summary>"OnEnter"=自己进游戏一键同步全部；"Passive"=仅响应改动事件不主动批量同步。</summary>
@@ -113,6 +114,8 @@ namespace SkinSyncMod
                 "是否把模组日志同步打印到游戏内控制台（` 键打开）。关闭时仅写入 BepInEx 日志。");
             AcceptUpdateNotice = config.Bind("Misc", "AcceptUpdateNotice", true,
                 "是否在启动时检查 GitHub 新版本并在游戏内提示。关闭则不检测不提示。");
+            PreferredLanguage = config.Bind("I18n", "PreferredLanguage", "auto",
+                "界面语言：auto=跟随游戏；zh=强制中文；en=强制英文。该值会写入配置文件并在重启后保留。");
 
             SyncMode = config.Bind("Sync", "Mode", "OnEnter",
                 "多人同步策略。OnEnter=自己进入游戏时一键同步皮肤+配件+尾巴；Passive=仅在改动配件/尾巴时被动广播。");
