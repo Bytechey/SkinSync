@@ -1,7 +1,7 @@
-# SkinSync V1.0.10 for Casualties: Unknown
+# SkinSync V1.1. for Casualties: Unknown
 
 > 适配游戏《未知伤亡》的皮肤同步模组  
-> 作者：Bytechey（与 AI 协作完成）  
+> 作者：Bytechey huanxin（与 AI 协作完成）  
 > 兼容：KrokMP 多人模式
 
 ## 简介
@@ -24,13 +24,13 @@
    - `CustomSprites` 文件夹（包含皮肤贴图）
 
 2. 皮肤文件应放置在 `CustomSprites` 文件夹内，并按照以下规则命名：
-   - 文件夹名称格式：`st` + 数字（例如 `st1`、`st2`、`st3`……）
-   - **注意**：请勿跳过数字，可能引发未知问题
+   - 文件夹名称格式现已无限制
 
-3. 每个皮肤文件夹（如 `st1`）下必须包含两个子文件夹：
+3. 每个皮肤文件夹下通常包含两个子文件夹（或更多）：
    - `Body/` — 身体部位贴图
    - `Head/` — 头部部位贴图
-
+   - `Wings/` — 翅膀部位贴图（如果有）
+   - ...
 ## 文件结构示例
 
 - Casualties Unknown Demo/
@@ -38,10 +38,10 @@
 - │ └── plugins/
 - │ ├── SkinSync.dll
 - │ └── CustomSprites/
-- │ ├── st1/
+- │ ├── skin1/
 - │ │ ├── Head/ (头部皮肤文件)
 - │ │ └── Body/ (身体皮肤文件)
-- │ ├── st2/
+- │ ├── skin2/
 - │ │ ├── Head/
 - │ │ └── Body/
 - │ └── ...
