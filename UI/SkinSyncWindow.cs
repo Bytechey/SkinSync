@@ -57,6 +57,7 @@ namespace SkinSyncMod
         private bool _capturingNext;
         private bool _capturingPrev;
         private bool _capturingRescan;
+        private bool _loggedDrawForCurrentOpen;
 
         internal bool Open { get; set; }
         internal Rect WindowRect => _rect;
@@ -65,6 +66,8 @@ namespace SkinSyncMod
         {
             if (Open) return;
             Open = true;
+            _loggedDrawForCurrentOpen = false;
+            ModLog.Info("SkinSyncWindow.OpenPanel -> Open=true");
             _onOpened?.Invoke();
         }
 
@@ -72,6 +75,7 @@ namespace SkinSyncMod
         {
             if (!Open) return;
             Open = false;
+            _loggedDrawForCurrentOpen = false;
             CancelKeyCapture();
             _onClosed?.Invoke();
         }
@@ -114,10 +118,24 @@ namespace SkinSyncMod
         internal void Draw()
         {
             if (!Open) return;
+            if (!_loggedDrawForCurrentOpen)
+            {
+                _loggedDrawForCurrentOpen = true;
+                ModLog.Info($"SkinSyncWindow.Draw active rect=({_rect.x:0},{_rect.y:0},{_rect.width:0},{_rect.height:0})");
+            }
             BlackWhiteSkin.Push();
             try
             {
                 _rect = GUI.ModalWindow(WindowId, _rect, DrawContent, "");
+            }
+            catch (ExitGUIException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warning($"SkinSyncWindow.Draw 失败：{ex}");
+                ClosePanel();
             }
             finally
             {
