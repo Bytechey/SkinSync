@@ -1,4 +1,4 @@
-# SkinSync V1.1.0 for Casualties: Unknown
+# SkinSync V1.0.10 for Casualties: Unknown
 
 > 适配游戏《未知伤亡》的皮肤同步模组  
 > 作者：Bytechey HuanXin（与 AI 协作完成）  
