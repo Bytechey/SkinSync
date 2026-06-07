@@ -81,15 +81,20 @@ namespace SkinSyncMod
 
         private static void DrawDiagonalLine(float x1, float y1, float x2, float y2, float thickness)
         {
+            EnsureBuilt();
             float dx = x2 - x1;
             float dy = y2 - y1;
             float length = Mathf.Sqrt(dx * dx + dy * dy);
-            float angle = Mathf.Atan2(dy, dx) * Mathf.Rad2Deg;
-            var pivot = new Vector2(x1, y1);
-            var matrix = GUI.matrix;
-            GUIUtility.RotateAroundPivot(angle, pivot);
-            GUI.DrawTexture(new Rect(x1, y1 - thickness * 0.5f, length, thickness), _line, ScaleMode.StretchToFill);
-            GUI.matrix = matrix;
+            // 沿对角线铺轴对齐小方块，避免 RotateAroundPivot 与外层 Scale 矩阵复合时的纹理走样
+            int steps = Mathf.Max(2, Mathf.CeilToInt(length / Mathf.Max(0.5f, thickness * 0.5f)));
+            for (int i = 0; i <= steps; i++)
+            {
+                float t = i / (float)steps;
+                float x = x1 + dx * t;
+                float y = y1 + dy * t;
+                GUI.DrawTexture(new Rect(x - thickness * 0.5f, y - thickness * 0.5f, thickness, thickness),
+                    _line, ScaleMode.StretchToFill);
+            }
         }
 
         private static void EnsureBuilt()

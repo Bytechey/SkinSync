@@ -183,5 +183,80 @@ namespace SkinSyncMod
             };
             SkinSync.Settings.SetTailOverride(msg.skinID, ov);
         }
+
+        // —— Skin pack sync (实验性) —— //
+
+        private static readonly System.Collections.Generic.HashSet<string> _broadcastedPackIds = new System.Collections.Generic.HashSet<string>();
+
+        public static void OnServerSkinPackRequest(uint callerId, ref NetDataReader reader)
+        {
+            var msg = new SkinPackRequestMessage();
+            msg.Deserialize(reader);
+            if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
+
+            byte[] local = SkinPackCodec.PackLocalSkin(msg.skinID);
+            if (local != null)
+            {
+                bool myAllow = SkinSync.Settings.AllowPeersPersistMyPack.Value;
+                MultiplayerSender.ServerSendSkinPackDataToClient(callerId, local, myAllow);
+                _broadcastedPackIds.Add(msg.skinID);
+                SkinSyncMod.ModLog.Info($"服务端：已把皮肤包 {msg.skinID} 直接回给 client {callerId}（allowPersist={myAllow}）");
+                return;
+            }
+
+            var writer = new NetDataWriter();
+            writer.Put(SkinNetworkIDs.SkinPackRequestMessageId);
+            msg.Serialize(writer);
+            KrokoshaBridge.ServerBroadcastExcept(callerId, DeliveryMethod.ReliableOrdered, writer);
+            SkinSyncMod.ModLog.Info($"服务端:转发皮肤包请求 {msg.skinID} 给其他 client");
+        }
+
+        public static void OnClientSkinPackRequest(uint callerId, ref NetDataReader reader)
+        {
+            var msg = new SkinPackRequestMessage();
+            msg.Deserialize(reader);
+            if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
+
+            byte[] local = SkinPackCodec.PackLocalSkin(msg.skinID);
+            if (local == null) return;
+            bool myAllow = SkinSync.Settings.AllowPeersPersistMyPack.Value;
+            MultiplayerSender.SendSkinPackData(local, myAllow);
+            SkinSyncMod.ModLog.Info($"客户端：响应皮肤包请求 {msg.skinID}（{local.Length} bytes, allowPersist={myAllow}）");
+        }
+
+        public static void OnServerSkinPackData(uint callerId, ref NetDataReader reader)
+        {
+            var msg = new SkinPackDataMessage();
+            msg.Deserialize(reader);
+            if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
+            if (msg.payload == null || msg.payload.Length == 0) return;
+
+            bool persist = SkinSync.Settings.SkinPackPersistOnDisk.Value && msg.allowPersist;
+            if (!SkinPackCodec.UnpackAndCache(msg.payload, persist, out string skinID)) return;
+            SkinSyncMod.ModLog.Info($"服务端：收到 client {callerId} 的皮肤包 {skinID}（allowPersist={msg.allowPersist}），本机 persist={persist}");
+            if (_broadcastedPackIds.Contains(skinID)) return;
+            _broadcastedPackIds.Add(skinID);
+
+            var writer = new NetDataWriter();
+            writer.Put(SkinNetworkIDs.SkinPackDataMessageId);
+            msg.Serialize(writer);
+            KrokoshaBridge.ServerBroadcastExcept(callerId, DeliveryMethod.ReliableOrdered, writer);
+
+            SkinApplier.ReapplyForSkin(skinID);
+        }
+
+        public static void OnClientSkinPackData(uint callerId, ref NetDataReader reader)
+        {
+            var msg = new SkinPackDataMessage();
+            msg.Deserialize(reader);
+            if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
+            if (msg.payload == null || msg.payload.Length == 0) return;
+
+            bool persist = SkinSync.Settings.SkinPackPersistOnDisk.Value && msg.allowPersist;
+            if (!SkinPackCodec.UnpackAndCache(msg.payload, persist, out string skinID)) return;
+            SkinSyncMod.ModLog.Info($"客户端：收到皮肤包 {skinID}（{msg.payload.Length} bytes, allowPersist={msg.allowPersist}），本机 persist={persist}");
+
+            SkinApplier.ReapplyForSkin(skinID);
+        }
     }
 }

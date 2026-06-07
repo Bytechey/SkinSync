@@ -47,6 +47,7 @@ namespace SkinSyncMod
         private readonly Action _onClosed;
 
         private Rect _rect = new Rect(120f, 60f, WindowWidth, WindowHeight);
+        private float _drawScale = 1f;
         private int _tab;
         private Vector2 _settingsScroll;
         private Vector2 _skinsScroll;
@@ -60,7 +61,7 @@ namespace SkinSyncMod
         private bool _loggedDrawForCurrentOpen;
 
         internal bool Open { get; set; }
-        internal Rect WindowRect => _rect;
+        internal Rect WindowRect => new Rect(_rect.x * _drawScale, _rect.y * _drawScale, _rect.width * _drawScale, _rect.height * _drawScale);
 
         internal void OpenPanel()
         {
@@ -84,7 +85,9 @@ namespace SkinSyncMod
         {
             if (!Open) return false;
             var mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-            return _rect.Contains(mouse);
+            var screenRect = new Rect(_rect.x * _drawScale, _rect.y * _drawScale,
+                _rect.width * _drawScale, _rect.height * _drawScale);
+            return screenRect.Contains(mouse);
         }
 
         internal SkinSyncWindow(
@@ -118,14 +121,25 @@ namespace SkinSyncMod
         internal void Draw()
         {
             if (!Open) return;
+            _drawScale = ComputeScale();
             if (!_loggedDrawForCurrentOpen)
             {
                 _loggedDrawForCurrentOpen = true;
-                ModLog.Info($"SkinSyncWindow.Draw active rect=({_rect.x:0},{_rect.y:0},{_rect.width:0},{_rect.height:0})");
+                ModLog.Info($"SkinSyncWindow.Draw screen=({Screen.width}x{Screen.height}) scale={_drawScale:F3} rect=({_rect.x:0},{_rect.y:0},{_rect.width:0},{_rect.height:0})");
             }
+            _rect.width = WindowWidth;
+            _rect.height = WindowHeight;
+            float maxX = Mathf.Max(0f, Screen.width / _drawScale - WindowWidth);
+            float maxY = Mathf.Max(0f, Screen.height / _drawScale - WindowHeight);
+            _rect.x = Mathf.Clamp(_rect.x, 0f, maxX);
+            _rect.y = Mathf.Clamp(_rect.y, 0f, maxY);
+
             BlackWhiteSkin.Push();
+            Matrix4x4 prev = GUI.matrix;
             try
             {
+                // 顶层 GUI.matrix 缩放：IMGUI 用此 matrix 同时画窗口框与回调内容，整体等比缩
+                GUI.matrix = Matrix4x4.Scale(new Vector3(_drawScale, _drawScale, 1f));
                 _rect = GUI.ModalWindow(WindowId, _rect, DrawContent, "");
             }
             catch (ExitGUIException)
@@ -139,8 +153,16 @@ namespace SkinSyncMod
             }
             finally
             {
+                GUI.matrix = prev;
                 BlackWhiteSkin.Pop();
             }
+        }
+
+        /// <summary>按屏幕尺寸算缩放比，使窗口不超出屏幕；屏幕足够大时不放大（上限 1）。</summary>
+        private static float ComputeScale()
+        {
+            float fit = Mathf.Min(Screen.width / WindowWidth, Screen.height / WindowHeight) * 0.92f;
+            return Mathf.Clamp(fit, 0.3f, 1f);
         }
 
         internal void CancelKeyCapture()
@@ -315,6 +337,21 @@ namespace SkinSyncMod
             GUILayout.EndVertical();
 
             GUILayout.Space(12f);
+            GUILayout.Label(SkinSyncI18n.T("sec.experimental"), BlackWhiteSkin.HeaderStyle);
+            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
+            bool packSync = DrawSwitch(SkinSyncI18n.T("sw.skin_pack_sync"), _cfg.EnableSkinPackSync.Value);
+            if (packSync != _cfg.EnableSkinPackSync.Value) _cfg.EnableSkinPackSync.Value = packSync;
+            bool persistEnabled = _cfg.EnableSkinPackSync.Value;
+            bool prevEnabledExp = GUI.enabled;
+            GUI.enabled = persistEnabled;
+            bool persist = DrawSwitch(SkinSyncI18n.T("sw.skin_pack_persist"), _cfg.SkinPackPersistOnDisk.Value);
+            if (persist != _cfg.SkinPackPersistOnDisk.Value) _cfg.SkinPackPersistOnDisk.Value = persist;
+            bool allowPeers = DrawSwitch(SkinSyncI18n.T("sw.allow_peers_persist"), _cfg.AllowPeersPersistMyPack.Value);
+            if (allowPeers != _cfg.AllowPeersPersistMyPack.Value) _cfg.AllowPeersPersistMyPack.Value = allowPeers;
+            GUI.enabled = prevEnabledExp;
+            GUILayout.EndVertical();
+
+            GUILayout.Space(12f);
             GUILayout.Label(SkinSyncI18n.T("sec.hotkeys"), BlackWhiteSkin.HeaderStyle);
             GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
             DrawHotkeyRow(SkinSyncI18n.T("lbl.hotkey_toggle_panel"), _cfg.TogglePanelHotkey, ref _capturingPanel,
@@ -339,6 +376,7 @@ namespace SkinSyncMod
                 _cfg.AcceptUpdateNotice.Value = acceptUpdate;
                 SkinSyncMod.Patches.UpdateChecker.Enabled = acceptUpdate;
             }
+            DrawLanguageModeRow(SkinSyncI18n.T("lbl.language"), _cfg.PreferredLanguage);
             GUILayout.EndVertical();
 
             GUILayout.Space(20f);
@@ -859,6 +897,45 @@ namespace SkinSyncMod
             }
             GUILayout.EndHorizontal();
             return result;
+        }
+
+        private static void DrawLanguageModeRow(string label, ConfigEntry<string> entry)
+        {
+            string mode = NormalizeLanguageMode(entry.Value);
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, GUILayout.MinWidth(LabelColW), GUILayout.ExpandWidth(true),
+                GUILayout.MinHeight(RowMinHeight));
+            GUILayout.Space(20f);
+            if (GUILayout.Button(SkinSyncI18n.T("opt.language_auto"),
+                mode == "auto" ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle,
+                GUILayout.MinWidth(140f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            {
+                entry.Value = "auto";
+            }
+            GUILayout.Space(8f);
+            if (GUILayout.Button(SkinSyncI18n.T("opt.language_zh"),
+                mode == "zh" ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle,
+                GUILayout.MinWidth(120f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            {
+                entry.Value = "zh";
+            }
+            GUILayout.Space(8f);
+            if (GUILayout.Button(SkinSyncI18n.T("opt.language_en"),
+                mode == "en" ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle,
+                GUILayout.MinWidth(120f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            {
+                entry.Value = "en";
+            }
+            GUILayout.FlexibleSpace();
+            GUILayout.EndHorizontal();
+            GUILayout.Space(6f);
+        }
+
+        private static string NormalizeLanguageMode(string mode)
+        {
+            if (string.IsNullOrWhiteSpace(mode)) return "auto";
+            mode = mode.Trim().ToLowerInvariant();
+            return mode == "zh" || mode == "en" ? mode : "auto";
         }
 
         private void DrawHotkeyRow(string label, ConfigEntry<KeyboardShortcut> entry,

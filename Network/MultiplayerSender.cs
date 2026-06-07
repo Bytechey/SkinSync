@@ -83,5 +83,41 @@ namespace SkinSyncMod.Network
             msg.WriteTo(writer);
             KrokoshaBridge.ServerSendToClient(targetClientId, DeliveryMethod.ReliableOrdered, writer);
         }
+
+        public static void SendSkinPackRequest(string skinID)
+        {
+            if (!KrokoshaBridge.IsAvailable) return;
+            var msg = new SkinPackRequestMessage { skinID = skinID };
+            var writer = new NetDataWriter();
+            msg.WriteTo(writer);
+            KrokoshaBridge.ClientSend(DeliveryMethod.ReliableOrdered, writer);
+        }
+
+        public static void ServerSendSkinPackRequestToClient(uint targetClientId, string skinID)
+        {
+            if (!KrokoshaBridge.IsAvailable) return;
+            var msg = new SkinPackRequestMessage { skinID = skinID };
+            var writer = new NetDataWriter();
+            msg.WriteTo(writer);
+            KrokoshaBridge.ServerSendToClient(targetClientId, DeliveryMethod.ReliableOrdered, writer);
+        }
+
+        public static void SendSkinPackData(byte[] payload, bool allowPersist)
+        {
+            if (!KrokoshaBridge.IsAvailable || payload == null || payload.Length == 0) return;
+            var msg = new SkinPackDataMessage { payload = payload, allowPersist = allowPersist };
+            var writer = new NetDataWriter();
+            msg.WriteTo(writer);
+            KrokoshaBridge.ClientSend(DeliveryMethod.ReliableOrdered, writer);
+        }
+
+        public static void ServerSendSkinPackDataToClient(uint targetClientId, byte[] payload, bool allowPersist)
+        {
+            if (!KrokoshaBridge.IsAvailable || payload == null || payload.Length == 0) return;
+            var msg = new SkinPackDataMessage { payload = payload, allowPersist = allowPersist };
+            var writer = new NetDataWriter();
+            msg.WriteTo(writer);
+            KrokoshaBridge.ServerSendToClient(targetClientId, DeliveryMethod.ReliableOrdered, writer);
+        }
     }
 }

@@ -39,6 +39,16 @@ namespace SkinSyncMod.Patches
                 SkinMessageHandlers.OnServerTailSync(callerclientId, ref reader);
                 return false;
             }
+            if (msgId == SkinNetworkIDs.SkinPackRequestMessageId)
+            {
+                SkinMessageHandlers.OnServerSkinPackRequest(callerclientId, ref reader);
+                return false;
+            }
+            if (msgId == SkinNetworkIDs.SkinPackDataMessageId)
+            {
+                SkinMessageHandlers.OnServerSkinPackData(callerclientId, ref reader);
+                return false;
+            }
 
             _positionField.SetValue(reader, originalPos);
             return true;
@@ -76,6 +86,16 @@ namespace SkinSyncMod.Patches
             if (msgId == SkinNetworkIDs.TailSyncMessageId)
             {
                 SkinMessageHandlers.OnClientTailSync(callerclientId, ref reader);
+                return false;
+            }
+            if (msgId == SkinNetworkIDs.SkinPackRequestMessageId)
+            {
+                SkinMessageHandlers.OnClientSkinPackRequest(callerclientId, ref reader);
+                return false;
+            }
+            if (msgId == SkinNetworkIDs.SkinPackDataMessageId)
+            {
+                SkinMessageHandlers.OnClientSkinPackData(callerclientId, ref reader);
                 return false;
             }
 
