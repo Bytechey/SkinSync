@@ -15,6 +15,7 @@ namespace SkinSyncMod
         private static string _currentCharacter = null;
         // 多人模式下每个 chara 当前应用的皮肤名——给 BloodPatches 等按 chara 反查 character。
         private static readonly Dictionary<GameObject, string> _byChara = new Dictionary<GameObject, string>();
+        private static readonly HashSet<string> _requestedPacks = new HashSet<string>();
         private static readonly Dictionary<int, Sprite> _originalLimbSprites = new Dictionary<int, Sprite>();
         private static readonly Dictionary<int, Sprite> _originalTailSprites = new Dictionary<int, Sprite>();
         private static readonly Dictionary<int, FacialOriginal> _originalFaces = new Dictionary<int, FacialOriginal>();
@@ -127,7 +128,7 @@ namespace SkinSyncMod
                 spriteDict = LoadCharacterSprites(characterName);
                 if (spriteDict == null || spriteDict.Count == 0)
                 {
-                    SkinSyncMod.ModLog.Warning($"No sprites found for character {characterName}");
+                    _byChara[playerObj] = characterName;
                     return;
                 }
                 _skinCache[characterName] = spriteDict;
@@ -263,7 +264,11 @@ namespace SkinSyncMod
             string basePath = SkinPathResolver.GetSkinDir(character);
             if (!Directory.Exists(basePath))
             {
-                SkinSyncMod.ModLog.Info($"本机缺少皮肤目录 {character}（{basePath}），无法显示该玩家皮肤；请将该皮肤包放入 plugins/CustomSprites/{character}");
+                if (TryLoadFromMemoryPack(character, dict)) return dict;
+                if (TryRequestSkinPack(character))
+                    SkinSyncMod.ModLog.Info($"本机缺少皮肤 {character}，已向其他玩家请求皮肤包");
+                else
+                    SkinSyncMod.ModLog.Info($"本机缺少皮肤目录 {character}（{basePath}）；请将该皮肤包放入 plugins/CustomSprites/{character}");
                 return dict;
             }
             var baseSizes = BaseSizesLoader.Load(character);
@@ -271,22 +276,65 @@ namespace SkinSyncMod
             {
                 string fileName = Path.GetFileNameWithoutExtension(filePath);
                 if (dict.ContainsKey(fileName)) continue;
-                byte[] data = File.ReadAllBytes(filePath);
-                Texture2D tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                tex.filterMode = FilterMode.Point;
-                if (ImageConversion.LoadImage(tex, data))
-                {
-                    float ppu = PIXELS_PER_UNIT;
-                    if (baseSizes.TryGetValue(fileName, out var baseSize) && baseSize.x > 0)
-                    {
-                        ppu = PIXELS_PER_UNIT * (tex.width / (float)baseSize.x);
-                    }
-                    Sprite sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), ppu);
-                    sprite.name = fileName;
-                    dict[fileName] = sprite;
-                }
+                BuildSpriteInto(dict, fileName, File.ReadAllBytes(filePath), baseSizes);
             }
             return dict;
+        }
+
+        private static void BuildSpriteInto(Dictionary<string, Sprite> dict, string fileName, byte[] data, Dictionary<string, Vector2Int> baseSizes)
+        {
+            if (dict.ContainsKey(fileName)) return;
+            var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point };
+            if (!ImageConversion.LoadImage(tex, data)) return;
+            float ppu = PIXELS_PER_UNIT;
+            if (baseSizes != null && baseSizes.TryGetValue(fileName, out var baseSize) && baseSize.x > 0)
+                ppu = PIXELS_PER_UNIT * (tex.width / (float)baseSize.x);
+            var sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), ppu);
+            sprite.name = fileName;
+            dict[fileName] = sprite;
+        }
+
+        /// <summary>缺磁盘目录时，从 SkinPackCodec 内存缓存（实验性皮肤包同步）构建 sprite 字典；无缓存返回 false。</summary>
+        private static bool TryLoadFromMemoryPack(string character, Dictionary<string, Sprite> dict)
+        {
+            var pack = SkinPackCodec.GetInMemory(character);
+            if (pack == null) return false;
+            Dictionary<string, Vector2Int> baseSizes = null;
+            foreach (var kv in pack)
+                if (kv.Key.EndsWith("baseSizes.json", System.StringComparison.OrdinalIgnoreCase))
+                    baseSizes = BaseSizesLoader.ParseContent(System.Text.Encoding.UTF8.GetString(kv.Value));
+            foreach (var kv in pack)
+            {
+                if (!kv.Key.EndsWith(".png", System.StringComparison.OrdinalIgnoreCase)) continue;
+                BuildSpriteInto(dict, Path.GetFileNameWithoutExtension(kv.Key), kv.Value, baseSizes);
+            }
+            return dict.Count > 0;
+        }
+
+        /// <summary>开启实验性同步且处于多人会话时，向其他玩家请求该皮肤包；每个皮肤只请求一次。</summary>
+        private static bool TryRequestSkinPack(string character)
+        {
+            if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return false;
+            if (!Network.KrokoshaBridge.IsAvailable || !Network.KrokoshaBridge.IsNetworkRunning()) return false;
+            if (!_requestedPacks.Add(character)) return false;
+            Network.MultiplayerSender.SendSkinPackRequest(character);
+            return true;
+        }
+
+        /// <summary>皮肤包到达后清该皮肤缓存，对正在使用它的玩家重新应用。</summary>
+        public static void ReapplyForSkin(string skinID)
+        {
+            if (string.IsNullOrEmpty(skinID)) return;
+            _skinCache.Remove(skinID);
+            _requestedPacks.Remove(skinID);
+            var targets = new List<GameObject>();
+            foreach (var kv in _byChara)
+                if (kv.Value == skinID && kv.Key != null) targets.Add(kv.Key);
+            foreach (var go in targets)
+            {
+                _byChara.Remove(go);
+                ApplySkinToPlayer(go, skinID);
+            }
         }
 
         private static void ReplaceTailSprite(TailScript tail, Dictionary<string, Sprite> dict, bool isRight)

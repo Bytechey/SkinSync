@@ -37,6 +37,11 @@ namespace SkinSyncMod
         internal ConfigEntry<bool> SyncAccessories { get; }
         internal ConfigEntry<bool> SyncTailDeform { get; }
 
+        // —— 实验性 —— //
+        internal ConfigEntry<bool> EnableSkinPackSync { get; }
+        internal ConfigEntry<bool> SkinPackPersistOnDisk { get; }
+        internal ConfigEntry<bool> AllowPeersPersistMyPack { get; }
+
         /// <summary>配件覆盖（按 skin + accId）。enabled 必有；offX/offY/rot/z 缺省时表示沿用 accessories.json 默认值。</summary>
         internal sealed class AccessoryOverride
         {
@@ -123,6 +128,13 @@ namespace SkinSyncMod
                 "本机改动配件覆盖（toggle / 偏移 / 旋转 / Z 排序）时广播给所有玩家。");
             SyncTailDeform = config.Bind("Sync", "TailDeform", true,
                 "本机改动尾巴形变参数时广播给所有玩家（尾巴形变是全局参数，会覆盖到所有客户端）。");
+
+            EnableSkinPackSync = config.Bind("Experimental", "EnableSkinPackSync", false,
+                "实验性：缺少对方使用的皮肤时，自动从持有该皮肤的玩家拉取皮肤包到本机内存（并按本设置可选落盘）。");
+            SkinPackPersistOnDisk = config.Bind("Experimental", "SkinPackPersistOnDisk", false,
+                "拉取到的皮肤包写入 plugins/CustomSprites/。关闭时仅内存缓存，下次进游戏需重新拉取。");
+            AllowPeersPersistMyPack = config.Bind("Experimental", "AllowPeersPersistMyPack", true,
+                "允许接收到本机皮肤包的玩家把它落盘永久保留。关闭则对方即使开了落盘也只能内存缓存（仅本会话有效）。");
 
             _accessoryOverrides = config.Bind("Session", "AccessoryOverrides", "",
                 "配件覆盖。格式：每条 \"skin|accId=k1=v1,k2=v2,...\" 用分号分隔；可用 key：on/off, offX, offY, rot, z。");

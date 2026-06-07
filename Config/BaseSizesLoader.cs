@@ -16,14 +16,21 @@ namespace SkinSyncMod
         {
             if (string.IsNullOrEmpty(characterName)) return new Dictionary<string, Vector2Int>();
             if (_cache.TryGetValue(characterName, out var cached)) return cached;
-            var dict = new Dictionary<string, Vector2Int>();
             string path = Path.Combine(SkinPathResolver.GetSkinDir(characterName), "baseSizes.json");
-            if (!File.Exists(path)) { _cache[characterName] = dict; return dict; }
+            var dict = File.Exists(path) ? ParseContent(File.ReadAllText(path)) : new Dictionary<string, Vector2Int>();
+            _cache[characterName] = dict;
+            return dict;
+        }
+
+        /// <summary>从 baseSizes.json 文本解析 fileName → (baseW, baseH)；空 / 解析失败返回空字典。</summary>
+        internal static Dictionary<string, Vector2Int> ParseContent(string json)
+        {
+            var dict = new Dictionary<string, Vector2Int>();
+            if (string.IsNullOrEmpty(json)) return dict;
             try
             {
-                string json = File.ReadAllText(path);
                 int entriesIdx = json.IndexOf("\"entries\"", System.StringComparison.Ordinal);
-                if (entriesIdx < 0) { _cache[characterName] = dict; return dict; }
+                if (entriesIdx < 0) return dict;
                 int p = entriesIdx;
                 while (true)
                 {
@@ -53,7 +60,6 @@ namespace SkinSyncMod
                 }
             }
             catch { }
-            _cache[characterName] = dict;
             return dict;
         }
 
