@@ -36,11 +36,22 @@ namespace SkinSyncMod
         /// <summary>读取并解析 wings.json，文件缺失或失败时返回默认配置。</summary>
         public static Config Load(string path)
         {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return Defaults();
+            try { return Parse(File.ReadAllText(path)); }
+            catch (System.Exception ex)
+            {
+                SkinSyncMod.ModLog.Warning("wings.json parse failed: " + ex.Message);
+                return Defaults();
+            }
+        }
+
+        /// <summary>从 JSON 文本解析 wings.json；解析失败返回 Defaults()。给内存包 fallback 用。</summary>
+        public static Config Parse(string text)
+        {
             var def = Defaults();
-            if (string.IsNullOrEmpty(path) || !File.Exists(path)) return def;
+            if (string.IsNullOrEmpty(text)) return def;
             try
             {
-                string text = File.ReadAllText(path);
                 var raw = JsonConvert.DeserializeObject<RawConfig>(text);
                 if (raw == null) return def;
                 return new Config
@@ -51,11 +62,7 @@ namespace SkinSyncMod
                     WingDR = ToPiece(raw.wingDR, def.WingDR),
                 };
             }
-            catch (System.Exception ex)
-            {
-                SkinSyncMod.ModLog.Warning("wings.json parse failed: " + ex.Message);
-                return def;
-            }
+            catch { return def; }
         }
 
         private static Piece ToPiece(RawPiece r, Piece fallback)

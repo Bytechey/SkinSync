@@ -49,9 +49,20 @@ namespace SkinSyncMod
             if (string.IsNullOrEmpty(skinDir)) return null;
             string path = Path.Combine(skinDir, "blood.json");
             if (!File.Exists(path)) return null;
+            try { return Parse(File.ReadAllText(path)); }
+            catch (System.Exception ex)
+            {
+                SkinSyncMod.ModLog.Warning("blood.json parse failed: " + ex.Message);
+                return null;
+            }
+        }
+
+        /// <summary>从 JSON 文本解析 blood.json；解析失败返回 null。给内存包 fallback 用。</summary>
+        public static Config Parse(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return null;
             try
             {
-                string text = File.ReadAllText(path);
                 var raw = JsonConvert.DeserializeObject<RawConfig>(text);
                 if (raw == null) return null;
                 return new Config
@@ -71,11 +82,7 @@ namespace SkinSyncMod
                     AnimFps = raw.animFps,
                 };
             }
-            catch (System.Exception ex)
-            {
-                SkinSyncMod.ModLog.Warning("blood.json parse failed: " + ex.Message);
-                return null;
-            }
+            catch { return null; }
         }
 
         private static Color32? ParseColor(int[] arr)

@@ -51,6 +51,8 @@ namespace SkinSyncMod
             gameObject.hideFlags = HideFlags.HideAndDontSave;
             UnityEngine.Object.DontDestroyOnLoad(gameObject);
             harmony = new Harmony("com.Bytechey.skinsync");
+            try { if (System.IO.Directory.Exists(SkinPathResolver.SyncCacheRoot)) System.IO.Directory.Delete(SkinPathResolver.SyncCacheRoot, true); }
+            catch (System.Exception ex) { ModLog.Warning("clear SyncCacheRoot failed: " + ex.Message); }
             KrokoshaBridge.Init();
             RegisterPatches();
             Settings = new SkinSyncSettings(Config);

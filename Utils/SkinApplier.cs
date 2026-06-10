@@ -137,7 +137,10 @@ namespace SkinSyncMod
             if (!_wingsCache.TryGetValue(characterName, out var wingsCfg))
             {
                 string wingsJsonPath = Path.Combine(SkinPathResolver.GetSkinDir(characterName), "wings.json");
-                wingsCfg = WingsConfigLoader.Load(wingsJsonPath);
+                if (File.Exists(wingsJsonPath))
+                    wingsCfg = WingsConfigLoader.Load(wingsJsonPath);
+                else
+                    wingsCfg = LoadJsonFromMemoryPack(characterName, "wings.json", WingsConfigLoader.Parse) ?? WingsConfigLoader.Defaults();
                 _wingsCache[characterName] = wingsCfg;
             }
 
@@ -165,7 +168,9 @@ namespace SkinSyncMod
             }
 
             string accessoriesPath = Path.Combine(SkinPathResolver.GetSkinDir(characterName), "accessories.json");
-            var accEntries = AccessoryConfigLoader.Load(accessoriesPath);
+            var accEntries = File.Exists(accessoriesPath)
+                ? AccessoryConfigLoader.Load(accessoriesPath)
+                : (LoadJsonFromMemoryPack(characterName, "accessories.json", AccessoryConfigLoader.Parse) ?? new List<AccessoryConfigLoader.Entry>());
             AccessoryAttacher.Apply(playerObj, accEntries, spriteDict, characterName);
 
             _currentCharacter = characterName;
@@ -173,8 +178,8 @@ namespace SkinSyncMod
             if (!sameSkin)
             {
                 ZonesAttacher.Apply(playerObj, characterName);
-                BloodAttacher.Apply(playerObj, characterName);
             }
+            BloodAttacher.Apply(playerObj, characterName);
             EnsureLimbDirWatcher(playerObj);
             _skinApplied?.Invoke(playerObj, HasWings(playerObj));
         }
@@ -292,6 +297,19 @@ namespace SkinSyncMod
             var sprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), new Vector2(0.5f, 0.5f), ppu);
             sprite.name = fileName;
             dict[fileName] = sprite;
+        }
+
+        /// <summary>缺磁盘目录时，从内存皮肤包按文件名找文件，用解析器把字节转 JSON 配置；缺则返回 default。</summary>
+        private static T LoadJsonFromMemoryPack<T>(string character, string fileName, System.Func<string, T> parser) where T : class
+        {
+            var pack = SkinPackCodec.GetInMemory(character);
+            if (pack == null) return null;
+            foreach (var kv in pack)
+            {
+                if (kv.Key.Equals(fileName, System.StringComparison.OrdinalIgnoreCase))
+                    return parser(System.Text.Encoding.UTF8.GetString(kv.Value));
+            }
+            return null;
         }
 
         /// <summary>缺磁盘目录时，从 SkinPackCodec 内存缓存（实验性皮肤包同步）构建 sprite 字典；无缓存返回 false。</summary>
