@@ -15,6 +15,7 @@ namespace SkinSyncMod.Patches
         private const string PluginGuid = "com.Bytechey.skinsync";
         private const string ApiUrl = "https://api.github.com/repos/Bytechey/SkinSync/releases/latest";
         private const string ReleasesUrl = "https://github.com/Bytechey/SkinSync/releases";
+        private const int UpdateNoticeSlot = 3;
 
         private static bool _checked;
         private static string _currentVersion = "";
@@ -101,7 +102,7 @@ namespace SkinSyncMod.Patches
 
             string text = $"SkinSync 有新版本：{_latestTag}（点击此处打开 release 页）";
             float x = 32f;
-            float y = Screen.height * 0.12f;
+            float y = Screen.height * 0.12f + UpdateNoticeSlot * 40f;
             Vector2 size = style.CalcSize(new GUIContent(text));
             var rect = new Rect(x, y, size.x + 8f, size.y + 4f);
             if (GUI.Button(rect, text, style))

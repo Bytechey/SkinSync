@@ -11,8 +11,11 @@ namespace SkinSyncMod
 {
     [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.0.10")]
     [BepInDependency("KrokoshaCasualtiesMP", BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency(SaveManagerGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public class SkinSync : BaseUnityPlugin
     {
+        private const string SaveManagerGuid = "com.casualtiesUnknown.saveManager";
+
         internal static Harmony harmony;
 
         private List<string> availableSkins = new List<string>();
@@ -107,7 +110,16 @@ namespace SkinSyncMod
                 onOpened: () => UiBlocker.Block(),
                 onClosed: () => UiBlocker.Unblock());
 
-            MenuButtonInjector.Setup(() => _window.OpenPanel());
+            bool saveManagerInstalled = BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey(SaveManagerGuid);
+            if (!saveManagerInstalled)
+            {
+                MenuButtonInjector.Setup(() => _window.OpenPanel());
+            }
+            else
+            {
+                Patches.SaveManagerTabBridge.Register(_window);
+            }
+
             UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
             Application.quitting += OnApplicationQuitting;
         }
