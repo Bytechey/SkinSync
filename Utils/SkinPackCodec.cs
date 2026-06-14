@@ -42,6 +42,17 @@ namespace SkinSyncMod
                 files.Add(new KeyValuePair<string, byte[]>(rel, bytes));
                 if (files.Count > MAX_FILE_COUNT) return null;
             }
+            foreach (string fp in Directory.GetFiles(baseDir, "*.zones.json", SearchOption.AllDirectories))
+            {
+                string rel = MakeRelative(baseDir, fp);
+                if (!IsSafeRelPath(rel)) continue;
+                byte[] bytes;
+                try { bytes = File.ReadAllBytes(fp); }
+                catch { continue; }
+                if (bytes.Length == 0 || bytes.Length > MAX_FILE_SIZE) continue;
+                files.Add(new KeyValuePair<string, byte[]>(rel, bytes));
+                if (files.Count > MAX_FILE_COUNT) return null;
+            }
             string baseSizesPath = Path.Combine(baseDir, "baseSizes.json");
             if (File.Exists(baseSizesPath))
             {
@@ -50,6 +61,39 @@ namespace SkinSyncMod
                     byte[] bs = File.ReadAllBytes(baseSizesPath);
                     if (bs.Length > 0 && bs.Length <= MAX_FILE_SIZE)
                         files.Add(new KeyValuePair<string, byte[]>("baseSizes.json", bs));
+                }
+                catch { }
+            }
+            string bloodJsonPath = Path.Combine(baseDir, "blood.json");
+            if (File.Exists(bloodJsonPath))
+            {
+                try
+                {
+                    byte[] bj = File.ReadAllBytes(bloodJsonPath);
+                    if (bj.Length > 0 && bj.Length <= MAX_FILE_SIZE)
+                        files.Add(new KeyValuePair<string, byte[]>("blood.json", bj));
+                }
+                catch { }
+            }
+            string accPath = Path.Combine(baseDir, "accessories.json");
+            if (File.Exists(accPath))
+            {
+                try
+                {
+                    byte[] aj = File.ReadAllBytes(accPath);
+                    if (aj.Length > 0 && aj.Length <= MAX_FILE_SIZE)
+                        files.Add(new KeyValuePair<string, byte[]>("accessories.json", aj));
+                }
+                catch { }
+            }
+            string wingsPath = Path.Combine(baseDir, "wings.json");
+            if (File.Exists(wingsPath))
+            {
+                try
+                {
+                    byte[] wj = File.ReadAllBytes(wingsPath);
+                    if (wj.Length > 0 && wj.Length <= MAX_FILE_SIZE)
+                        files.Add(new KeyValuePair<string, byte[]>("wings.json", wj));
                 }
                 catch { }
             }
@@ -117,7 +161,8 @@ namespace SkinSyncMod
                         dict[path] = data;
                     }
                     _cache[skinID] = dict;
-                    if (persistToDisk) PersistToDisk(skinID, dict);
+                    if (persistToDisk) PersistToDisk(skinID, dict, persistent: true);
+                    else PersistToDisk(skinID, dict, persistent: false);
                     return true;
                 }
             }
@@ -128,11 +173,13 @@ namespace SkinSyncMod
             }
         }
 
-        private static void PersistToDisk(string skinID, Dictionary<string, byte[]> dict)
+        private static void PersistToDisk(string skinID, Dictionary<string, byte[]> dict, bool persistent)
         {
             try
             {
-                string baseDir = Path.Combine(Paths.PluginPath, "CustomSprites", skinID);
+                string baseDir = persistent
+                    ? Path.Combine(Paths.PluginPath, "CustomSprites", skinID)
+                    : Path.Combine(SkinPathResolver.SyncCacheRoot, skinID);
                 Directory.CreateDirectory(baseDir);
                 foreach (var kv in dict)
                 {
@@ -142,7 +189,7 @@ namespace SkinSyncMod
                     File.WriteAllBytes(fullPath, kv.Value);
                 }
                 SkinPathResolver.Invalidate(skinID);
-                SkinSyncMod.ModLog.Info($"SkinPackCodec: 已落盘 {skinID}（{dict.Count} 个文件）");
+                SkinSyncMod.ModLog.Info($"SkinPackCodec: 已落盘 {skinID}（{dict.Count} 个文件，persistent={persistent}）");
             }
             catch (Exception ex) { SkinSyncMod.ModLog.Warning("SkinPackCodec.PersistToDisk failed: " + ex.Message); }
         }
@@ -178,7 +225,11 @@ namespace SkinSyncMod
                 return false;
             }
             if (!p.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
-                && !p.Equals("baseSizes.json", StringComparison.OrdinalIgnoreCase)) return false;
+                && !p.EndsWith(".zones.json", StringComparison.OrdinalIgnoreCase)
+                && !p.Equals("baseSizes.json", StringComparison.OrdinalIgnoreCase)
+                && !p.Equals("blood.json", StringComparison.OrdinalIgnoreCase)
+                && !p.Equals("accessories.json", StringComparison.OrdinalIgnoreCase)
+                && !p.Equals("wings.json", StringComparison.OrdinalIgnoreCase)) return false;
             return true;
         }
     }

@@ -11,8 +11,11 @@ namespace SkinSyncMod
 {
     [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.0.10")]
     [BepInDependency("KrokoshaCasualtiesMP", BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency(SaveManagerGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public class SkinSync : BaseUnityPlugin
     {
+        private const string SaveManagerGuid = "com.casualtiesUnknown.saveManager";
+
         internal static Harmony harmony;
 
         private List<string> availableSkins = new List<string>();
@@ -51,6 +54,8 @@ namespace SkinSyncMod
             gameObject.hideFlags = HideFlags.HideAndDontSave;
             UnityEngine.Object.DontDestroyOnLoad(gameObject);
             harmony = new Harmony("com.Bytechey.skinsync");
+            try { if (System.IO.Directory.Exists(SkinPathResolver.SyncCacheRoot)) System.IO.Directory.Delete(SkinPathResolver.SyncCacheRoot, true); }
+            catch (System.Exception ex) { ModLog.Warning("clear SyncCacheRoot failed: " + ex.Message); }
             KrokoshaBridge.Init();
             RegisterPatches();
             Settings = new SkinSyncSettings(Config);
@@ -105,7 +110,16 @@ namespace SkinSyncMod
                 onOpened: () => UiBlocker.Block(),
                 onClosed: () => UiBlocker.Unblock());
 
-            MenuButtonInjector.Setup(() => _window.OpenPanel());
+            bool saveManagerInstalled = BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey(SaveManagerGuid);
+            if (!saveManagerInstalled)
+            {
+                MenuButtonInjector.Setup(() => _window.OpenPanel());
+            }
+            else
+            {
+                Patches.SaveManagerTabBridge.Register(_window);
+            }
+
             UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
             Application.quitting += OnApplicationQuitting;
         }

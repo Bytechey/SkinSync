@@ -48,6 +48,7 @@ namespace SkinSyncMod
 
         private static void InjectOnce(PreRunScript pre)
         {
+            if (_onClick == null) return;
             if (pre == null || pre.loadButton == null)
             {
                 ModLog.Warning("PreRunScript / loadButton 为空，跳过注入。");

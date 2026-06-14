@@ -22,6 +22,17 @@ namespace SkinSyncMod
         private static readonly System.Collections.Generic.Dictionary<int, ParticleState> _origParticles
             = new System.Collections.Generic.Dictionary<int, ParticleState>();
 
+        // limb shader 采样的受伤血迹贴图 sampler 属性名（对应 limbBlood.png）。
+        private const string LimbBloodProp = "_SampleTexture2D_722a3646334c45d58299ef3dd9fd21be_Texture_1_Texture2D";
+        private static readonly System.Collections.Generic.Dictionary<int, Texture2D> _origBloodTex
+            = new System.Collections.Generic.Dictionary<int, Texture2D>();
+        private static readonly System.Collections.Generic.Dictionary<string, Texture2D> _recoloredBlood
+            = new System.Collections.Generic.Dictionary<string, Texture2D>();
+        private static readonly System.Collections.Generic.Dictionary<int, Sprite> _origNoseSprite
+            = new System.Collections.Generic.Dictionary<int, Sprite>();
+        private static readonly System.Collections.Generic.Dictionary<string, Sprite> _recoloredNose
+            = new System.Collections.Generic.Dictionary<string, Sprite>();
+
         private struct ParticleState
         {
             public ParticleSystem.MinMaxGradient StartColor;
@@ -38,15 +49,22 @@ namespace SkinSyncMod
             if (playerObj == null || string.IsNullOrEmpty(characterName)) return;
             if (!BloodRenderConfig.Enabled) return;
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
-            var cfg = BloodConfigLoader.Load(skinDir);
+            var cfg = BloodConfigLoader.Load(skinDir) ?? LoadCfgFromMemoryPack(characterName);
 
             Body body = playerObj.GetComponentInChildren<Body>(true);
             if (body == null) return;
 
-            Texture2D customTex = cfg != null ? LoadTexture(Path.Combine(skinDir, "Blood/BloodParticle.png")) : null;
+            Texture2D customTex = cfg != null ? LoadBloodTexture(skinDir, characterName, "Blood/BloodParticle.png") : null;
+            Texture2D limbBloodTex = cfg != null ? LoadBloodTexture(skinDir, characterName, "Blood/limbBlood.png") : null;
             foreach (var limb in body.GetComponentsInChildren<Limb>(true))
             {
-                ApplyToLimb(limb, cfg, customTex);
+                ApplyToLimb(limb, cfg, customTex, limbBloodTex);
+            }
+
+            Texture2D noseTex = cfg != null ? LoadBloodTexture(skinDir, characterName, "Blood/nosebleed.png") : null;
+            foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
+            {
+                ApplyNoseBleed(face, cfg, noseTex);
             }
 
             var watcher = playerObj.GetComponent<BloodVomitWatcher>();
@@ -60,10 +78,9 @@ namespace SkinSyncMod
             if (ps == null || string.IsNullOrEmpty(characterName)) return;
             if (!BloodRenderConfig.Enabled) return;
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
-            var cfg = BloodConfigLoader.Load(skinDir);
+            var cfg = BloodConfigLoader.Load(skinDir) ?? LoadCfgFromMemoryPack(characterName);
             if (cfg == null) return;
-            string fullSpritePath = Path.Combine(skinDir, "Blood/BloodParticle.png");
-            Texture2D customTex = LoadTexture(fullSpritePath);
+            Texture2D customTex = LoadBloodTexture(skinDir, characterName, "Blood/BloodParticle.png");
             ApplyToParticle(ps, cfg, customTex);
         }
 
@@ -75,13 +92,58 @@ namespace SkinSyncMod
             if (!BloodRenderConfig.Enabled) return false;
             if (string.IsNullOrEmpty(characterName)) return false;
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
-            cfg = BloodConfigLoader.Load(skinDir);
+            cfg = BloodConfigLoader.Load(skinDir) ?? LoadCfgFromMemoryPack(characterName);
             if (cfg == null) return false;
-            customTex = LoadTexture(Path.Combine(skinDir, "Blood/BloodParticle.png"));
+            customTex = LoadBloodTexture(skinDir, characterName, "Blood/BloodParticle.png");
             return true;
         }
 
-        private static void ApplyToLimb(Limb limb, BloodConfigLoader.Config cfg, Texture2D customTex)
+        /// <summary>blood.json 内存包 fallback：磁盘缺失时读 SkinPackCodec 缓存。</summary>
+        private static BloodConfigLoader.Config LoadCfgFromMemoryPack(string characterName)
+        {
+            var pack = SkinPackCodec.GetInMemory(characterName);
+            if (pack == null) return null;
+            foreach (var kv in pack)
+            {
+                if (kv.Key.Equals("blood.json", System.StringComparison.OrdinalIgnoreCase))
+                    return BloodConfigLoader.Parse(System.Text.Encoding.UTF8.GetString(kv.Value));
+            }
+            return null;
+        }
+
+        /// <summary>血液贴图加载：先磁盘，后内存包字节回退构造 Texture2D。</summary>
+        private static Texture2D LoadBloodTexture(string skinDir, string characterName, string relPath)
+        {
+            var tex = LoadTexture(Path.Combine(skinDir, relPath));
+            if (tex != null) return tex;
+            var pack = SkinPackCodec.GetInMemory(characterName);
+            if (pack == null) return null;
+            string norm = relPath.Replace('\\', '/');
+            foreach (var kv in pack)
+            {
+                if (kv.Key.Equals(norm, System.StringComparison.OrdinalIgnoreCase))
+                    return LoadTextureFromBytes(kv.Value);
+            }
+            return null;
+        }
+
+        private static Texture2D LoadTextureFromBytes(byte[] data)
+        {
+            if (data == null || data.Length == 0) return null;
+            try
+            {
+                var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point };
+                if (!ImageConversion.LoadImage(tex, data))
+                {
+                    UnityEngine.Object.Destroy(tex);
+                    return null;
+                }
+                return tex;
+            }
+            catch { return null; }
+        }
+
+        private static void ApplyToLimb(Limb limb, BloodConfigLoader.Config cfg, Texture2D customTex, Texture2D limbBloodTex = null)
         {
             if (limb == null) return;
             ApplyToParticle(_bleedField?.GetValue(limb) as ParticleSystem, cfg, customTex, persistent: true);
@@ -96,12 +158,19 @@ namespace SkinSyncMod
             {
                 _origLimbBlood[matId] = (mat.GetColor("_BloodDark"), mat.GetColor("_BloodLight"));
             }
+            if (!_origBloodTex.ContainsKey(matId))
+            {
+                var t = mat.GetTexture(LimbBloodProp) as Texture2D;
+                if (t != null) _origBloodTex[matId] = t;
+            }
 
             if (cfg == null)
             {
                 var orig = _origLimbBlood[matId];
                 mat.SetColor("_BloodDark", orig.dark);
                 mat.SetColor("_BloodLight", orig.light);
+                if (_origBloodTex.TryGetValue(matId, out var ot) && ot != null)
+                    mat.SetTexture(LimbBloodProp, ot);
                 return;
             }
 
@@ -117,7 +186,125 @@ namespace SkinSyncMod
                 Color c = lightSrc.Value; c.a = 1f;
                 mat.SetColor("_BloodLight", c);
             }
-            SkinSyncMod.ModLog.Info($"limb {limb.gameObject.name} 受伤血色：dark={(darkSrc.HasValue ? darkSrc.Value.ToString() : "n/a")} light={(lightSrc.HasValue ? lightSrc.Value.ToString() : "n/a")} mat={mat.name}");
+            if (limbBloodTex != null)
+                mat.SetTexture(LimbBloodProp, limbBloodTex);
+            else
+                ApplyBloodTexture(mat, matId, darkSrc, lightSrc);
+        }
+
+        /// <summary>把 limb material 的受伤血迹贴图替换为按自定义血色重着色的版本；shader 直接采样该贴图而非 _BloodLight 上色。</summary>
+        private static void ApplyBloodTexture(Material mat, int matId, Color32? darkSrc, Color32? lightSrc)
+        {
+            if (!darkSrc.HasValue && !lightSrc.HasValue) return;
+            Color dark = darkSrc.HasValue ? (Color)darkSrc.Value : (Color)lightSrc.Value;
+            Color light = lightSrc.HasValue ? (Color)lightSrc.Value : dark;
+            dark.a = 1f; light.a = 1f;
+
+            if (!_origBloodTex.TryGetValue(matId, out var src) || src == null)
+            {
+                src = mat.GetTexture(LimbBloodProp) as Texture2D;
+                if (src != null) _origBloodTex[matId] = src;
+            }
+            if (src == null)
+            {
+                // 拿不到游戏默认贴图基底——用暗色单色填充贴图兜底（shader 任何 uv 采到都是该色）。
+                string solidKey = $"solid|{dark}";
+                if (!_recoloredBlood.TryGetValue(solidKey, out var solid) || solid == null)
+                {
+                    solid = BuildSolidTexture(dark);
+                    _recoloredBlood[solidKey] = solid;
+                }
+                if (solid != null) mat.SetTexture(LimbBloodProp, solid);
+                return;
+            }
+
+            string key = $"{dark}|{light}";
+            if (!_recoloredBlood.TryGetValue(key, out var tex) || tex == null)
+            {
+                tex = RecolorLimbBlood(src, dark, light);
+                _recoloredBlood[key] = tex;
+            }
+            if (tex != null) mat.SetTexture(LimbBloodProp, tex);
+        }
+
+        private static Texture2D BuildSolidTexture(Color color)
+        {
+            var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false) { filterMode = FilterMode.Point };
+            var px = new Color[4] { color, color, color, color };
+            tex.SetPixels(px);
+            tex.Apply();
+            return tex;
+        }
+
+        private static Texture2D RecolorLimbBlood(Texture2D src, Color dark, Color light)
+        {
+            if (src == null) return null;
+            var rt = RenderTexture.GetTemporary(src.width, src.height, 0, RenderTextureFormat.ARGB32);
+            Graphics.Blit(src, rt);
+            var prev = RenderTexture.active;
+            RenderTexture.active = rt;
+            var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false) { filterMode = src.filterMode };
+            tex.ReadPixels(new Rect(0, 0, src.width, src.height), 0, 0);
+            RenderTexture.active = prev;
+            RenderTexture.ReleaseTemporary(rt);
+            var px = tex.GetPixels();
+            for (int i = 0; i < px.Length; i++)
+            {
+                float lum = px[i].r * 0.4f + px[i].g * 0.5f + px[i].b * 0.1f;
+                Color c = Color.Lerp(dark, light, lum);
+                c.a = px[i].a;
+                px[i] = c;
+            }
+            tex.SetPixels(px);
+            tex.Apply();
+            return tex;
+        }
+
+        /// <summary>按 blood.json 设鼻血：有自定义 nosebleed 贴图用贴图，否则按受伤血色重着色游戏默认鼻血贴图；blood.json 缺失恢复默认。</summary>
+        private static void ApplyNoseBleed(FacialExpression face, BloodConfigLoader.Config cfg, Texture2D noseTex)
+        {
+            if (face == null) return;
+            var sr = face.nosebleedSprite;
+            if (sr == null) return;
+            int id = sr.GetInstanceID();
+            if (!_origNoseSprite.ContainsKey(id)) _origNoseSprite[id] = sr.sprite;
+            var orig = _origNoseSprite[id];
+            if (orig == null) return;
+
+            if (cfg == null) { sr.sprite = orig; return; }
+
+            if (noseTex != null)
+            {
+                sr.sprite = BuildSpriteLike(orig, noseTex);
+                return;
+            }
+
+            Color32? darkSrc = cfg.BloodDark ?? cfg.ParticleEndColor ?? cfg.ParticleStartColor;
+            Color32? lightSrc = cfg.BloodLight ?? cfg.ParticleStartColor ?? cfg.ParticleEndColor;
+            if (!darkSrc.HasValue && !lightSrc.HasValue) { sr.sprite = orig; return; }
+            Color dark = darkSrc.HasValue ? (Color)darkSrc.Value : (Color)lightSrc.Value;
+            Color light = lightSrc.HasValue ? (Color)lightSrc.Value : dark;
+            dark.a = 1f; light.a = 1f;
+            string key = $"{id}|{dark}|{light}";
+            if (!_recoloredNose.TryGetValue(key, out var spr) || spr == null)
+            {
+                var rtex = orig.texture != null ? RecolorLimbBlood(orig.texture, dark, light) : null;
+                spr = rtex != null ? BuildSpriteLike(orig, rtex) : orig;
+                _recoloredNose[key] = spr;
+            }
+            sr.sprite = spr;
+        }
+
+        // 用新贴图重建 sprite，保留参考 sprite 的归一化 pivot 与 pixelsPerUnit。
+        private static Sprite BuildSpriteLike(Sprite reference, Texture2D tex)
+        {
+            if (reference == null || tex == null) return reference;
+            Vector2 pivot = new Vector2(
+                reference.rect.width > 0 ? reference.pivot.x / reference.rect.width : 0.5f,
+                reference.rect.height > 0 ? reference.pivot.y / reference.rect.height : 0.5f);
+            var spr = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), pivot, reference.pixelsPerUnit);
+            spr.name = reference.name;
+            return spr;
         }
 
         /// <summary>给单个 limb 按 character 设受伤血色 + 染 BleedParticle prefab；Limb.Awake patch 用。</summary>
@@ -125,7 +312,9 @@ namespace SkinSyncMod
         {
             if (limb == null || string.IsNullOrEmpty(characterName)) return;
             if (!TryLoadCharacterBlood(characterName, out var cfg, out var tex)) return;
-            ApplyToLimb(limb, cfg, tex);
+            string skinDir = SkinPathResolver.GetSkinDir(characterName);
+            var limbBloodTex = LoadBloodTexture(skinDir, characterName, "Blood/limbBlood.png");
+            ApplyToLimb(limb, cfg, tex, limbBloodTex);
         }
 
         private static void ApplyToParticle(ParticleSystem ps, BloodConfigLoader.Config cfg, Texture2D customTex, bool persistent = false)
@@ -163,8 +352,12 @@ namespace SkinSyncMod
                 }
             }
 
-            // 起始颜色：随机池非空时走 RandomColor 模式；否则按单色 / 渐变。
-            if (cfg.RandomColors != null && cfg.RandomColors.Length > 0)
+            // 起始颜色：有自定义粒子贴图时用贴图本色（startColor 中性白），否则按设置的随机池 / 单色 / 渐变。
+            if (customTex != null)
+            {
+                main.startColor = Color.white;
+            }
+            else if (cfg.RandomColors != null && cfg.RandomColors.Length > 0)
             {
                 main.startColor = new ParticleSystem.MinMaxGradient(BuildRandomGradient(cfg.RandomColors))
                 {

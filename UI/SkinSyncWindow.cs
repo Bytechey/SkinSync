@@ -241,6 +241,50 @@ namespace SkinSyncMod
 #endif
         }
 
+        /// <summary>嵌入 saveManager 设置侧栏：Push 自身 BlackWhiteSkin + 用 GUILayout 流式画 tab 与当前 body 内容自适应主区。</summary>
+        internal void DrawEmbedded()
+        {
+            BlackWhiteSkin.Push();
+            try
+            {
+                DrawEmbeddedTabs();
+                if (_tab == 1) DrawSkinsTab();
+#if DEBUG
+                else if (_tab == 2) DrawCurrentTab();
+                else if (_tab == 3) DrawAboutTab();
+#else
+                else if (_tab == 2) DrawAboutTab();
+#endif
+                else DrawSettingsTab();
+            }
+            finally { BlackWhiteSkin.Pop(); }
+        }
+
+        private void DrawEmbeddedTabs()
+        {
+            GUILayout.BeginHorizontal();
+            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.settings"), 0);
+            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.skins"), 1);
+#if DEBUG
+            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.current"), 2);
+            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.about"), 3);
+#else
+            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.about"), 2);
+#endif
+            GUILayout.EndHorizontal();
+            GUILayout.Space(8f);
+        }
+
+        private void DrawEmbeddedTabButton(string label, int idx)
+        {
+            var style = idx == _tab ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle;
+            if (GUILayout.Button(label, style, GUILayout.Height(64f), GUILayout.ExpandWidth(true)))
+            {
+                _tab = idx;
+                CancelKeyCapture();
+            }
+        }
+
         private void DrawTabButton(Rect rect, string label, int idx)
         {
             var style = idx == _tab ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle;
@@ -599,7 +643,6 @@ namespace SkinSyncMod
             GUILayout.Space(6f);
             DrawLinkButton("KrokoshaCasualtiesMP", "https://github.com/Krokosha666/cas-unk-krokosha-multiplayer-coop");
             DrawLinkButton("BepInEx", "https://github.com/BepInEx/BepInEx");
-            DrawLinkButton("HarmonyX", "https://github.com/BepInEx/HarmonyX");
 
             GUILayout.Space(20f);
             GUILayout.EndScrollView();
