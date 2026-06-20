@@ -26,7 +26,7 @@ namespace SkinSyncMod.Network
         private static FieldInfo _netBodyAllInstances;
         private static MethodInfo _netBodyTryGetById;
         private static PropertyInfo _netBodyIsLocal;
-        private static PropertyInfo _netBodyNetId;
+        private static MemberInfo _netBodyNetId;
         private static PropertyInfo _netBodyChara;
 
         private static Type _netPlayerType;
@@ -48,6 +48,8 @@ namespace SkinSyncMod.Network
         private static Type _serverMainType;
         private static PropertyInfo _serverMainAllClientIdsProp;
         private static FieldInfo _serverMainAllClientIdsField;
+        
+        private static Type _clientIdType;
 
         public static MethodInfo InvokeServerMessageMethod => _netInvokeServerMessage;
         public static MethodInfo InvokeClientMessageMethod => _netInvokeClientMessage;
@@ -88,14 +90,13 @@ namespace SkinSyncMod.Network
                 const BindingFlags AnyInstance = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance;
 
                 _netClientSend = FindStaticMethodByArity(_netType, "Client_Send", 2);
-                _netServerSendToClients = FindServerSendToClientsByUintList(_netType);
                 _netInvokeServerMessage = FindStaticMethodByArity(_netType, "InvokeServerMessage", 2);
                 _netInvokeClientMessage = FindStaticMethodByArity(_netType, "InvokeClientMessage", 2);
 
                 _netBodyAllInstances = _netBodyType.GetField("all_instances", AnyStatic);
                 _netBodyTryGetById = FindStaticMethodByArity(_netBodyType, "TryGetNetBodyFromId", 2);
                 _netBodyIsLocal = _netBodyType.GetProperty("is_local", AnyInstance);
-                _netBodyNetId = _netBodyType.GetProperty("netId", AnyInstance);
+                _netBodyNetId = (MemberInfo)_netBodyType.GetProperty("netId", AnyInstance) ?? _netBodyType.GetField("netId", AnyInstance);
                 _netBodyChara = _netBodyType.GetProperty("chara", AnyInstance);
 
                 _netPlayerLocalPlayer = _netPlayerType.GetField("LOCAL_PLAYER", AnyStatic);
@@ -106,6 +107,10 @@ namespace SkinSyncMod.Network
                 _netPlayerSteamId = _netPlayerType.GetField("steam_id", AnyInstance);
                 _netPlayerClientId = _netPlayerType.GetProperty("clientId", AnyInstance);
                 _netPlayerPlayerbody = _netPlayerType.GetProperty("playerbody", AnyInstance);
+
+                _clientIdType = _netPlayerClientId != null ? _netPlayerClientId.PropertyType : null;
+
+                _netServerSendToClients = FindServerSendToClientsEnumerable(_netType, _clientIdType);
 
                 if (_krokoshaScavMpType != null)
                 {
@@ -154,15 +159,15 @@ namespace SkinSyncMod.Network
             if (!IsAvailable || _netServerSendToClients == null) return;
             var all = ResolveAllClientIds() as System.Collections.IEnumerable;
             if (all == null) return;
-            var list = new System.Collections.Generic.List<uint>();
+            var ids = new System.Collections.Generic.List<uint>();
             foreach (var c in all)
             {
-                uint cid = System.Convert.ToUInt32(c);
+                uint cid = UnboxId(c);
                 if (cid == excludeClientId) continue;
-                list.Add(cid);
+                ids.Add(cid);
             }
-            if (list.Count == 0) return;
-            System.Collections.Generic.IReadOnlyList<uint> targets = list;
+            if (ids.Count == 0) return;
+            object targets = BuildClientIdList(ids);
             _netServerSendToClients.Invoke(null, new object[] { method, writer, targets });
         }
 
@@ -170,7 +175,7 @@ namespace SkinSyncMod.Network
         public static void ServerSendToClient(uint clientId, DeliveryMethod method, NetDataWriter writer)
         {
             if (!IsAvailable || _netServerSendToClients == null) return;
-            System.Collections.Generic.IReadOnlyList<uint> single = new uint[] { clientId };
+            object single = BuildClientIdList(new uint[] { clientId });
             _netServerSendToClients.Invoke(null, new object[] { method, writer, single });
         }
 
@@ -284,7 +289,8 @@ namespace SkinSyncMod.Network
             if (!IsAvailable || _netBodyTryGetById == null) return false;
             try
             {
-                var args = new object[] { netId, null };
+                Type idParamType = _netBodyTryGetById.GetParameters()[0].ParameterType;
+                var args = new object[] { BoxId(netId, idParamType), null };
                 bool ok = (bool)_netBodyTryGetById.Invoke(null, args);
                 if (!ok || args[1] == null) return false;
                 box = args[1];
@@ -305,8 +311,7 @@ namespace SkinSyncMod.Network
                 else if (m is PropertyInfo pi) v = pi.GetValue(instance);
             }
             catch { return 0; }
-            if (v == null) return 0;
-            try { return Convert.ToUInt32(v); } catch { return 0; }
+            return UnboxId(v);
         }
 
         /// <summary>读 NetPlayer.LOCAL_PLAYER.clientId；KrokMP 不可用或本地玩家未就绪返回 false。</summary>
@@ -346,7 +351,8 @@ namespace SkinSyncMod.Network
             if (!IsAvailable || _netPlayerTryGetByClient == null) return false;
             try
             {
-                var args = new object[] { clientId, null };
+                Type idParamType = _netPlayerTryGetByClient.GetParameters()[0].ParameterType;
+                var args = new object[] { BoxId(clientId, idParamType), null };
                 bool ok = (bool)_netPlayerTryGetByClient.Invoke(null, args);
                 if (!ok || args[1] == null) return false;
                 object v = _netPlayerSteamId?.GetValue(args[1]);
@@ -433,9 +439,11 @@ namespace SkinSyncMod.Network
                 Expression cidExpr;
                 if (_netPlayerClientId != null && _netPlayerClientId.DeclaringType.IsAssignableFrom(plrType))
                 {
-                    cidExpr = Expression.Property(plrParam, _netPlayerClientId);
-                    if (cidExpr.Type != typeof(uint))
-                        cidExpr = Expression.Convert(cidExpr, typeof(uint));
+                    
+                    Expression prop = Expression.Property(plrParam, _netPlayerClientId);
+                    Expression boxed = Expression.Convert(prop, typeof(object));
+                    MethodInfo toUInt = typeof(KrokoshaBridge).GetMethod("ToUInt", BindingFlags.Public | BindingFlags.Static);
+                    cidExpr = Expression.Call(toUInt, boxed);
                 }
                 else
                 {
@@ -503,10 +511,12 @@ namespace SkinSyncMod.Network
             return found;
         }
 
-        private static MethodInfo FindServerSendToClientsByUintList(Type netType)
+        
+        private static MethodInfo FindServerSendToClientsEnumerable(Type netType, Type elemType)
         {
             if (netType == null) return null;
             const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+            MethodInfo legacyUintList = null;
             foreach (var m in netType.GetMethods(flags))
             {
                 if (m.Name != "Server_SendToClients") continue;
@@ -514,10 +524,93 @@ namespace SkinSyncMod.Network
                 if (ps.Length != 3) continue;
                 Type third = ps[2].ParameterType;
                 if (third.IsByRef) third = third.GetElementType();
-                if (third == null) continue;
-                if (third == typeof(System.Collections.Generic.IReadOnlyList<uint>)) return m;
+                if (third == null || !third.IsGenericType) continue;
+                if (!typeof(System.Collections.IEnumerable).IsAssignableFrom(third)) continue;
+                Type genArg = third.GetGenericArguments()[0];
+                if (elemType != null && genArg == elemType) return m;
+                if (genArg == typeof(uint)) legacyUintList = m;
             }
-            return null;
+            return legacyUintList;
+        }
+
+        // 构造一个元素类型与当前 clientId 类型一致的 List（uint 或 knetid），供 Server_SendToClients 使用。
+        private static object BuildClientIdList(IEnumerable<uint> ids)
+        {
+            Type elem = _clientIdType ?? typeof(uint);
+            Type listType = typeof(List<>).MakeGenericType(elem);
+            var list = (IList)Activator.CreateInstance(listType);
+            foreach (uint id in ids) list.Add(BoxId(id, elem));
+            return list;
+        }
+
+        /// <summary>把 KrokMP 的 clientId/netId 值（uint 或 knetid 等结构体）统一取成 uint。</summary>
+        public static uint ToUInt(object v)
+        {
+            return UnboxId(v);
+        }
+
+        // 将 KrokMP 的 ID 值拆成 uint：原生整型直接转；knetid 这类结构体读其首个整型字段，或经隐式/显式转换运算符。
+        internal static uint UnboxId(object v)
+        {
+            if (v == null) return 0;
+            Type t = v.GetType();
+            if (t.IsPrimitive)
+            {
+                try { return Convert.ToUInt32(v); } catch { return 0; }
+            }
+            try
+            {
+                foreach (var f in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+                {
+                    if (f.FieldType.IsPrimitive)
+                        return Convert.ToUInt32(f.GetValue(v));
+                }
+            }
+            catch { }
+            try
+            {
+                foreach (var op in t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                {
+                    if (op.Name != "op_Implicit" && op.Name != "op_Explicit") continue;
+                    var op0 = op.GetParameters();
+                    if (op.ReturnType.IsPrimitive && op0.Length == 1 && op0[0].ParameterType == t)
+                        return Convert.ToUInt32(op.Invoke(null, new[] { v }));
+                }
+            }
+            catch { }
+            return 0;
+        }
+
+        // 将 uint 装回 KrokMP 的 ID 类型：目标为整型直接转；为 knetid 这类结构体则用单参构造函数或隐式转换运算符。
+        internal static object BoxId(uint v, Type t)
+        {
+            if (t == null || t == typeof(uint)) return v;
+            if (t == typeof(ushort)) return (ushort)v;
+            if (t == typeof(ulong)) return (ulong)v;
+            if (t == typeof(int)) return (int)v;
+            if (t == typeof(long)) return (long)v;
+            try
+            {
+                foreach (var c in t.GetConstructors())
+                {
+                    var cp = c.GetParameters();
+                    if (cp.Length == 1 && cp[0].ParameterType.IsPrimitive)
+                        return c.Invoke(new object[] { Convert.ChangeType(v, cp[0].ParameterType) });
+                }
+            }
+            catch { }
+            try
+            {
+                foreach (var op in t.GetMethods(BindingFlags.Public | BindingFlags.Static))
+                {
+                    if (op.Name != "op_Implicit") continue;
+                    var op0 = op.GetParameters();
+                    if (op.ReturnType == t && op0.Length == 1 && op0[0].ParameterType.IsPrimitive)
+                        return op.Invoke(null, new object[] { Convert.ChangeType(v, op0[0].ParameterType) });
+                }
+            }
+            catch { }
+            return v;
         }
     }
 }

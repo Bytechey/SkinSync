@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.0.10")]
+    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.0.11")]
     [BepInDependency("KrokoshaCasualtiesMP", BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency(SaveManagerGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public class SkinSync : BaseUnityPlugin
