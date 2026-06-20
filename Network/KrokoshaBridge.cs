@@ -48,7 +48,8 @@ namespace SkinSyncMod.Network
         private static Type _serverMainType;
         private static PropertyInfo _serverMainAllClientIdsProp;
         private static FieldInfo _serverMainAllClientIdsField;
-        
+
+        // 缓存 clientId/netId 的实际运行时类型，用于在 uint 与该类型之间装箱/拆箱互转。
         private static Type _clientIdType;
 
         public static MethodInfo InvokeServerMessageMethod => _netInvokeServerMessage;
@@ -96,6 +97,7 @@ namespace SkinSyncMod.Network
                 _netBodyAllInstances = _netBodyType.GetField("all_instances", AnyStatic);
                 _netBodyTryGetById = FindStaticMethodByArity(_netBodyType, "TryGetNetBodyFromId", 2);
                 _netBodyIsLocal = _netBodyType.GetProperty("is_local", AnyInstance);
+
                 _netBodyNetId = (MemberInfo)_netBodyType.GetProperty("netId", AnyInstance) ?? _netBodyType.GetField("netId", AnyInstance);
                 _netBodyChara = _netBodyType.GetProperty("chara", AnyInstance);
 
@@ -108,8 +110,9 @@ namespace SkinSyncMod.Network
                 _netPlayerClientId = _netPlayerType.GetProperty("clientId", AnyInstance);
                 _netPlayerPlayerbody = _netPlayerType.GetProperty("playerbody", AnyInstance);
 
+                // clientId/netId 的实际类型。
                 _clientIdType = _netPlayerClientId != null ? _netPlayerClientId.PropertyType : null;
-
+                // 按 clientId 元素类型匹配可枚举的发送重载。
                 _netServerSendToClients = FindServerSendToClientsEnumerable(_netType, _clientIdType);
 
                 if (_krokoshaScavMpType != null)
@@ -141,7 +144,7 @@ namespace SkinSyncMod.Network
         public static void ClientSend(DeliveryMethod method, NetDataWriter writer)
         {
             if (!IsAvailable || _netClientSend == null) return;
-            _netClientSend.Invoke(null, new object[] { method, writer });
+            SafeInvoke(_netClientSend, new object[] { method, writer }, "Client_Send");
         }
 
         /// <summary>主机广播：等价于 Net.Server_SendToClients(method, writer, ServerMain.AllClientIds)；KrokMP 不可用时静默跳过。</summary>
@@ -150,7 +153,7 @@ namespace SkinSyncMod.Network
             if (!IsAvailable || _netServerSendToClients == null) return;
             object allClients = ResolveAllClientIds();
             if (allClients == null) return;
-            _netServerSendToClients.Invoke(null, new object[] { method, writer, allClients });
+            SafeInvoke(_netServerSendToClients, new object[] { method, writer, allClients }, "Server_SendToClients");
         }
 
         /// <summary>主机广播但跳过指定 clientId（消息来源），避免回发给发送方。</summary>
@@ -168,7 +171,7 @@ namespace SkinSyncMod.Network
             }
             if (ids.Count == 0) return;
             object targets = BuildClientIdList(ids);
-            _netServerSendToClients.Invoke(null, new object[] { method, writer, targets });
+            SafeInvoke(_netServerSendToClients, new object[] { method, writer, targets }, "Server_SendToClients");
         }
 
         /// <summary>主机单播给指定 clientId（其它玩家不会收到）。</summary>
@@ -176,7 +179,25 @@ namespace SkinSyncMod.Network
         {
             if (!IsAvailable || _netServerSendToClients == null) return;
             object single = BuildClientIdList(new uint[] { clientId });
-            _netServerSendToClients.Invoke(null, new object[] { method, writer, single });
+            SafeInvoke(_netServerSendToClients, new object[] { method, writer, single }, "Server_SendToClients");
+        }
+
+        // 反射调用发送方法的统一入口：拆包 TargetInvocationException，任何异常只警告不上抛，
+        // 避免发送失败击垮整个换肤流程。
+        private static void SafeInvoke(MethodInfo m, object[] args, string label)
+        {
+            try
+            {
+                m.Invoke(null, args);
+            }
+            catch (TargetInvocationException tie)
+            {
+                SkinSyncMod.ModLog.Warning("KrokoshaBridge: " + label + " 发送失败：" + (tie.InnerException ?? tie));
+            }
+            catch (Exception ex)
+            {
+                SkinSyncMod.ModLog.Warning("KrokoshaBridge: " + label + " 发送失败：" + ex);
+            }
         }
 
         /// <summary>当前是否处于 KrokMP 主机模式；KrokMP 不可用时返回 false。</summary>
@@ -439,7 +460,7 @@ namespace SkinSyncMod.Network
                 Expression cidExpr;
                 if (_netPlayerClientId != null && _netPlayerClientId.DeclaringType.IsAssignableFrom(plrType))
                 {
-                    
+                    // 统一装箱后经 ToUInt 取回 uint。
                     Expression prop = Expression.Property(plrParam, _netPlayerClientId);
                     Expression boxed = Expression.Convert(prop, typeof(object));
                     MethodInfo toUInt = typeof(KrokoshaBridge).GetMethod("ToUInt", BindingFlags.Public | BindingFlags.Static);
@@ -511,7 +532,7 @@ namespace SkinSyncMod.Network
             return found;
         }
 
-        
+        // 找以「clientId 元素类型」为泛型参数的可枚举发送重载。
         private static MethodInfo FindServerSendToClientsEnumerable(Type netType, Type elemType)
         {
             if (netType == null) return null;
@@ -533,7 +554,7 @@ namespace SkinSyncMod.Network
             return legacyUintList;
         }
 
-        // 构造一个元素类型与当前 clientId 类型一致的 List（uint 或 knetid），供 Server_SendToClients 使用。
+        // 构造一个元素类型与当前 clientId 类型一致的 List，供发送方法使用。
         private static object BuildClientIdList(IEnumerable<uint> ids)
         {
             Type elem = _clientIdType ?? typeof(uint);
@@ -543,13 +564,13 @@ namespace SkinSyncMod.Network
             return list;
         }
 
-        /// <summary>把 KrokMP 的 clientId/netId 值（uint 或 knetid 等结构体）统一取成 uint。</summary>
+        /// <summary>把 clientId/netId 值统一取成 uint。</summary>
         public static uint ToUInt(object v)
         {
             return UnboxId(v);
         }
 
-        // 将 KrokMP 的 ID 值拆成 uint：原生整型直接转；knetid 这类结构体读其首个整型字段，或经隐式/显式转换运算符。
+        // 将 ID 值拆成 uint：原生整型直接转；结构体读其首个整型字段，或经隐式/显式转换运算符。
         internal static uint UnboxId(object v)
         {
             if (v == null) return 0;
@@ -581,7 +602,7 @@ namespace SkinSyncMod.Network
             return 0;
         }
 
-        // 将 uint 装回 KrokMP 的 ID 类型：目标为整型直接转；为 knetid 这类结构体则用单参构造函数或隐式转换运算符。
+        // 将 uint 装回目标 ID 类型：整型直接转；结构体则用单参构造函数或隐式转换运算符。
         internal static object BoxId(uint v, Type t)
         {
             if (t == null || t == typeof(uint)) return v;

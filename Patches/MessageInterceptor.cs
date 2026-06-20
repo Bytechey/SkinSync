@@ -16,8 +16,8 @@ namespace SkinSyncMod.Patches
 
         static MethodBase TargetMethod() => KrokoshaBridge.InvokeServerMessageMethod;
 
-        // __args[0] = callerclientId。KrokMP 4.0.0 起该参数类型为 knetid 结构体，
-        // 用 __args（Harmony 始终提供的装箱参数数组）取首参再经 ToUInt 统一成 uint，兼容 3.x 的 uint。
+        // __args[0] = callerclientId。用 __args（Harmony 提供的装箱参数数组）取首参，
+        // 再经 ToUInt 统一成 uint，与首参的具体类型无关。
         static bool Prefix(object[] __args, NetDataReader reader)
         {
             if (_positionField == null) return true;
@@ -68,8 +68,8 @@ namespace SkinSyncMod.Patches
 
         static MethodBase TargetMethod() => KrokoshaBridge.InvokeClientMessageMethod;
 
-        // __args[0] = callerclientId。KrokMP 4.0.0 起该参数类型为 knetid 结构体，
-        // 用 __args（Harmony 始终提供的装箱参数数组）取首参再经 ToUInt 统一成 uint，兼容 3.x 的 uint。
+        // __args[0] = callerclientId。用 __args（Harmony 提供的装箱参数数组）取首参，
+        // 再经 ToUInt 统一成 uint，与首参的具体类型无关。
         static bool Prefix(object[] __args, NetDataReader reader)
         {
             if (_positionField == null) return true;
