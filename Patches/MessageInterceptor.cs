@@ -16,10 +16,13 @@ namespace SkinSyncMod.Patches
 
         static MethodBase TargetMethod() => KrokoshaBridge.InvokeServerMessageMethod;
 
-        static bool Prefix(uint callerclientId, NetDataReader reader)
+        // __args[0] = callerclientId。用 __args（Harmony 提供的装箱参数数组）取首参，
+        // 再经 ToUInt 统一成 uint，与首参的具体类型无关。
+        static bool Prefix(object[] __args, NetDataReader reader)
         {
             if (_positionField == null) return true;
 
+            uint callerclientId = (__args != null && __args.Length > 0) ? KrokoshaBridge.ToUInt(__args[0]) : 0u;
             int originalPos = (int)_positionField.GetValue(reader);
             ushort msgId = reader.GetUShort();
 
@@ -65,10 +68,13 @@ namespace SkinSyncMod.Patches
 
         static MethodBase TargetMethod() => KrokoshaBridge.InvokeClientMessageMethod;
 
-        static bool Prefix(uint callerclientId, NetDataReader reader)
+        // __args[0] = callerclientId。用 __args（Harmony 提供的装箱参数数组）取首参，
+        // 再经 ToUInt 统一成 uint，与首参的具体类型无关。
+        static bool Prefix(object[] __args, NetDataReader reader)
         {
             if (_positionField == null) return true;
 
+            uint callerclientId = (__args != null && __args.Length > 0) ? KrokoshaBridge.ToUInt(__args[0]) : 0u;
             int originalPos = (int)_positionField.GetValue(reader);
             ushort msgId = reader.GetUShort();
 
