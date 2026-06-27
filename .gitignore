@@ -1,3 +1,5 @@
 .history
 obj
 bin
+.vs/
+.vs/**

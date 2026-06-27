@@ -27,10 +27,10 @@ namespace SkinSyncMod
 
         public static Config Defaults() => new Config
         {
-            WingUL = new Piece { X = -2, Y = -8, Rotation = 314f, ZOrder = 5 },
-            WingDL = new Piece { X = -1, Y = -10, Rotation = 0f, ZOrder = 4 },
-            WingUR = new Piece { X = -2, Y = -9, Rotation = 318f, ZOrder = 5 },
-            WingDR = new Piece { X = 0, Y = -12, Rotation = 0f, ZOrder = 4 },
+            WingUL = new Piece { X = 1, Y = -8, Rotation = 314f, ZOrder = 5 },
+            WingDL = new Piece { X = 2, Y = -10, Rotation = 0f, ZOrder = 5 },
+            WingUR = new Piece { X = 1, Y = -9, Rotation = 318f, ZOrder = 5 },
+            WingDR = new Piece { X = 3, Y = -12, Rotation = 0f, ZOrder = 5 },
         };
 
         /// <summary>读取并解析 wings.json，文件缺失或失败时返回默认配置。</summary>

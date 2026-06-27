@@ -198,12 +198,8 @@ namespace SkinSyncMod
             var bodyRect = new Rect(24f, bodyTop, WindowWidth - 48f, WindowHeight - bodyTop - statusH);
             GUILayout.BeginArea(bodyRect);
             if (_tab == 1) DrawSkinsTab();
-#if DEBUG
             else if (_tab == 2) DrawCurrentTab();
             else if (_tab == 3) DrawAboutTab();
-#else
-            else if (_tab == 2) DrawAboutTab();
-#endif
             else DrawSettingsTab();
             GUILayout.EndArea();
 
@@ -233,12 +229,8 @@ namespace SkinSyncMod
             float tabW = 280f, tabH = 64f, top = TitleBarHeight + 14f;
             DrawTabButton(new Rect(28f, top, tabW, tabH), SkinSyncI18n.T("tab.settings"), 0);
             DrawTabButton(new Rect(28f + (tabW + 16f), top, tabW, tabH), SkinSyncI18n.T("tab.skins"), 1);
-#if DEBUG
             DrawTabButton(new Rect(28f + (tabW + 16f) * 2f, top, tabW, tabH), SkinSyncI18n.T("tab.current"), 2);
             DrawTabButton(new Rect(28f + (tabW + 16f) * 3f, top, tabW, tabH), SkinSyncI18n.T("tab.about"), 3);
-#else
-            DrawTabButton(new Rect(28f + (tabW + 16f) * 2f, top, tabW, tabH), SkinSyncI18n.T("tab.about"), 2);
-#endif
         }
 
         /// <summary>嵌入 saveManager 设置侧栏：Push 自身 BlackWhiteSkin + 用 GUILayout 流式画 tab 与当前 body 内容自适应主区。</summary>
@@ -249,12 +241,8 @@ namespace SkinSyncMod
             {
                 DrawEmbeddedTabs();
                 if (_tab == 1) DrawSkinsTab();
-#if DEBUG
                 else if (_tab == 2) DrawCurrentTab();
                 else if (_tab == 3) DrawAboutTab();
-#else
-                else if (_tab == 2) DrawAboutTab();
-#endif
                 else DrawSettingsTab();
             }
             finally { BlackWhiteSkin.Pop(); }
@@ -265,12 +253,8 @@ namespace SkinSyncMod
             GUILayout.BeginHorizontal();
             DrawEmbeddedTabButton(SkinSyncI18n.T("tab.settings"), 0);
             DrawEmbeddedTabButton(SkinSyncI18n.T("tab.skins"), 1);
-#if DEBUG
             DrawEmbeddedTabButton(SkinSyncI18n.T("tab.current"), 2);
             DrawEmbeddedTabButton(SkinSyncI18n.T("tab.about"), 3);
-#else
-            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.about"), 2);
-#endif
             GUILayout.EndHorizontal();
             GUILayout.Space(8f);
         }
@@ -322,13 +306,13 @@ namespace SkinSyncMod
                 _cfg.RequireEquipmentForAccessories.Value = requireEq;
                 AccessoryEnforcer.Active = requireEq;
             }
+#endif
             bool renderBlood = DrawSwitch(SkinSyncI18n.T("sw.render_custom_blood"), _cfg.RenderCustomBlood.Value);
             if (renderBlood != _cfg.RenderCustomBlood.Value)
             {
                 _cfg.RenderCustomBlood.Value = renderBlood;
                 BloodRenderConfig.Enabled = renderBlood;
             }
-#endif
             GUILayout.EndVertical();
 
             GUILayout.Space(12f);
@@ -374,9 +358,9 @@ namespace SkinSyncMod
 #if DEBUG
             bool syncAcc = DrawSwitch(SkinSyncI18n.T("sw.sync_accessories"), _cfg.SyncAccessories.Value);
             if (syncAcc != _cfg.SyncAccessories.Value) _cfg.SyncAccessories.Value = syncAcc;
+#endif
             bool syncTail = DrawSwitch(SkinSyncI18n.T("sw.sync_tail"), _cfg.SyncTailDeform.Value);
             if (syncTail != _cfg.SyncTailDeform.Value) _cfg.SyncTailDeform.Value = syncTail;
-#endif
             GUI.enabled = prevEnabled;
             GUILayout.EndVertical();
 
@@ -707,6 +691,7 @@ namespace SkinSyncMod
             DrawTailGroup();
             GUILayout.Space(12f);
 
+#if debug
             GUILayout.Label(SkinSyncI18n.T("sec.accessories"), BlackWhiteSkin.HeaderStyle);
             var rows = _getAccessories?.Invoke() ?? new List<AccessoryRow>();
             if (rows.Count == 0)
@@ -722,6 +707,7 @@ namespace SkinSyncMod
                     GUILayout.Space(6f);
                 }
             }
+#endif
 
             GUILayout.Space(20f);
             GUILayout.EndScrollView();
