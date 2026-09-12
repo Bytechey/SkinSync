@@ -162,7 +162,14 @@ namespace SkinSyncMod
 
                 foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
                 {
-                    if (tail.GetComponent<TailFlowDeform>() == null)
+                    if (tail.GetComponent<TailFlowDeform>() != null)
+                        continue;
+
+                    // A disabled renderer can be an animation proxy owned by
+                    // another component/mod. Deforming it would create a new,
+                    // independently rendered tail and reveal hidden visuals.
+                    var renderer = tail.GetComponent<SpriteRenderer>();
+                    if (tail.enabled && renderer != null && renderer.enabled)
                         tail.gameObject.AddComponent<TailFlowDeform>();
                 }
             }
