@@ -631,7 +631,7 @@ namespace SkinSyncMod
             GUILayout.Label(SkinSyncI18n.T("about.sec_credits"), CenterTitleStyle, GUILayout.ExpandWidth(true));
             GUILayout.Space(6f);
             DrawNameButton("Bytechey", "https://github.com/Bytechey");
-            DrawNameButton("huanxin996", "https://github.com/huanxin996");
+            DrawNameButton("huanxin886", "https://github.com/huanxin886");
 
             GUILayout.Space(16f);
             GUILayout.Label(SkinSyncI18n.T("about.testers"), CenterTitleStyle, GUILayout.ExpandWidth(true));
