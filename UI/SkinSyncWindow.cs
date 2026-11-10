@@ -321,10 +321,10 @@ namespace SkinSyncMod
             bool mpAvailable = SkinSync.IsMultiplayerSession;
             if (!mpAvailable)
             {
-                GUILayout.Label(SkinSyncI18n.T("sync.no_krokmp_hint"));
+                GUILayout.Label(SkinSyncI18n.T("sync.no_together_hint"));
                 GUILayout.Space(4f);
             }
-            else if (!SkinSyncMod.Network.KrokoshaBridge.IsNetworkRunning())
+            else if (!SkinSyncMod.Interop.Consumers.SessionConsumer.IsRunning)
             {
                 GUILayout.Label(SkinSyncI18n.T("sync.network_off_hint"));
                 GUILayout.Space(4f);
@@ -615,7 +615,7 @@ namespace SkinSyncMod
             GUILayout.Label(SkinSyncI18n.T("about.sec_credits"), CenterTitleStyle, GUILayout.ExpandWidth(true));
             GUILayout.Space(6f);
             DrawNameButton("Bytechey", "https://github.com/Bytechey");
-            DrawNameButton("huanxin996", "https://github.com/huanxin996");
+            DrawNameButton("huanxin886", "https://github.com/huanxin886");
 
             GUILayout.Space(16f);
             GUILayout.Label(SkinSyncI18n.T("about.testers"), CenterTitleStyle, GUILayout.ExpandWidth(true));
@@ -625,7 +625,6 @@ namespace SkinSyncMod
             GUILayout.Space(16f);
             GUILayout.Label(SkinSyncI18n.T("about.sec_deps"), CenterTitleStyle, GUILayout.ExpandWidth(true));
             GUILayout.Space(6f);
-            DrawLinkButton("KrokoshaCasualtiesMP", "https://github.com/Krokosha666/cas-unk-krokosha-multiplayer-coop");
             DrawLinkButton("BepInEx", "https://github.com/BepInEx/BepInEx");
 
             GUILayout.Space(20f);

@@ -40,7 +40,7 @@ namespace SkinSyncMod
             ["sw.tail_deform"] = "启用尾巴形变（关闭显示原 sprite）",
 
             ["sec.sync"] = "多人同步",
-            ["sync.no_krokmp_hint"] = "未找到 KrokMP 多人联机模组，多人同步选项不可用",
+            ["sync.no_together_hint"] = "未找到 Together 多人联机模组，多人同步选项不可用",
             ["sync.network_off_hint"] = "尚未进入多人会话，以下设置将在主机 / 客户端连接后生效",
             ["lbl.sync_mode"] = "同步策略：",
             ["sync.mode_on_enter"] = "进入游戏一键同步",
@@ -161,7 +161,7 @@ namespace SkinSyncMod
             ["sw.tail_deform"] = "Enable tail deform (off = show plain sprite)",
 
             ["sec.sync"] = "Multiplayer sync",
-            ["sync.no_krokmp_hint"] = "KrokMP multiplayer mod not found — multiplayer sync options are disabled",
+            ["sync.no_together_hint"] = "Together multiplayer mod not found — multiplayer sync options are disabled",
             ["sync.network_off_hint"] = "Not in a multiplayer session — settings below will apply once host / client is connected",
             ["lbl.sync_mode"] = "Sync strategy:",
             ["sync.mode_on_enter"] = "On enter (auto sync)",

@@ -1,5 +1,7 @@
 using BepInEx;
 using HarmonyLib;
+using SkinSyncMod.Interop;
+using SkinSyncMod.Interop.Consumers;
 using SkinSyncMod.Network;
 using SkinSyncMod.Patches;
 using System.Collections.Generic;
@@ -9,12 +11,15 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.1.0")]
-    [BepInDependency("KrokoshaCasualtiesMP", BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.1.1")]
     [BepInDependency(SaveManagerGuid, BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency(TogetherGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public class SkinSync : BaseUnityPlugin
     {
         private const string SaveManagerGuid = "com.casualtiesUnknown.saveManager";
+        private const string TogetherGuid = "CasualtiesMP";
+        private const int TogetherRegisterMaxAttempts = 60;
+        private const float TogetherRegisterRetrySeconds = 1f;
 
         internal static Harmony harmony;
 
@@ -27,7 +32,7 @@ namespace SkinSyncMod
         private GameObject localChara;
 
         internal static SkinSyncSettings Settings { get; private set; }
-        internal static bool IsMultiplayerSession => KrokoshaBridge.IsAvailable;
+        internal static bool IsMultiplayerSession => SessionConsumer.IsAvailable;
 
         /// <summary>从 BepInPlugin attribute 动态读取的 mod 版本号；读取失败返回空串。</summary>
         internal static string Version
@@ -51,12 +56,13 @@ namespace SkinSyncMod
         {
             _instance = this;
             ModLog.Init(Logger);
+            ModLog.Debug("[Build] Debug 构建，详细日志已启用");
             gameObject.hideFlags = HideFlags.HideAndDontSave;
             UnityEngine.Object.DontDestroyOnLoad(gameObject);
             harmony = new Harmony("com.Bytechey.skinsync");
             try { if (System.IO.Directory.Exists(SkinPathResolver.SyncCacheRoot)) System.IO.Directory.Delete(SkinPathResolver.SyncCacheRoot, true); }
             catch (System.Exception ex) { ModLog.Warning("clear SyncCacheRoot failed: " + ex.Message); }
-            KrokoshaBridge.Init();
+            InteropBootstrap.Initialize();
             RegisterPatches();
             Settings = new SkinSyncSettings(Config);
             ModLog.ShowInConsole = Settings.ShowLogInConsole.Value;
@@ -64,12 +70,10 @@ namespace SkinSyncMod
             SkinSyncMod.Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
             Settings.AcceptUpdateNotice.SettingChanged += (_, __) => SkinSyncMod.Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
             ScanAvailableSkins();
-            ModLog.Info($"SkinSync Mod loaded. Found {availableSkins.Count} skins. Krokosha={(KrokoshaBridge.IsAvailable ? "yes" : "no")}.");
-            if (KrokoshaBridge.IsAvailable)
-            {
-                gameObject.AddComponent<SkinSyncMod.Patches.SkinCacheBroadcaster>();
-                gameObject.AddComponent<SkinSyncMod.Patches.PendingSkinApplier>();
-            }
+            ModLog.Info($"SkinSync Mod loaded. Found {availableSkins.Count} skins. Together={(SessionConsumer.IsAvailable ? "yes" : "no")}.");
+            // 这两个组件承载主机皮肤表与延迟应用队列；Together 可能晚于本插件加载，因此无条件挂载，由组件自身判会话可用性。
+            gameObject.AddComponent<SkinSyncMod.Patches.SkinCacheBroadcaster>();
+            gameObject.AddComponent<SkinSyncMod.Patches.PendingSkinApplier>();
             gameObject.AddComponent<SkinSyncMod.Patches.UpdateChecker>();
             gameObject.AddComponent<EquipmentHider>();
             EquipmentHider.Active = Settings.HideGameWearables.Value;
@@ -133,13 +137,27 @@ namespace SkinSyncMod
             harmony.CreateClassProcessor(typeof(Patches.BleedSpawnTranspiler)).Patch();
             harmony.CreateClassProcessor(typeof(Patches.LimbAwakeBleedColorPatch)).Patch();
 
-            if (KrokoshaBridge.IsAvailable)
+            StartCoroutine(InstallTogetherReceiverRoutine());
+        }
+
+        /// <summary>每秒重试登记皮肤同步包接收器，最多 60 次；成功即停，失败只在首次与最终各记一条日志。</summary>
+        private System.Collections.IEnumerator InstallTogetherReceiverRoutine()
+        {
+            if (Patches.TogetherReceiverRegistrar.Register())
             {
-                if (KrokoshaBridge.InvokeServerMessageMethod != null)
-                    harmony.CreateClassProcessor(typeof(ServerMessageInterceptor)).Patch();
-                if (KrokoshaBridge.InvokeClientMessageMethod != null)
-                    harmony.CreateClassProcessor(typeof(ClientMessageInterceptor)).Patch();
+                yield break;
             }
+
+            for (int attempt = 0; attempt < TogetherRegisterMaxAttempts; attempt++)
+            {
+                yield return new WaitForSecondsRealtime(TogetherRegisterRetrySeconds);
+                if (Patches.TogetherReceiverRegistrar.Register())
+                {
+                    yield break;
+                }
+            }
+
+            ModLog.Warning("皮肤同步包在 " + TogetherRegisterMaxAttempts + " 秒内未登记成功：Together 未加载或缺少 16 位原语，本次会话皮肤同步不可用。");
         }
 
         /// <summary>场景切换时清掉"已应用"标记，让 ApplyPersistentSkinIfNeeded 在新场景重发一次（含多人广播）。
@@ -451,9 +469,9 @@ namespace SkinSyncMod
 
         private bool TryGetLocalPlayer()
         {
-            if (localNetBodyBox == null && KrokoshaBridge.IsAvailable)
+            if (localNetBodyBox == null && SessionConsumer.IsAvailable)
             {
-                if (KrokoshaBridge.TryGetLocalNetBody(out object box, out uint nid, out GameObject chara))
+                if (RosterConsumer.TryGetLocalNetBody(out object box, out uint nid, out GameObject chara))
                 {
                     localNetBodyBox = box;
                     localNetId = nid;
@@ -497,7 +515,7 @@ namespace SkinSyncMod
             // 同步写入按 SteamID 的缓存（跨主机 / 重连恢复用）。
             try
             {
-                ulong steamId = KrokoshaBridge.TryGetLocalSteamId();
+                ulong steamId = RosterConsumer.TryGetLocalSteamId();
                 if (steamId != 0UL) SkinCacheStore.Set(steamId, skinID);
             }
             catch (System.Exception ex)

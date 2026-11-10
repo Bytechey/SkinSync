@@ -1,4 +1,5 @@
 using BepInEx;
+using SkinSyncMod.Interop.Consumers;
 using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
@@ -179,6 +180,7 @@ namespace SkinSyncMod
                 ? AccessoryConfigLoader.Load(accessoriesPath)
                 : (LoadJsonFromMemoryPack(characterName, "accessories.json", AccessoryConfigLoader.Parse) ?? new List<AccessoryConfigLoader.Entry>());
             AccessoryAttacher.Apply(playerObj, accEntries, spriteDict, characterName);
+            SkinSyncMod.ModLog.Debug($"应用皮肤 {characterName}：肢体 {playerObj.GetComponentsInChildren<Limb>(true).Length} 个，配件 {accEntries.Count} 项{(sameSkin ? "（皮肤未变，仅刷新配件）" : string.Empty)}");
 
             _currentCharacter = characterName;
             _byChara[playerObj] = characterName;
@@ -340,7 +342,7 @@ namespace SkinSyncMod
         private static bool TryRequestSkinPack(string character)
         {
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return false;
-            if (!Network.KrokoshaBridge.IsAvailable || !Network.KrokoshaBridge.IsNetworkRunning()) return false;
+            if (!SessionConsumer.IsAvailable || !SessionConsumer.IsRunning) return false;
             if (!_requestedPacks.Add(character)) return false;
             Network.MultiplayerSender.SendSkinPackRequest(character);
             return true;
