@@ -36,7 +36,6 @@ namespace SkinSyncMod.Interop.Consumers
         private static Type _knetidType;
         private static MethodInfo _tryGetLocalNetBody;
         private static MethodInfo _tryGetNetBodyFromId;
-        private static MethodInfo _tryGetPlayerAndNetBodyFromClientId;
         private static PropertyInfo _netBodyNetId;
         private static PropertyInfo _netBodyBody;
         private static FieldInfo _knetidId;
@@ -108,31 +107,6 @@ namespace SkinSyncMod.Interop.Consumers
             return true;
         }
 
-        /// <summary>按客户端 ID 反查该玩家当前 NetBody 的 netId。</summary>
-        /// <remarks>
-        /// 对应目标插件成员（static method）：Together.ScavPlayer.TryGetPlayerAndNetBodyFromClientId(Together.knetid, out Together.ScavPlayer, out Together.NetBody)。
-        /// clientId 属于客户端 ID 空间（主机为 0，客户端依次为 1、2…），netId 由实体系统分配、属于实体 ID 空间，
-        /// 两套编号互不相通，因此不能用 netId 直接当作 clientId，也不能把两者直接比较。
-        /// </remarks>
-        internal static bool TryGetNetBodyOfClient(uint clientId, out uint netId)
-        {
-            netId = 0;
-            if (!EnsureResolved() || !TryMakeKnetid(clientId, out object id))
-            {
-                return false;
-            }
-
-            object[] args = { id, null, null };
-            if (!InteropReflection.TryInvoke(_tryGetPlayerAndNetBodyFromClientId, null, args, out object result)
-                || !(result is bool found) || !found || args[2] == null)
-            {
-                return false;
-            }
-
-            netId = ToClientId(InteropReflection.ReadMember(_netBodyNetId, args[2]));
-            return netId != 0;
-        }
-
         /// <summary>按 netId 反查角色对象；未注册时返回 false。</summary>
         internal static bool TryGetNetBodyFromId(uint netId, out object box, out GameObject chara, out bool isLocal)
         {
@@ -193,8 +167,7 @@ namespace SkinSyncMod.Interop.Consumers
             for (int i = 0; i < players.Count; i++)
             {
                 InteropPlayerRef player = players[i];
-                if (!player.IsValid || !TryGetNetBodyOfClient(player.ClientId, out uint playerNetId)
-                    || !TryGetNetBody(playerNetId, out object box))
+                if (!player.IsValid || !TryGetNetBody(player.ClientId, out object box))
                 {
                     continue;
                 }
@@ -333,25 +306,22 @@ namespace SkinSyncMod.Interop.Consumers
 
                 _resolved = true;
                 IInteropTypeRegistry types = InteropBootstrap.Initialize().Types;
-                if (!types.TryResolveType("Together.NetBody", out Type netBodyType)
-                    || !types.TryResolveType("Together.knetid", out Type knetidType)
-                    || !types.TryResolveType("Together.ScavPlayer", out Type scavPlayerType))
+                if (!types.TryResolveType("Together.NetBody", out Type netBodyType) || !types.TryResolveType("Together.knetid", out Type knetidType))
                 {
-                    InteropDiagnostics.WarnOnce("RosterConsumer.Types", "Together.NetBody / Together.knetid / Together.ScavPlayer 解析失败，netId 相关功能禁用。");
+                    InteropDiagnostics.WarnOnce("RosterConsumer.Types", "Together.NetBody / Together.knetid 解析失败，netId 相关功能禁用。");
                     return false;
                 }
 
                 _tryGetLocalNetBody = InteropReflection.FindMethod(netBodyType, "TryGetLocalNetBody", netBodyType);
                 _tryGetNetBodyFromId = InteropReflection.FindMethod(netBodyType, "TryGetNetBodyFromId", knetidType, netBodyType);
-                _tryGetPlayerAndNetBodyFromClientId = InteropReflection.FindMethod(scavPlayerType, "TryGetPlayerAndNetBodyFromClientId", knetidType, scavPlayerType, netBodyType);
                 _netBodyNetId = InteropReflection.FindProperty(netBodyType, "netId");
                 _netBodyBody = InteropReflection.FindProperty(netBodyType, "body");
                 _knetidId = InteropReflection.FindField(knetidType, "id");
                 _knetidCtor = InteropReflection.FindConstructor(knetidType, typeof(ushort));
-                if (_tryGetLocalNetBody == null || _tryGetNetBodyFromId == null || _tryGetPlayerAndNetBodyFromClientId == null
-                    || _netBodyNetId == null || _netBodyBody == null || _knetidId == null || _knetidCtor == null)
+                if (_tryGetLocalNetBody == null || _tryGetNetBodyFromId == null || _netBodyNetId == null
+                    || _netBodyBody == null || _knetidId == null || _knetidCtor == null)
                 {
-                    InteropDiagnostics.WarnOnce("RosterConsumer.Members", "Together.NetBody / Together.knetid / Together.ScavPlayer 成员缺失，netId 相关功能禁用。");
+                    InteropDiagnostics.WarnOnce("RosterConsumer.Members", "Together.NetBody / Together.knetid 成员缺失，netId 相关功能禁用。");
                     return false;
                 }
 

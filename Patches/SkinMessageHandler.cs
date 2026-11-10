@@ -17,7 +17,7 @@ namespace SkinSyncMod
 
             bool hasLocal = RosterConsumer.TryGetLocalNetBody(out _, out uint localNetId, out _);
             bool hasCid = RosterConsumer.TryGetLocalClientId(out uint localCid);
-            bool isLocalEcho = hasLocal && localNetId == msg.netId;
+            bool isLocalEcho = (hasLocal && localNetId == msg.netId) || (hasCid && localCid == msg.netId);
             SkinSyncMod.ModLog.Info($"客户端收到皮肤切换：{msg.skinID} (msg.netId {msg.netId}, local netId {(hasLocal ? localNetId.ToString() : "n/a")}, local clientId {(hasCid ? localCid.ToString() : "n/a")}, echo={isLocalEcho})");
 
             if (!isLocalEcho)
@@ -92,13 +92,7 @@ namespace SkinSyncMod
         internal static void OnServerAccessorySync(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadAccessory(reader);
-            if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
-            {
-                InteropDiagnostics.WarnOnce("SkinMessageHandler.AccessoryCallerNetId", $"服务端无法反查客户端 {callerId} 的 netId，配件同步请求已拒绝。");
-                return;
-            }
-
-            if (callerNetId != msg.netId)
+            if (callerId != msg.netId)
             {
                 SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried accessory sync for {msg.netId}");
                 return;
@@ -138,13 +132,7 @@ namespace SkinSyncMod
         internal static void OnServerTailSync(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadTail(reader);
-            if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
-            {
-                InteropDiagnostics.WarnOnce("SkinMessageHandler.TailCallerNetId", $"服务端无法反查客户端 {callerId} 的 netId，尾巴同步请求已拒绝。");
-                return;
-            }
-
-            if (callerNetId != msg.netId)
+            if (callerId != msg.netId)
             {
                 SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried tail sync for {msg.netId}");
                 return;
