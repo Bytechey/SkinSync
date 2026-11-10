@@ -1,5 +1,5 @@
+using SkinSyncMod.Interop.Consumers;
 using SkinSyncMod.Network;
-using System;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -13,7 +13,7 @@ namespace SkinSyncMod.Patches
         private static readonly Dictionary<uint, string> _serverSkinTable = new Dictionary<uint, string>();
         private readonly HashSet<uint> _seenClients = new HashSet<uint>();
         private bool _localSeeded;
-        private IDisposable _onPlayerLeftSub;
+        private bool _subscribed;
 
         /// <summary>主机端：客户端上报 / 切皮肤后写入；其他模块也用此入口同步表。</summary>
         public static void RecordSkin(uint netId, string skinId)
@@ -30,14 +30,14 @@ namespace SkinSyncMod.Patches
 
         private void OnEnable()
         {
-            _onPlayerLeftSub = KrokoshaBridge.SubscribePlayerLeft(OnPlayerLeft);
+            // 事件订阅为进程级且无退订 API（契约 §6.4.4）：只订阅一次，
+            // 否则组件被禁用再启用会重复挂上同一个回调，OnPlayerLeft 会执行两遍。
+            if (!_subscribed) _subscribed = RosterConsumer.SubscribePlayerLeft(OnPlayerLeft);
             SceneManager.sceneLoaded += OnSceneLoaded;
         }
 
         private void OnDisable()
         {
-            try { _onPlayerLeftSub?.Dispose(); } catch { }
-            _onPlayerLeftSub = null;
             SceneManager.sceneLoaded -= OnSceneLoaded;
         }
 
@@ -55,14 +55,14 @@ namespace SkinSyncMod.Patches
 
         private void Update()
         {
-            if (!KrokoshaBridge.IsServer()) return;
+            if (!SessionConsumer.IsServer) return;
             if (SceneManager.GetActiveScene().name == "PreGen") return;
 
             if (!_localSeeded)
             {
                 string localSkin = SkinSync.Settings != null ? SkinSync.Settings.CurrentSkin.Value : null;
                 if (!string.IsNullOrEmpty(localSkin)
-                    && KrokoshaBridge.TryGetLocalNetBody(out _, out uint localNetId, out _))
+                    && RosterConsumer.TryGetLocalNetBody(out _, out uint localNetId, out _))
                 {
                     _serverSkinTable[localNetId] = localSkin;
                     _localSeeded = true;
@@ -70,7 +70,7 @@ namespace SkinSyncMod.Patches
                 }
             }
 
-            foreach (var entry in KrokoshaBridge.EnumeratePlayersWithBody())
+            foreach (var entry in RosterConsumer.EnumeratePlayersWithBody())
             {
                 if (entry.Chara == null) continue;
                 if (_seenClients.Contains(entry.ClientId)) continue;

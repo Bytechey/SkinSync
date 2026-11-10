@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using BepInEx.Logging;
 
@@ -35,6 +36,21 @@ namespace SkinSyncMod
         {
             _sink?.LogError(message);
             WriteToConsole(message, "red");
+        }
+
+        /// <summary>Debug 构建专用诊断日志。Release 构建中带此特性的方法调用会被编译器整体移除，含实参求值。</summary>
+        /// <remarks>
+        /// 用 LogInfo 而非 LogDebug：BepInEx 5 的 LogLevels 默认不含 Debug（游戏侧配置为 Fatal, Error, Warning, Message, Info），
+        /// LogDebug 不会写进 LogOutput.log，而诊断必须能事后翻查。
+        /// 方法体整体包在 #if DEBUG 内：[Conditional] 只删调用点，方法体仍会编译进 Release 并残留 "[DBG] " 常量。
+        /// </remarks>
+        [Conditional("DEBUG")]
+        internal static void Debug(string message)
+        {
+#if DEBUG
+            _sink?.LogInfo(Prefix + "[DBG] " + message);
+            WriteToConsole(message, "grey");
+#endif
         }
 
         private static void WriteToConsole(string message, string color)

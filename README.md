@@ -1,13 +1,13 @@
-# SkinSync V1.0.10 for Casualties: Unknown
+# SkinSync V1.1.1 for Casualties: Unknown
 
 > 适配游戏《未知伤亡》的皮肤同步模组  
 > 作者：Bytechey HuanXin（与 AI 协作完成）  
-> 兼容：KrokMP 多人模式
+> 兼容：Together 多人模式（CasualtiesMP 5.3.1）
 
 ## 简介
 
 本模组允许将游戏中的默认 `exp` 皮肤替换为玩家自定义的皮肤。  
-参考了 N 网模组 `SpriteReplacer`，同时实现了与 `KrokMP` 的兼容，确保在多人游戏中每个玩家的皮肤更改能够正确同步。   
+参考了 N 网模组 `SpriteReplacer`，同时实现了与 `Together`（CasualtiesMP 5.3.1）的兼容，确保在多人游戏中每个玩家的皮肤更改能够正确同步。   
 另外实现血液粒子颜色更改以及尾巴动效优化。
 
 ## 按键操作
