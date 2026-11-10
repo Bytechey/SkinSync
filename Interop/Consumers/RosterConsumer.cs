@@ -42,6 +42,7 @@ namespace SkinSyncMod.Interop.Consumers
         private static FieldInfo _knetidId;
         private static ConstructorInfo _knetidCtor;
 
+        /// <summary>最后已知的本机 netId；由 LocalNetId() 每次求值后刷新，仅作取不到时的兵底。</summary>
         private static uint _localNetId;
 
         /// <summary>名册内玩家及其角色对象。</summary>
@@ -246,19 +247,21 @@ namespace SkinSyncMod.Interop.Consumers
             return box != null;
         }
 
-        /// <summary>缓存本机 netId，用于判定某个 NetBody 是否属于本端。</summary>
+        /// <summary>
+        /// 本机当前 netId。每次调用都重新向目标插件求值，不做永久缓存：
+        /// 重连或同场景内角色重建后 netId 会变，旧值会让 isLocal 判定与皮肤上报去重全部失准。
+        /// 调用点只有消息处理路径（低频），一次反射开销可忽。
+        /// </summary>
         private static uint LocalNetId()
         {
-            if (_localNetId != 0)
-            {
-                return _localNetId;
-            }
-
             if (TryGetLocalNetBody(out _, out uint netId, out _))
             {
                 _localNetId = netId;
+                return netId;
             }
 
+            // 取不到时保留上一次已知值：场景切换的瞬间 NetBody 可能还没就绪，
+            // 这时归零会把本地玩家误判成远端。
             return _localNetId;
         }
 

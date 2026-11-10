@@ -22,7 +22,7 @@ namespace SkinSyncMod
 
             if (!isLocalEcho)
             {
-                ApplySkinToPlayer(msg.netId, msg.skinID);
+                ApplySkinToPlayer(msg.netId, msg.skinID, msg.charType);
             }
 
             // 收到的是本地玩家自己 → 写回 Settings.CurrentSkin，让主菜单 / 单机也用同一个值。
@@ -49,7 +49,7 @@ namespace SkinSyncMod
                 return;
             }
 
-            ApplySkinToPlayer(msg.netId, msg.skinID);
+            ApplySkinToPlayer(msg.netId, msg.skinID, msg.charType);
 
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
             SkinMessageCodec.WriteSkinChange(writer, msg);
@@ -61,7 +61,12 @@ namespace SkinSyncMod
                 SkinCacheStore.Set(steamId, msg.skinID);
         }
 
-        private static void ApplySkinToPlayer(uint netId, string characterName)
+        /// <param name="charType">
+        /// 发送者上报的真实角色类型，0 表示未知。
+        /// 远端 Body 的 charType 只是本机 prefab 的角色类型（Together 不同步 characterSelected），
+        /// 所以翅膀缩放优先用消息里的值。
+        /// </param>
+        private static void ApplySkinToPlayer(uint netId, string characterName, int charType = 0)
         {
             if (!RosterConsumer.TryGetNetBodyFromId(netId, out _, out GameObject playerObj, out _))
             {
@@ -74,7 +79,7 @@ namespace SkinSyncMod
                 Patches.PendingSkinApplier.Enqueue(netId, characterName, "NetBody 已注册但角色对象为空");
                 return;
             }
-            SkinApplier.ApplySkinToPlayer(playerObj, characterName);
+            SkinApplier.ApplySkinToPlayer(playerObj, characterName, charType);
         }
 
         // —— Accessory sync —— //

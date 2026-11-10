@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.1.1")]
+    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.2.1")]
     [BepInDependency(SaveManagerGuid, BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency(TogetherGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public class SkinSync : BaseUnityPlugin
@@ -71,6 +71,9 @@ namespace SkinSyncMod
             Settings.AcceptUpdateNotice.SettingChanged += (_, __) => SkinSyncMod.Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
             ScanAvailableSkins();
             ModLog.Info($"SkinSync Mod loaded. Found {availableSkins.Count} skins. Together={(SessionConsumer.IsAvailable ? "yes" : "no")}.");
+            // Phase 1 验证：采集角色档案并在日志里展开，核对完改为 Debug
+            Character.CharacterCatalog.EnsureLoaded();
+            ModLog.Info(Character.CharacterCatalog.DescribeAll());
             // 这两个组件承载主机皮肤表与延迟应用队列；Together 可能晚于本插件加载，因此无条件挂载，由组件自身判会话可用性。
             gameObject.AddComponent<SkinSyncMod.Patches.SkinCacheBroadcaster>();
             gameObject.AddComponent<SkinSyncMod.Patches.PendingSkinApplier>();

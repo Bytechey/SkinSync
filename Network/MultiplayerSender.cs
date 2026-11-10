@@ -1,5 +1,6 @@
 using SkinSyncMod.Interop;
 using SkinSyncMod.Interop.Consumers;
+using UnityEngine;
 
 namespace SkinSyncMod.Network
 {
@@ -11,13 +12,27 @@ namespace SkinSyncMod.Network
     /// </remarks>
     internal static class MultiplayerSender
     {
+        /// <summary>客户端向服务端上报自己的皮肤。charType 由本地身体自动填入。</summary>
         public static void SendSkinChange(uint netId, string skinID)
         {
             if (!SessionConsumer.IsRunning) return;
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
-            SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage { skinID = skinID, netId = netId });
+            SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage
+            {
+                skinID = skinID,
+                netId = netId,
+                charType = CharTypeOf(netId),
+            });
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "服务端");
             ChannelConsumer.SendToServer(writer);
+        }
+
+        /// <summary>取某个 netId 对应身体的 charType；拿不到返回 0（未知）。</summary>
+        private static int CharTypeOf(uint netId)
+        {
+            if (!RosterConsumer.TryGetNetBodyFromId(netId, out _, out GameObject chara, out _) || chara == null) return 0;
+            var body = chara.GetComponent<Body>();
+            return body != null ? body.charType : 0;
         }
 
         public static void SendAccessory(uint netId, string skinID, string accId,
@@ -84,7 +99,12 @@ namespace SkinSyncMod.Network
         {
             if (!SessionConsumer.IsRunning) return;
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
-            SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage { skinID = skinID, netId = netId });
+            SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage
+            {
+                skinID = skinID,
+                netId = netId,
+                charType = CharTypeOf(netId),
+            });
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "客户端 " + targetClientId);
             ChannelConsumer.SendToClient((ushort)targetClientId, writer);
         }

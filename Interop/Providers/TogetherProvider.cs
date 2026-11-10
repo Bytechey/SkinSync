@@ -11,7 +11,7 @@ namespace SkinSyncMod.Interop
 {
     /// <summary>Casualties: Together 的提供方适配器，全程通过反射访问目标程序集。</summary>
     /// <remarks>
-    /// 目标程序集：CasualtiesMP.dll，BepInEx 插件 GUID "CasualtiesMP"，版本 5.3.1（版本号取自该程序集的 BepInPlugin 特性）。
+    /// 目标程序集：CasualtiesMP.dll，BepInEx 插件 GUID "CasualtiesMP"，版本 5.5.0（已按 9e6a5d8 源码逐个核对反射成员，签名未变）。
     /// 依赖的目标类型：Together.Net、Together.Multiplayer、Together.NetBody、Together.ScavPlayer、Together.knetid。
     /// 依赖的传输类型：NetDataWriter、NetDataReader、DeliveryMethod（三者均属传输库自身的 Utils / 根命名空间）。
     /// 发送方法形参带 in，反射得到的是 by-ref 类型，因此成员一律按「名称 + 形参个数 + 剥掉 in/ref 后的元素类型」匹配。
@@ -301,7 +301,7 @@ namespace SkinSyncMod.Interop
             return registered;
         }
 
-        /// <remarks>目标插件 5.3.1 的玩家加入事件 Together.ScavPlayer.OnPlayerJoined 不在本适配器允许访问的成员清单内，固定返回 false。</remarks>
+        /// <remarks>目标插件 5.5.0 的玩家加入事件 Together.ScavPlayer.OnPlayerJoined 不在本适配器允许访问的成员清单内，固定返回 false。</remarks>
         bool IInteropEvents.TrySubscribePlayerJoined(Action<InteropPlayerRef> handler)
         {
             return false;

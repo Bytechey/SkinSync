@@ -11,7 +11,14 @@ namespace SkinSyncMod.Patches
     public class SkinCacheBroadcaster : MonoBehaviour
     {
         private static readonly Dictionary<uint, string> _serverSkinTable = new Dictionary<uint, string>();
-        private readonly HashSet<uint> _seenClients = new HashSet<uint>();
+
+        /// <summary>clientId → 上一次给它单播时对端的 netId。用来识别「同一玩家死亡重生换了新 netId」。/// </summary>
+        private readonly Dictionary<uint, uint> _sentToClient = new Dictionary<uint, uint>();
+        private float _pruneTimer;
+
+        /// <summary>失效记录清理间隔（秒）。玩家数很少，1 秒一次开销可忽。</summary>
+        private const float PruneInterval = 1f;
+
         private bool _localSeeded;
         private bool _subscribed;
 
@@ -22,7 +29,12 @@ namespace SkinSyncMod.Patches
             _serverSkinTable[netId] = skinId;
         }
 
-        /// <summary>主机端：玩家断线时调用清理。</summary>
+        /// <summary>
+        /// 主机端：玩家断线时调用。
+        /// 这里只能清按 clientId 记账的发送记录：Together 在触发 OnPlayerLeft 之前就把该玩家
+        /// 从 ClientIdToPlayerDict 移除了（Player.cs:1300-1307），拿不到 netId 去反查。
+        /// 表里的 netId → skinId 由 Update 里的存活性校验兜底清除。
+        /// </summary>
         public static void RemoveByNetId(uint netId)
         {
             _serverSkinTable.Remove(netId);
@@ -43,13 +55,14 @@ namespace SkinSyncMod.Patches
 
         private void OnPlayerLeft(uint clientId)
         {
-            _seenClients.Remove(clientId);
+            _sentToClient.Remove(clientId);
         }
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
-            _seenClients.Clear();
+            _sentToClient.Clear();
             _serverSkinTable.Clear();
+            _pruneTimer = 0f;
             _localSeeded = false;
         }
 
@@ -70,11 +83,20 @@ namespace SkinSyncMod.Patches
                 }
             }
 
+            _pruneTimer += Time.deltaTime;
+            if (_pruneTimer >= PruneInterval)
+            {
+                _pruneTimer = 0f;
+                PruneDeadEntries();
+            }
+
             foreach (var entry in RosterConsumer.EnumeratePlayersWithBody())
             {
                 if (entry.Chara == null) continue;
-                if (_seenClients.Contains(entry.ClientId)) continue;
-                _seenClients.Add(entry.ClientId);
+                // 按 netId 而不只按 clientId 记账：同一玩家死亡重生会拿到新 netId，
+                // 只按 clientId 会认为「已发过」而不再补发，导致该玩家变回原皮。
+                if (_sentToClient.TryGetValue(entry.ClientId, out uint lastNetId) && lastNetId == entry.NetId) continue;
+                _sentToClient[entry.ClientId] = entry.NetId;
 
                 int sent = 0;
                 foreach (var kv in _serverSkinTable)
@@ -83,8 +105,31 @@ namespace SkinSyncMod.Patches
                     MultiplayerSender.ServerSendSkinChangeToClient(entry.ClientId, kv.Key, kv.Value);
                     sent++;
                 }
-                SkinSyncMod.ModLog.Info($"主机：检测到 client {entry.ClientId} (netId {entry.NetId}) 加入；表共 {_serverSkinTable.Count} 条，单播 {sent} 条给它");
+                SkinSyncMod.ModLog.Info($"主机：检测到 client {entry.ClientId} (netId {entry.NetId}) 加入或重生；表共 {_serverSkinTable.Count} 条，单播 {sent} 条给它");
             }
+        }
+
+        /// <summary>
+        /// 清掉表里已经失效的 netId。
+        /// Together 的实体系统会复用 id（ScavLiteEntitySystem.cs:481-484），旧 netId 不清的话，
+        /// 新玩家拿到同一个 netId 时会收到上一个人的皮肤。
+        /// </summary>
+        private void PruneDeadEntries()
+        {
+            if (_serverSkinTable.Count == 0) return;
+
+            var live = new HashSet<uint>();
+            foreach (var entry in RosterConsumer.EnumeratePlayersWithBody())
+                if (entry.Chara != null) live.Add(entry.NetId);
+            if (RosterConsumer.TryGetLocalNetBody(out _, out uint localNetId, out _)) live.Add(localNetId);
+
+            List<uint> dead = null;
+            foreach (var kv in _serverSkinTable)
+                if (!live.Contains(kv.Key)) (dead ?? (dead = new List<uint>())).Add(kv.Key);
+            if (dead == null) return;
+
+            foreach (var netId in dead) _serverSkinTable.Remove(netId);
+            SkinSyncMod.ModLog.Info($"主机：清理 {dead.Count} 条失效皮肤记录（netId 已不存在）");
         }
     }
 }

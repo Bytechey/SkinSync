@@ -25,6 +25,14 @@ namespace SkinSyncMod
         internal ConfigEntry<bool> RequireEquipmentForAccessories { get; }
         internal ConfigEntry<bool> RenderCustomBlood { get; }
         internal ConfigEntry<bool> TailDeformEnabled { get; }
+        internal ConfigEntry<bool> NormalizeSpriteSize { get; }
+
+        // —— 原版皮肤（只影响游戏内，不影响预览图）—— //
+        /// <summary>自己使用游戏原版皮肤：本地玩家不套自定义皮肤，其他玩家照常。</summary>
+        internal ConfigEntry<bool> VanillaSkinForSelf { get; }
+
+        /// <summary>除自己外都用原版：远端玩家不套自定义皮肤，自己的皮肤照常。</summary>
+        internal ConfigEntry<bool> VanillaSkinForOthers { get; }
 
         // —— 杂项 —— //
         internal ConfigEntry<bool> ShowLogInConsole { get; }
@@ -114,6 +122,17 @@ namespace SkinSyncMod
 
             TailDeformEnabled = config.Bind("Visual", "TailDeformEnabled", true,
                 "是否启用尾巴物理形变。关闭时尾巴显示原始 sprite 不做摆动。");
+
+            NormalizeSpriteSize = config.Bind("Visual", "NormalizeSpriteSize", true,
+                "按目标肢体的原贴图尺寸等比缩放皮肤贴图。开启后皮肤会缩回游戏原生大小（现有皮肤普遍比原图大 1.5-2 倍），"
+                + "不同角色、不同部位都自动对齐；关闭则维持皮肤像素尺寸原样渲染。");
+
+            VanillaSkinForSelf = config.Bind("Visual", "VanillaSkinForSelf", false,
+                "只自己使用游戏原版皮肤：本地玩家恢复成游戏原生外观，不再套自定义皮肤；其他玩家不受影响。"
+                + "两个开关都关闭时全部使用自定义皮肤，都开启时整场都是原版。");
+
+            VanillaSkinForOthers = config.Bind("Visual", "VanillaSkinForOthers", false,
+                "除自己外都用原版皮肤：远端玩家恢复成游戏原生外观，不再套自定义皮肤；自己的皮肤不受影响。");
 
             ShowLogInConsole = config.Bind("Misc", "ShowInConsole", false,
                 "是否把模组日志同步打印到游戏内控制台（` 键打开）。关闭时仅写入 BepInEx 日志。");
