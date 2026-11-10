@@ -1,5 +1,5 @@
-using LiteNetLib;
-using LiteNetLib.Utils;
+using SkinSyncMod.Interop;
+using SkinSyncMod.Interop.Consumers;
 using SkinSyncMod.Network;
 using UnityEngine;
 
@@ -8,16 +8,16 @@ namespace SkinSyncMod
     /// <summary>
     /// 处理皮肤切换网络消息：客户端收到广播后应用、服务器收到请求后校验并广播。
     /// </summary>
-    public static class SkinMessageHandlers
+    /// <remarks>消息体由 SkinMessageCodec 在契约读取器/写入器上按字段编解码，发送经 ChannelConsumer 的具名通道。</remarks>
+    internal static class SkinMessageHandlers
     {
-        public static void OnClientSkinMessage(uint callerId, ref NetDataReader reader)
+        internal static void OnClientSkinMessage(uint callerId, IInteropReader reader)
         {
-            SkinChangeMessage msg = new SkinChangeMessage();
-            msg.Deserialize(reader);
+            SkinChangeMessage msg = SkinMessageCodec.ReadSkinChange(reader);
 
-            bool hasLocal = KrokoshaBridge.TryGetLocalNetBody(out _, out uint localNetId, out _);
-            bool hasCid = KrokoshaBridge.TryGetLocalClientId(out uint localCid);
-            bool isLocalEcho = (hasLocal && localNetId == msg.netId) || (hasCid && localCid == msg.netId);
+            bool hasLocal = RosterConsumer.TryGetLocalNetBody(out _, out uint localNetId, out _);
+            bool hasCid = RosterConsumer.TryGetLocalClientId(out uint localCid);
+            bool isLocalEcho = hasLocal && localNetId == msg.netId;
             SkinSyncMod.ModLog.Info($"客户端收到皮肤切换：{msg.skinID} (msg.netId {msg.netId}, local netId {(hasLocal ? localNetId.ToString() : "n/a")}, local clientId {(hasCid ? localCid.ToString() : "n/a")}, echo={isLocalEcho})");
 
             if (!isLocalEcho)
@@ -26,48 +26,52 @@ namespace SkinSyncMod
             }
 
             // 收到的是本地玩家自己 → 写回 Settings.CurrentSkin，让主菜单 / 单机也用同一个值。
-            if (KrokoshaBridge.TryGetNetBodyFromId(msg.netId, out _, out _, out bool isLocal) && isLocal)
+            if (RosterConsumer.TryGetNetBodyFromId(msg.netId, out _, out _, out bool isLocal) && isLocal)
             {
                 if (SkinSync.Settings != null) SkinSync.Settings.CurrentSkin.Value = msg.skinID;
             }
         }
 
-        public static void OnServerSkinMessage(uint callerId, ref NetDataReader reader)
+        internal static void OnServerSkinMessage(uint callerId, IInteropReader reader)
         {
-            SkinChangeMessage msg = new SkinChangeMessage();
-            msg.Deserialize(reader);
+            SkinChangeMessage msg = SkinMessageCodec.ReadSkinChange(reader);
             SkinSyncMod.ModLog.Info($"服务端收到客户端 {callerId} 的皮肤切换请求：{msg.skinID} (netId {msg.netId})");
 
-            if (callerId != msg.netId)
+            if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
             {
-                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} tried to change skin for {msg.netId}");
+                InteropDiagnostics.WarnOnce("SkinMessageHandler.SkinCallerNetId", $"服务端无法反查客户端 {callerId} 的 netId，皮肤切换请求已拒绝。");
+                return;
+            }
+
+            if (callerNetId != msg.netId)
+            {
+                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried to change skin for {msg.netId}");
                 return;
             }
 
             ApplySkinToPlayer(msg.netId, msg.skinID);
 
-            NetDataWriter writer = new NetDataWriter();
-            writer.Put(SkinNetworkIDs.SkinChangeMessageId);
-            msg.Serialize(writer);
-            KrokoshaBridge.ServerBroadcastExcept(callerId, DeliveryMethod.ReliableOrdered, writer);
+            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
+            SkinMessageCodec.WriteSkinChange(writer, msg);
+            ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.SkinChangeMessageId);
 
             Patches.SkinCacheBroadcaster.RecordSkin(msg.netId, msg.skinID);
 
-            if (KrokoshaBridge.TryGetPlayerSteamId(callerId, out ulong steamId) && steamId != 0UL)
+            if (RosterConsumer.TryGetPlayerSteamId(callerId, out ulong steamId) && steamId != 0UL)
                 SkinCacheStore.Set(steamId, msg.skinID);
         }
 
         private static void ApplySkinToPlayer(uint netId, string characterName)
         {
-            if (!KrokoshaBridge.TryGetNetBodyFromId(netId, out _, out GameObject playerObj, out _))
+            if (!RosterConsumer.TryGetNetBodyFromId(netId, out _, out GameObject playerObj, out _))
             {
-                Patches.PendingSkinApplier.Enqueue(netId, characterName);
+                Patches.PendingSkinApplier.Enqueue(netId, characterName, "NetBody 未注册");
                 SkinSyncMod.ModLog.Info($"NetBody netId {netId} 暂未注册，已加入待应用队列：{characterName}");
                 return;
             }
             if (playerObj == null)
             {
-                Patches.PendingSkinApplier.Enqueue(netId, characterName);
+                Patches.PendingSkinApplier.Enqueue(netId, characterName, "NetBody 已注册但角色对象为空");
                 return;
             }
             SkinApplier.ApplySkinToPlayer(playerObj, characterName);
@@ -75,10 +79,9 @@ namespace SkinSyncMod
 
         // —— Accessory sync —— //
 
-        public static void OnClientAccessorySync(uint callerId, ref NetDataReader reader)
+        internal static void OnClientAccessorySync(uint callerId, IInteropReader reader)
         {
-            var msg = new AccessorySyncMessage();
-            msg.Deserialize(reader);
+            var msg = SkinMessageCodec.ReadAccessory(reader);
             if (SkinSync.Settings != null && SkinSync.Settings.SyncMode.Value == "Passive")
             {
                 return;
@@ -86,21 +89,25 @@ namespace SkinSyncMod
             ApplyAccessoryOverride(msg);
         }
 
-        public static void OnServerAccessorySync(uint callerId, ref NetDataReader reader)
+        internal static void OnServerAccessorySync(uint callerId, IInteropReader reader)
         {
-            var msg = new AccessorySyncMessage();
-            msg.Deserialize(reader);
-            if (callerId != msg.netId)
+            var msg = SkinMessageCodec.ReadAccessory(reader);
+            if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
             {
-                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} tried accessory sync for {msg.netId}");
+                InteropDiagnostics.WarnOnce("SkinMessageHandler.AccessoryCallerNetId", $"服务端无法反查客户端 {callerId} 的 netId，配件同步请求已拒绝。");
+                return;
+            }
+
+            if (callerNetId != msg.netId)
+            {
+                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried accessory sync for {msg.netId}");
                 return;
             }
             ApplyAccessoryOverride(msg);
 
-            var writer = new NetDataWriter();
-            writer.Put(SkinNetworkIDs.AccessorySyncMessageId);
-            msg.Serialize(writer);
-            KrokoshaBridge.ServerBroadcastExcept(callerId, DeliveryMethod.ReliableOrdered, writer);
+            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.AccessorySyncMessageId);
+            SkinMessageCodec.WriteAccessory(writer, msg);
+            ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.AccessorySyncMessageId);
         }
 
         private static void ApplyAccessoryOverride(AccessorySyncMessage msg)
@@ -110,7 +117,7 @@ namespace SkinSyncMod
             SkinSync.Settings.SetAccessoryEnabled(msg.skinID, msg.accId, msg.enabled);
             SkinSync.Settings.SetAccessoryTransform(msg.skinID, msg.accId, msg.offX, msg.offY, msg.rotation, msg.zOrder);
             // 把目标玩家的 chara 重新装配一遍——AccessoryAttacher.Apply 内部会读最新 settings 覆盖。
-            if (KrokoshaBridge.TryGetNetBodyFromId(msg.netId, out _, out GameObject chara, out _) && chara != null)
+            if (RosterConsumer.TryGetNetBodyFromId(msg.netId, out _, out GameObject chara, out _) && chara != null)
             {
                 SkinApplier.ApplySkinToPlayer(chara, msg.skinID);
             }
@@ -118,10 +125,9 @@ namespace SkinSyncMod
 
         // —— Tail sync —— //
 
-        public static void OnClientTailSync(uint callerId, ref NetDataReader reader)
+        internal static void OnClientTailSync(uint callerId, IInteropReader reader)
         {
-            var msg = new TailSyncMessage();
-            msg.Deserialize(reader);
+            var msg = SkinMessageCodec.ReadTail(reader);
             if (SkinSync.Settings != null && SkinSync.Settings.SyncMode.Value == "Passive")
             {
                 return;
@@ -129,21 +135,25 @@ namespace SkinSyncMod
             ApplyTailOverride(msg);
         }
 
-        public static void OnServerTailSync(uint callerId, ref NetDataReader reader)
+        internal static void OnServerTailSync(uint callerId, IInteropReader reader)
         {
-            var msg = new TailSyncMessage();
-            msg.Deserialize(reader);
-            if (callerId != msg.netId)
+            var msg = SkinMessageCodec.ReadTail(reader);
+            if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
             {
-                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} tried tail sync for {msg.netId}");
+                InteropDiagnostics.WarnOnce("SkinMessageHandler.TailCallerNetId", $"服务端无法反查客户端 {callerId} 的 netId，尾巴同步请求已拒绝。");
+                return;
+            }
+
+            if (callerNetId != msg.netId)
+            {
+                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried tail sync for {msg.netId}");
                 return;
             }
             ApplyTailOverride(msg);
 
-            var writer = new NetDataWriter();
-            writer.Put(SkinNetworkIDs.TailSyncMessageId);
-            msg.Serialize(writer);
-            KrokoshaBridge.ServerBroadcastExcept(callerId, DeliveryMethod.ReliableOrdered, writer);
+            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.TailSyncMessageId);
+            SkinMessageCodec.WriteTail(writer, msg);
+            ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.TailSyncMessageId);
         }
 
         private static void ApplyTailOverride(TailSyncMessage msg)
@@ -188,10 +198,9 @@ namespace SkinSyncMod
 
         private static readonly System.Collections.Generic.HashSet<string> _broadcastedPackIds = new System.Collections.Generic.HashSet<string>();
 
-        public static void OnServerSkinPackRequest(uint callerId, ref NetDataReader reader)
+        internal static void OnServerSkinPackRequest(uint callerId, IInteropReader reader)
         {
-            var msg = new SkinPackRequestMessage();
-            msg.Deserialize(reader);
+            var msg = SkinMessageCodec.ReadSkinPackRequest(reader);
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
 
             byte[] local = SkinPackCodec.PackLocalSkin(msg.skinID);
@@ -204,17 +213,15 @@ namespace SkinSyncMod
                 return;
             }
 
-            var writer = new NetDataWriter();
-            writer.Put(SkinNetworkIDs.SkinPackRequestMessageId);
-            msg.Serialize(writer);
-            KrokoshaBridge.ServerBroadcastExcept(callerId, DeliveryMethod.ReliableOrdered, writer);
+            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackRequestMessageId);
+            SkinMessageCodec.WriteSkinPackRequest(writer, msg);
+            ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.SkinPackRequestMessageId);
             SkinSyncMod.ModLog.Info($"服务端:转发皮肤包请求 {msg.skinID} 给其他 client");
         }
 
-        public static void OnClientSkinPackRequest(uint callerId, ref NetDataReader reader)
+        internal static void OnClientSkinPackRequest(uint callerId, IInteropReader reader)
         {
-            var msg = new SkinPackRequestMessage();
-            msg.Deserialize(reader);
+            var msg = SkinMessageCodec.ReadSkinPackRequest(reader);
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
 
             byte[] local = SkinPackCodec.PackLocalSkin(msg.skinID);
@@ -224,10 +231,9 @@ namespace SkinSyncMod
             SkinSyncMod.ModLog.Info($"客户端：响应皮肤包请求 {msg.skinID}（{local.Length} bytes, allowPersist={myAllow}）");
         }
 
-        public static void OnServerSkinPackData(uint callerId, ref NetDataReader reader)
+        internal static void OnServerSkinPackData(uint callerId, IInteropReader reader)
         {
-            var msg = new SkinPackDataMessage();
-            msg.Deserialize(reader);
+            var msg = SkinMessageCodec.ReadSkinPackData(reader);
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
             if (msg.payload == null || msg.payload.Length == 0) return;
 
@@ -237,18 +243,16 @@ namespace SkinSyncMod
             if (_broadcastedPackIds.Contains(skinID)) return;
             _broadcastedPackIds.Add(skinID);
 
-            var writer = new NetDataWriter();
-            writer.Put(SkinNetworkIDs.SkinPackDataMessageId);
-            msg.Serialize(writer);
-            KrokoshaBridge.ServerBroadcastExcept(callerId, DeliveryMethod.ReliableOrdered, writer);
+            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
+            SkinMessageCodec.WriteSkinPackData(writer, msg);
+            ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.SkinPackDataMessageId);
 
             SkinApplier.ReapplyForSkin(skinID);
         }
 
-        public static void OnClientSkinPackData(uint callerId, ref NetDataReader reader)
+        internal static void OnClientSkinPackData(uint callerId, IInteropReader reader)
         {
-            var msg = new SkinPackDataMessage();
-            msg.Deserialize(reader);
+            var msg = SkinMessageCodec.ReadSkinPackData(reader);
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
             if (msg.payload == null || msg.payload.Length == 0) return;
 

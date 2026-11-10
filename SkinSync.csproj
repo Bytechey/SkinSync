@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net48</TargetFramework>
+    <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>SkinSyncMod</AssemblyName>
     <RootNamespace>SkinSyncMod</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.0.11</Version>
+    <Version>1.1.1</Version>
     <Description>Casualties Unknown — 皮肤切换 + 翼装配 mod</Description>
 
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
@@ -69,10 +69,6 @@
     </Reference>
     <Reference Include="UnityEngine.ParticleSystemModule">
       <HintPath>references\UnityEngine.ParticleSystemModule.dll</HintPath>
-      <Private>false</Private>
-    </Reference>
-    <Reference Include="LiteNetLib">
-      <HintPath>references\LiteNetLib.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Unity.RenderPipelines.Universal.Runtime">
