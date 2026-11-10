@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.2.1")]
+    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.2.2")]
     [BepInDependency(SaveManagerGuid, BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency(TogetherGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public class SkinSync : BaseUnityPlugin
