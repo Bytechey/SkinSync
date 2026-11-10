@@ -463,9 +463,9 @@ namespace SkinSyncMod
         // 一行固定 3 个。cell 宽度改用 ScrollView 内部的实际可用宽度算，
         // 不再用 WindowWidth 硬减：左侧还有 tab 栅占位，硬算会让第三列超出可视区被裁掉。
         private const int CellsPerRow = 3;
-        // 预览图下方的固定高度：名字 + 按钮 + 上下内边距。
-        // 用固定值而不是宽高比——“名字”和“按钮”的绝对位置在这里算，宽高比一变就会叠在一起。
-        private const float CellChromeH = 104f;
+        // 卡片在预览区之外还要容纳：内边距 ×2 + 名字 + 间距 ×2 + 按钮。
+        // 写死成固定值，让 cellH 和卡片内部排版用同一套口径（之前两处各算一份，名字被挤出去了）。
+        private const float CellChromeH = 108f;
         private const float GridGap = 14f;
         private const float GridRightPad = 18f;
         private const float CellInnerPad = 10f;
@@ -480,8 +480,9 @@ namespace SkinSyncMod
 
             float cellW = Mathf.Floor((available - GridGap * (CellsPerRow - 1) - GridRightPad) / CellsPerRow);
             if (cellW < 80f) cellW = 80f;
-            float imgSize = cellW - CellInnerPad * 2f;
-            float cellH = Mathf.Floor(CellInnerPad + imgSize + CellChromeH);
+            // 预览区是正方形，边长 = cellW - 内边距，所以卡片高 = 内边距 + 正方形 + 下挂区。
+            float side = cellW - CellInnerPad * 2f;
+            float cellH = Mathf.Floor(CellInnerPad + side + CellChromeH);
 
             int row = 0;
             while (row * CellsPerRow < skins.Count)
@@ -497,7 +498,7 @@ namespace SkinSyncMod
                     }
                     else
                     {
-                        DrawSkinCell(skins[idx], currentSkin, cellW, cellH, imgSize);
+                        DrawSkinCell(skins[idx], currentSkin, cellW, cellH, side);
                     }
                     if (c < CellsPerRow - 1) GUILayout.Space(GridGap);
                 }
@@ -522,10 +523,26 @@ namespace SkinSyncMod
                 new Color(0.06f, 0.06f, 0.06f, 0.42f), 0f, 0f);
             BlackWhiteSkin.DrawBorder(cellRect, 4f);
 
-            // 预览图：cell 顶部居中。
-            float imgX = cellRect.x + (cellRect.width - imgSize) * 0.5f;
-            float imgY = cellRect.y + CellInnerPad;
-            Rect imgRect = new Rect(imgX, imgY, imgSize, imgSize);
+            float innerW = cellRect.width - CellInnerPad * 2f;
+            float innerX = cellRect.x + CellInnerPad;
+
+            // 从底往上排：按钮 → 名字 → 剩下的全给预览图。
+            // 之前是「预览图用固定边长、名字接在图片下、按钮贴底」，三者没有闭环，
+            // 图片一高就把名字挤出卡片外。
+            const float btnH = 46f;
+            const float nameH = 36f;
+            const float gap = 4f;
+
+            Rect btnRect = new Rect(innerX, cellRect.yMax - CellInnerPad - btnH, innerW, btnH);
+            Rect titleRect = new Rect(innerX, btnRect.y - gap - nameH, innerW, nameH);
+
+            float imgTop = cellRect.y + CellInnerPad;
+            float imgBottom = titleRect.y - gap;
+            float imgH = Mathf.Max(40f, imgBottom - imgTop);
+            // 预览区保持正方形：宽度不能超过可用宽度，也不能超过可用高度。
+            float side = Mathf.Min(innerW, imgH);
+            Rect imgRect = new Rect(cellRect.x + (cellRect.width - side) * 0.5f, imgTop, side, side);
+
             GUI.DrawTexture(imgRect, BlackWhiteSkin.LineTex, ScaleMode.StretchToFill, false, 0f,
                 new Color(0f, 0f, 0f, 0.28f), 0f, 0f);
             BlackWhiteSkin.DrawBorder(imgRect, 3f);
@@ -545,22 +562,15 @@ namespace SkinSyncMod
                 GUI.DrawTexture(imgRect, tex, ScaleMode.ScaleToFit, true);
             }
 
-            // 正在使用的标记：预览图左上角的星，不再拼在名字后面（会跟按钮文字撞在一起）。
+            // 正在使用的标记：预览图左上角的星。
             if (isActive)
             {
                 GUI.Label(new Rect(imgRect.x + 2f, imgRect.y - 4f, 56f, 56f), "★", StarStyle);
             }
 
-            // 名字：放在角色脚边（预览图正下方），居中。
-            Rect titleRect = new Rect(cellRect.x + CellInnerPad, imgRect.yMax + 2f,
-                cellRect.width - CellInnerPad * 2f, 36f);
+            // 名字：角色脚边，居中。
             GUI.Label(titleRect, skin, SkinNameStyle);
 
-            // 按钮：贴 cell 底部，与名字之间由 CellChromeH 保证不重叠。
-            float btnH = 46f;
-            Rect btnRect = new Rect(cellRect.x + CellInnerPad,
-                cellRect.yMax - CellInnerPad - btnH,
-                cellRect.width - CellInnerPad * 2f, btnH);
             bool prevEnabled = GUI.enabled;
             GUI.enabled = !isActive;
             if (GUI.Button(btnRect, isActive ? SkinSyncI18n.T("btn.skin_in_use") : SkinSyncI18n.T("btn.apply_skin")))

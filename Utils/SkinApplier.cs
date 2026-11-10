@@ -180,21 +180,24 @@ namespace SkinSyncMod
                 bool isRight = bodyForDir != null ? bodyForDir.isRight : true;
                 int charType = bodyForDir != null ? bodyForDir.charType : 0;
 
+                // 全局倍率本角色只算一次：所有部件（含头、眼睛、嘴）用同一个值。
+                float fitScale = GlobalFitScale(spriteDict);
+
                 int limbTotal = 0;
                 int limbApplied = 0;
                 foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
                 {
                     limbTotal++;
-                    if (ReplaceLimbSprite(limb, spriteDict, isRight, charType)) limbApplied++;
+                    if (ReplaceLimbSprite(limb, spriteDict, isRight, charType, fitScale)) limbApplied++;
                 }
                 _lastLimbTotal = limbTotal;
                 _lastLimbApplied = limbApplied;
 
                 foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
-                    ReplaceTailSprite(tail, spriteDict, isRight, charType);
+                    ReplaceTailSprite(tail, spriteDict, isRight, charType, fitScale);
 
                 foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
-                    ReplaceFacialExpressionSprites(face, spriteDict, isRight, charType);
+                    ReplaceFacialExpressionSprites(face, spriteDict, isRight, charType, fitScale);
 
                 EnsureWingsAttached(playerObj, spriteDict, wingsCfg, remoteCharType);
 
@@ -352,12 +355,13 @@ namespace SkinSyncMod
             Body body = playerObj.GetComponentInChildren<Body>(true);
             int charType = body != null ? body.charType : 0;
 
+            float fitScale = GlobalFitScale(spriteDict);
             foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
-                ReplaceLimbSprite(limb, spriteDict, isRight, charType);
+                ReplaceLimbSprite(limb, spriteDict, isRight, charType, fitScale);
             foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
-                ReplaceTailSprite(tail, spriteDict, isRight, charType);
+                ReplaceTailSprite(tail, spriteDict, isRight, charType, fitScale);
             foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
-                ReplaceFacialExpressionSprites(face, spriteDict, isRight, charType);
+                ReplaceFacialExpressionSprites(face, spriteDict, isRight, charType, fitScale);
 
             AccessoryAttacher.RefreshSidedSprites(playerObj, spriteDict, isRight);
         }
@@ -412,7 +416,7 @@ namespace SkinSyncMod
         internal static Sprite ResolveSidedSprite(Dictionary<string, Sprite> dict, string baseName, char side, bool isRight)
             => Resolve.SidedSpriteLookup.Find(dict, baseName, side, isRight);
 
-        private static bool ReplaceLimbSprite(Limb limb, Dictionary<string, Sprite> dict, bool isRight, int charType)
+        private static bool ReplaceLimbSprite(Limb limb, Dictionary<string, Sprite> dict, bool isRight, int charType, float scale)
         {
             var renderer = limb.GetComponent<SpriteRenderer>();
             if (renderer == null) return false;
@@ -430,7 +434,7 @@ namespace SkinSyncMod
             // 三层解析（当前角色名 → 部位键名 → 其他角色同名部位）全部由 CharacterCatalog 驱动，
             // 不再维护任何硬编码映射表；新增角色时这里不用改。
             var outcome = Resolve.SkinResolver.ResolveByName(baseSprite, dict, charType, side, isRight);
-            renderer.sprite = outcome.Hit ? FitToTarget(outcome.Sprite, reference, cropContent: true) : reference;
+            renderer.sprite = outcome.Hit ? FitToTarget(outcome.Sprite, reference, scale) : reference;
             return outcome.Hit;
         }
 
@@ -446,143 +450,30 @@ namespace SkinSyncMod
         /// false = 按皮肤文件名所属角色的原生尺寸（肢体/尾巴：一套 experiment 皮肤在任何角色上保持作者画的外观）。
         /// </param>
         /// <summary>
-        /// 按游戏原图的布局重建贴图：皮肤内容缩放到原图的内容尺寸，画布/偏移按需保留。
+        /// 皮肤贴图统一缩放：所有部件用同一个全局倍率，只缩整体，不逐部位对齐。
         /// </summary>
-        /// <param name="isHead">
-        /// true = 头：等比缩放（面积对齐），不压扁。
-        /// false = 其余肢体：宽高各自缩放到原图内容矩形，占位与原版一致。
-        /// </param>
-        private static Sprite RebuildLikeOriginal(Sprite skin, Character.PartContentSizes.Entry entry, bool isHead)
-        {
-            if (skin.texture == null || entry.CanvasWidth <= 0 || entry.CanvasHeight <= 0) return null;
-            if (entry.ContentWidth <= 0 || entry.ContentHeight <= 0) return null;
-
-            Rect source = skin.textureRect;
-            if (_contentRects.TryGetValue(skin.name, out Rect content)
-                && content.width >= 1f && content.height >= 1f)
-            {
-                source = content;
-            }
-
-            int canvasW = entry.CanvasWidth;
-            int canvasH = entry.CanvasHeight;
-            // 目标不再用画布，也不用 alpha 内容，而是碰撞体积（m_PhysicsShape 包围盒）：
-            // 游戏自己的碰撞体用的就是这圈轮廓，比可见内容略大一圈（头 22x12 vs 20x12）。
-            int targetW = entry.PhysicsWidth > 0 ? entry.PhysicsWidth : entry.ContentWidth;
-            int targetH = entry.PhysicsHeight > 0 ? entry.PhysicsHeight : entry.ContentHeight;
-
-            int srcW = Mathf.RoundToInt(source.width);
-            int srcH = Mathf.RoundToInt(source.height);
-
-            // 皮肤内容已经等于碰撞体积且没裁过白边时，直接用原 sprite
-            if (srcW == targetW && srcH == targetH && source == skin.textureRect)
-            {
-                return skin;
-            }
-
-            string lowerName = skin.name.ToLowerInvariant();
-            bool isHand = lowerName.Contains("hand");
-            bool isArm = lowerName.Contains("arm");
-
-            // 全部等比缩放，倍率按部位语义选：
-            // 头 —— 按面积对齐，保持作者画的脸型不被压扁；
-            // 手 —— 用 fit（不超出碰撞体积），作者常把手画得比碰撞体大；
-            // 臂 —— 按碰撞体**面积**等比。皮肤手臂宽高比（6:11）比碰撞体（4:12）粗很多，
-            //       cover 会把胳膊撑到 6.5 宽、整体下拉过长；面积对齐既不撑粗也不变短。
-            // 其余（躯干/腿/脚/尾）—— cover，保证完全盖上碰撞体积（腿脚因此会比内容略大一圈）。
-            float scaleX = targetW / (float)srcW;
-            float scaleY = targetH / (float)srcH;
-            float scale;
-            string mode;
-            if (isHead)
-            {
-                scale = Mathf.Sqrt(scaleX * scaleY);
-                mode = "头等比";
-            }
-            else if (isHand)
-            {
-                scale = Mathf.Min(scaleX, scaleY);
-                mode = "手fit";
-            }
-            else if (isArm)
-            {
-                scale = Mathf.Sqrt(scaleX * scaleY);
-                mode = "臂面积等比";
-            }
-            else
-            {
-                scale = Mathf.Max(scaleX, scaleY);
-                mode = "cover碰撞体";
-            }
-
-            int drawW = Mathf.Max(1, Mathf.RoundToInt(srcW * scale));
-            int drawH = Mathf.Max(1, Mathf.RoundToInt(srcH * scale));
-
-            Texture2D contentTex = ResampleRegion(skin.texture, source, drawW, drawH);
-            if (contentTex == null) return null;
-
-            // 水平：头必须内容中心对准关节（用户要求与躯干中心对齐），其余按原图偏移反算。
-            float pivotX = 0.5f;
-            if (!isHead)
-            {
-                float contentCenterOffsetX = (entry.ContentX + entry.ContentWidth * 0.5f) - entry.CanvasWidth * 0.5f;
-                pivotX = Mathf.Clamp01((drawW * 0.5f - contentCenterOffsetX) / drawW);
-            }
-            // 垂直：一律保持「内容底边到关节的距离」不变。头的皮肤画布比原图高（17x16 vs 原 20x12），
-            // pivot 固在中心会让头底边下移 2px，压到躯干顶部造成「肩膀遮脸」。
-            float contentBottomOffsetY = entry.CanvasHeight * 0.5f - entry.ContentY;
-            float pivotY = Mathf.Clamp01(contentBottomOffsetY / drawH);
-
-            var sprite = Sprite.Create(contentTex, new Rect(0f, 0f, drawW, drawH), new Vector2(pivotX, pivotY), PIXELS_PER_UNIT);
-            sprite.name = skin.name;
-            ModLog.Debug($"[归一] {skin.name} 内容 {srcW}x{srcH} → {drawW}x{drawH}（{mode}，碰撞体 {targetW}x{targetH}）" +
-                          $"，pivot({pivotX:F2},{pivotY:F2})");
-            return sprite;
-        }
-
-        /// <param name="cropContent">true = 先按 alpha 包围盒裁掉画布留白（肢体用）；false = 保留整张画布（表情用，因为内容位置有意义）</param>
-        private static Sprite FitToTarget(Sprite skin, Sprite reference, bool cropContent = false, bool useCurrentCharacterSize = false)
+        /// <remarks>
+        /// 逐部位对齐（每块单独拉到原图画布或碰撞体）会破坏作者画的相对比例：
+        /// 头被压扁、手臂变粗，而眼睛与头因为画布基准不同而错位。
+        /// 改成「原样加载 + 一个全局倍率」后，头、眼睛、嘴共用同一变换，
+        /// 内容在画布中的相对位置完全不变，因此不会错位。
+        /// </remarks>
+        /// <param name="skin">皮肤里的贴图（整张画布，不裁 alpha）</param>
+        /// <param name="reference">游戏原图，只用来取目标画布尺寸与 pivot / ppu</param>
+        /// <param name="scale">全局倍率，由 ComputeGlobalFitScale 统一算出</param>
+        private static Sprite FitToTarget(Sprite skin, Sprite reference, float scale)
         {
             if (skin == null || reference == null) return skin;
             if (!NormalizeSizeEnabled) return skin;
+            // 倍率 1 = 不上倍率：皮肤按自己的画布原样显示（即旧的加载逻辑）。
+            if (Mathf.Abs(scale - 1f) < 0.001f) return skin;
 
-            // 肢体：按游戏原图的「画布 + 内容矩形 + 内容偏移」重建一张布局完全一致的贴图。
-            // 只对齐尺寸不够：游戏里头画布 26x12、内容 20x12 且靠左（朝右侧脸），
-            // 把皮肤内容裁出来居中会让头整体右移 3px。
-            if (cropContent && Character.PartContentSizes.TryGet(skin.name, out var entry))
-            {
-                var rebuilt = RebuildLikeOriginal(skin, entry, skin.name.ToLowerInvariant().Contains("head"));
-                if (rebuilt != null) return rebuilt;
-            }
+            int targetW = Mathf.Max(1, Mathf.RoundToInt(reference.rect.width * scale));
+            int targetH = Mathf.Max(1, Mathf.RoundToInt(reference.rect.height * scale));
 
-            int targetW, targetH;
-            if (!useCurrentCharacterSize && Character.CharacterCatalog.TryGetSpriteSize(skin.name, out Vector2Int original))
-            {
-                targetW = original.x;
-                targetH = original.y;
-            }
-            else
-            {
-                // 表情 / 未登记的贴图：按当前部位的原图尺寸
-                targetW = Mathf.RoundToInt(reference.rect.width);
-                targetH = Mathf.RoundToInt(reference.rect.height);
-            }
-            if (targetW <= 0 || targetH <= 0) return skin;
-
-            Rect region = skin.textureRect;
-            if (cropContent && _contentRects.TryGetValue(skin.name, out Rect content)
-                && content.width >= 1f && content.height >= 1f)
-            {
-                region = content;
-            }
-
-            int srcW = Mathf.RoundToInt(region.width);
-            int srcH = Mathf.RoundToInt(region.height);
-            if (srcW == targetW && srcH == targetH && region == skin.textureRect)
-            {
-                ModLog.Debug($"[归一] {skin.name} 源 {srcW}x{srcH} 已等于目标 {targetW}x{targetH}，不处理");
-                return skin;
-            }
+            int srcW = Mathf.RoundToInt(skin.textureRect.width);
+            int srcH = Mathf.RoundToInt(skin.textureRect.height);
+            if (srcW == targetW && srcH == targetH) return skin;
 
             long key = ((long)skin.texture.GetInstanceID() << 40) ^ ((long)targetW << 20) ^ (uint)targetH;
             if (_fittedSprites.TryGetValue(key, out var cached) && cached != null) return cached;
@@ -590,16 +481,56 @@ namespace SkinSyncMod
             // 多次换皮肤时缓存会累积；已挂到 renderer 上的 Sprite 不受清空影响
             if (_fittedSprites.Count > 128) _fittedSprites.Clear();
 
-            Texture2D resampled = ResampleRegion(skin.texture, region, targetW, targetH);
+            // 整画布重采样：保留「内容画在画布哪个位置」的信息，这是头与眼睛能对齐的关键。
+            Texture2D resampled = ResampleRegion(skin.texture, skin.textureRect, targetW, targetH);
             if (resampled == null) return skin;
-            ModLog.Debug($"[归一] {skin.name} 源 {srcW}x{srcH}{(cropContent ? "(裁白边)" : "(整画布)")} → 目标 {targetW}x{targetH}");
 
-            // pivot 用目标贴图的归一化 pivot（实测三个角色的肢体原图均为 0.5/0.5）
-            var pivot = new Vector2(reference.pivot.x / reference.rect.width, reference.pivot.y / reference.rect.height);
+            // pivot 用原图的归一化值（实测三角色肢体均为 0.5/0.5），ppu 也用原图的：
+            // 世界尺寸 = 目标画布 / ppu = 原图画布 × scale / ppu。
+            var pivot = new Vector2(reference.pivot.x / reference.rect.width,
+                                    reference.pivot.y / reference.rect.height);
             var sprite = Sprite.Create(resampled, new Rect(0f, 0f, targetW, targetH), pivot, reference.pixelsPerUnit);
             sprite.name = skin.name;
             _fittedSprites[key] = sprite;
+            ModLog.Debug($"[归一] {skin.name} 画布 {srcW}x{srcH} → {targetW}x{targetH}（全局倍率 {scale:F3}）");
             return sprite;
+        }
+
+        /// <summary>
+        /// 算全局缩放倍率。
+        /// 目前**停用**：先按皮肤原画布原样加载（旧逻辑），确认基线效果再接倍率。
+        /// 要启用时把下面的 return 1f 换成实际计算（口径 = 所有肢体的原图画布高之和 / 皮肤画布高之和）。
+        /// </summary>
+        private static float GlobalFitScale(Dictionary<string, Sprite> dict)
+        {
+            if (dict == null || dict.Count == 0) return 1f;
+            return 1f;
+        }
+
+        /// <summary>备用的倍率计算：按所有肢体高度之和的比例取一个统一值。</summary>
+        private static float ComputeFitScaleByHeight(Dictionary<string, Sprite> dict)
+        {
+            if (dict == null || dict.Count == 0) return 1f;
+
+            float wantSum = 0f;
+            float gotSum = 0f;
+            foreach (var kv in dict)
+            {
+                if (kv.Value == null) continue;
+                string lower = kv.Key.ToLowerInvariant();
+                // 只算肢体：表情与头同画布，重复计入会把倍率带偏；翅膀/配件游戏原版没有对应物。
+                if (lower.Contains("disfigured") || lower.Contains("mouth") || lower.Contains("eye")) continue;
+                if (!(lower.Contains("torso") || lower.Contains("arm") || lower.Contains("hand")
+                      || lower.Contains("thigh") || lower.Contains("crus") || lower.Contains("foot")
+                      || lower.Contains("head") || lower.Contains("tail"))) continue;
+                if (!Character.CharacterCatalog.TryGetSpriteSize(kv.Key, out Vector2Int original)) continue;
+
+                wantSum += original.y;
+                gotSum += kv.Value.textureRect.height;
+            }
+
+            if (gotSum < 1f || wantSum < 1f) return 1f;
+            return Mathf.Clamp(wantSum / gotSum, 0.2f, 2f);
         }
 
         /// <summary>最近邻重采样指定区域，保持像素感（双线性会把像素画糊掉）。</summary>
@@ -778,7 +709,7 @@ namespace SkinSyncMod
             }
         }
 
-        private static void ReplaceTailSprite(TailScript tail, Dictionary<string, Sprite> dict, bool isRight, int charType)
+        private static void ReplaceTailSprite(TailScript tail, Dictionary<string, Sprite> dict, bool isRight, int charType, float scale)
         {
             var renderer = tail.GetComponent<SpriteRenderer>();
             if (renderer == null) return;
@@ -789,10 +720,10 @@ namespace SkinSyncMod
             if (reference == null) return;
 
             var outcome = Resolve.SkinResolver.ResolveByName(reference.name, dict, charType, '\0', isRight);
-            renderer.sprite = outcome.Hit ? FitToTarget(outcome.Sprite, reference, cropContent: true) : reference;
+            renderer.sprite = outcome.Hit ? FitToTarget(outcome.Sprite, reference, scale) : reference;
         }
 
-        private static void ReplaceFacialExpressionSprites(FacialExpression face, Dictionary<string, Sprite> dict, bool isRight, int charType)
+        private static void ReplaceFacialExpressionSprites(FacialExpression face, Dictionary<string, Sprite> dict, bool isRight, int charType, float scale)
         {
             int id = face.GetInstanceID();
             if (!_originalFaces.TryGetValue(id, out var orig))
@@ -811,24 +742,24 @@ namespace SkinSyncMod
                 _originalFaces[id] = orig;
             }
 
-            face.defaultHead = GetReplacement(orig.DefaultHead, dict, isRight, charType, isWholeFace: true);
-            face.defaultHeadMouth = GetReplacement(orig.DefaultHeadMouth, dict, isRight, charType, isWholeFace: true);
-            face.defaultHeadMouthHalf = GetReplacement(orig.DefaultHeadMouthHalf, dict, isRight, charType, isWholeFace: true);
-            face.eyesGone = GetReplacement(orig.EyesGone, dict, isRight, charType, isWholeFace: false);
-            face.eyesGoneHealed = GetReplacement(orig.EyesGoneHealed, dict, isRight, charType, isWholeFace: false);
+            face.defaultHead = GetReplacement(orig.DefaultHead, dict, isRight, charType, scale);
+            face.defaultHeadMouth = GetReplacement(orig.DefaultHeadMouth, dict, isRight, charType, scale);
+            face.defaultHeadMouthHalf = GetReplacement(orig.DefaultHeadMouthHalf, dict, isRight, charType, scale);
+            face.eyesGone = GetReplacement(orig.EyesGone, dict, isRight, charType, scale);
+            face.eyesGoneHealed = GetReplacement(orig.EyesGoneHealed, dict, isRight, charType, scale);
 
             int dhCount = Mathf.Min(face.disfiguredHead.Length, orig.DisfiguredHead.Length);
             for (int i = 0; i < dhCount; i++)
-                face.disfiguredHead[i] = GetReplacement(orig.DisfiguredHead[i], dict, isRight, charType, isWholeFace: true);
+                face.disfiguredHead[i] = GetReplacement(orig.DisfiguredHead[i], dict, isRight, charType, scale);
             int dhhCount = Mathf.Min(face.disfiguredHeadHeal.Length, orig.DisfiguredHeadHeal.Length);
             for (int i = 0; i < dhhCount; i++)
-                face.disfiguredHeadHeal[i] = GetReplacement(orig.DisfiguredHeadHeal[i], dict, isRight, charType, isWholeFace: true);
+                face.disfiguredHeadHeal[i] = GetReplacement(orig.DisfiguredHeadHeal[i], dict, isRight, charType, scale);
             int eyeCount = Mathf.Min(face.eyeList.Count, orig.Eyes.Length);
             for (int i = 0; i < eyeCount; i++)
             {
                 var eye = orig.Eyes[i];
-                eye.front = GetReplacement(eye.front, dict, isRight, charType, isWholeFace: false);
-                eye.back = GetReplacement(eye.back, dict, isRight, charType, isWholeFace: false);
+                eye.front = GetReplacement(eye.front, dict, isRight, charType, scale);
+                eye.back = GetReplacement(eye.back, dict, isRight, charType, scale);
                 face.eyeList[i] = eye;
             }
         }
@@ -839,15 +770,13 @@ namespace SkinSyncMod
         /// false = 眼睛类：眼睛内容只是画布内一小块（experimentEyeOpen 画布 26x12、内容仅 6x4），
         /// 裁白边会让眼睛跑到脸中间，所以保留整张画布，只按该贴图自身的画布尺寸归一。
         /// </param>
-        private static Sprite GetReplacement(Sprite original, Dictionary<string, Sprite> dict, bool isRight, int charType, bool isWholeFace)
+        private static Sprite GetReplacement(Sprite original, Dictionary<string, Sprite> dict, bool isRight, int charType, float scale)
         {
             if (original == null) return null;
             var outcome = Resolve.SkinResolver.ResolveByName(original.name, dict, charType, '\0', isRight);
-            if (!outcome.Hit) return original;
-            if (isWholeFace) return FitToTarget(outcome.Sprite, original, cropContent: true);
-            // 眼睛按贴图名所属角色的画布尺寸，而不是当前角色——
-            // 一套 experiment 皮肤用在 Milky 身上时，按当前角色会把头 26x12 压成 14x14。
-            return FitToTarget(outcome.Sprite, original, cropContent: false, useCurrentCharacterSize: false);
+            // 头、眼睛、嘴全部走同一个 FitToTarget：同一全局倍率、同一整画布基准，
+            // 所以眼睛不会因为基准不同而错位。
+            return outcome.Hit ? FitToTarget(outcome.Sprite, original, scale) : original;
         }
 
         /// <summary>
