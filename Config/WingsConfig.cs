@@ -17,12 +17,16 @@ namespace SkinSyncMod
             public int ZOrder;
         }
 
+        /// <summary>部位配置。</summary>
         public class Config
         {
             public Piece WingUL;
             public Piece WingDL;
             public Piece WingUR;
             public Piece WingDR;
+
+            /// <summary>是否为「没读到 wings.json」时的内置默认值。默认值不带作者意图，位置需要按角色几何重算。</summary>
+            public bool IsDefault;
         }
 
         public static Config Defaults() => new Config
@@ -31,6 +35,7 @@ namespace SkinSyncMod
             WingDL = new Piece { X = 2, Y = -10, Rotation = 0f, ZOrder = 5 },
             WingUR = new Piece { X = 1, Y = -9, Rotation = 318f, ZOrder = 5 },
             WingDR = new Piece { X = 3, Y = -12, Rotation = 0f, ZOrder = 5 },
+            IsDefault = true,
         };
 
         /// <summary>读取并解析 wings.json，文件缺失或失败时返回默认配置。</summary>

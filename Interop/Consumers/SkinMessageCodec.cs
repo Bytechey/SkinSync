@@ -20,6 +20,7 @@ namespace SkinSyncMod.Interop.Consumers
         {
             writer.PutString(message.skinID ?? string.Empty);
             writer.PutUInt(message.netId);
+            writer.PutInt(message.charType);
         }
 
         /// <summary>读取皮肤切换消息体。</summary>
@@ -28,6 +29,8 @@ namespace SkinSyncMod.Interop.Consumers
             SkinChangeMessage message = new SkinChangeMessage();
             message.skinID = reader.GetString();
             message.netId = reader.GetUInt();
+            // charType 是后加字段：旧版本发来的消息没有这一段，用 RemainingBytes 判断避免越界读。
+            message.charType = reader.RemainingBytes >= 4 ? reader.GetInt() : 0;
             return message;
         }
 

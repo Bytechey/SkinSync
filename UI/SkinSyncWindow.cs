@@ -313,6 +313,20 @@ namespace SkinSyncMod
                 _cfg.RenderCustomBlood.Value = renderBlood;
                 BloodRenderConfig.Enabled = renderBlood;
             }
+
+            // 原版皮肤：只影响游戏内角色外观，不改预览图。两个开关互相独立。
+            bool vanillaSelf = DrawSwitch(SkinSyncI18n.T("sw.vanilla_self"), _cfg.VanillaSkinForSelf.Value);
+            if (vanillaSelf != _cfg.VanillaSkinForSelf.Value)
+            {
+                _cfg.VanillaSkinForSelf.Value = vanillaSelf;
+                SkinApplier.RefreshAll();
+            }
+            bool vanillaOthers = DrawSwitch(SkinSyncI18n.T("sw.vanilla_others"), _cfg.VanillaSkinForOthers.Value);
+            if (vanillaOthers != _cfg.VanillaSkinForOthers.Value)
+            {
+                _cfg.VanillaSkinForOthers.Value = vanillaOthers;
+                SkinApplier.RefreshAll();
+            }
             GUILayout.EndVertical();
 
             GUILayout.Space(12f);
@@ -446,20 +460,28 @@ namespace SkinSyncMod
             GUILayout.EndScrollView();
         }
 
-        // 一行限定 3 个，cell 宽度按 ScrollView 可用宽度自适应。
-        // 计算口径：bodyRect.width = WindowWidth - 48；ScrollView 自身扣 24 scrollbar；网格右侧再留 24 与 scrollbar 拉开距离。
+        // 一行固定 3 个。cell 宽度改用 ScrollView 内部的实际可用宽度算，
+        // 不再用 WindowWidth 硬减：左侧还有 tab 栅占位，硬算会让第三列超出可视区被裁掉。
         private const int CellsPerRow = 3;
-        private const float CellAspectH = 1.35f;
-        private const float GridGap = 16f;
-        private const float GridRightPad = 24f;
-        private const float CellInnerPad = 12f;
+        // 预览图下方的固定高度：名字 + 按钮 + 上下内边距。
+        // 用固定值而不是宽高比——“名字”和“按钮”的绝对位置在这里算，宽高比一变就会叠在一起。
+        private const float CellChromeH = 104f;
+        private const float GridGap = 14f;
+        private const float GridRightPad = 18f;
+        private const float CellInnerPad = 10f;
 
         private void DrawSkinGrid(List<string> skins, string currentSkin)
         {
-            float available = WindowWidth - 48f - 24f - GridRightPad;
-            float cellW = Mathf.Floor((available - GridGap * (CellsPerRow - 1)) / CellsPerRow);
-            float cellH = Mathf.Floor(cellW * CellAspectH);
+            // 向布局系统要一个宽度：ScrollView 内容区的真实可用宽度。
+            // 高度给 0，不占垂直空间。
+            float available = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true)).width;
+            // 极端情况下布局还没算好（返回 0 或很小），回退到估算值，避免 cell 宽度变成负数。
+            if (available < 200f) available = WindowWidth - 48f - 280f - 48f;
+
+            float cellW = Mathf.Floor((available - GridGap * (CellsPerRow - 1) - GridRightPad) / CellsPerRow);
+            if (cellW < 80f) cellW = 80f;
             float imgSize = cellW - CellInnerPad * 2f;
+            float cellH = Mathf.Floor(CellInnerPad + imgSize + CellChromeH);
 
             int row = 0;
             while (row * CellsPerRow < skins.Count)
@@ -495,10 +517,10 @@ namespace SkinSyncMod
                 GUILayout.Width(cellW), GUILayout.Height(cellH),
                 GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
 
-            // 背景（深灰）+ 白色矩形边框，与面板风格一致。
+            // 背景（深灰）+ 白色矩形边框，与面板风格一致。外框加粗。
             GUI.DrawTexture(cellRect, BlackWhiteSkin.LineTex, ScaleMode.StretchToFill, false, 0f,
                 new Color(0.06f, 0.06f, 0.06f, 0.42f), 0f, 0f);
-            BlackWhiteSkin.DrawBorder(cellRect, 2f);
+            BlackWhiteSkin.DrawBorder(cellRect, 4f);
 
             // 预览图：cell 顶部居中。
             float imgX = cellRect.x + (cellRect.width - imgSize) * 0.5f;
@@ -506,7 +528,7 @@ namespace SkinSyncMod
             Rect imgRect = new Rect(imgX, imgY, imgSize, imgSize);
             GUI.DrawTexture(imgRect, BlackWhiteSkin.LineTex, ScaleMode.StretchToFill, false, 0f,
                 new Color(0f, 0f, 0f, 0.28f), 0f, 0f);
-            BlackWhiteSkin.DrawBorder(imgRect, 2f);
+            BlackWhiteSkin.DrawBorder(imgRect, 3f);
 
             Texture2D tex = null;
             try
@@ -523,14 +545,19 @@ namespace SkinSyncMod
                 GUI.DrawTexture(imgRect, tex, ScaleMode.ScaleToFit, true);
             }
 
-            // 名字
-            string title = isActive ? skin + "    " + SkinSyncI18n.T("lbl.skin_active") : skin;
-            Rect titleRect = new Rect(cellRect.x + CellInnerPad, imgRect.yMax + 8f,
-                cellRect.width - CellInnerPad * 2f, 40f);
-            GUI.Label(titleRect, title, BlackWhiteSkin.HeaderStyle);
+            // 正在使用的标记：预览图左上角的星，不再拼在名字后面（会跟按钮文字撞在一起）。
+            if (isActive)
+            {
+                GUI.Label(new Rect(imgRect.x + 2f, imgRect.y - 4f, 56f, 56f), "★", StarStyle);
+            }
 
-            // 按钮
-            float btnH = 48f;
+            // 名字：放在角色脚边（预览图正下方），居中。
+            Rect titleRect = new Rect(cellRect.x + CellInnerPad, imgRect.yMax + 2f,
+                cellRect.width - CellInnerPad * 2f, 36f);
+            GUI.Label(titleRect, skin, SkinNameStyle);
+
+            // 按钮：贴 cell 底部，与名字之间由 CellChromeH 保证不重叠。
+            float btnH = 46f;
             Rect btnRect = new Rect(cellRect.x + CellInnerPad,
                 cellRect.yMax - CellInnerPad - btnH,
                 cellRect.width - CellInnerPad * 2f, btnH);
@@ -542,6 +569,24 @@ namespace SkinSyncMod
             }
             GUI.enabled = prevEnabled;
         }
+
+        private static GUIStyle _skinNameStyle;
+        private static GUIStyle SkinNameStyle =>
+            _skinNameStyle ??= new GUIStyle(BlackWhiteSkin.HeaderStyle)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 28,
+                fontStyle = FontStyle.Bold,
+            };
+
+        private static GUIStyle _starStyle;
+        private static GUIStyle StarStyle =>
+            _starStyle ??= new GUIStyle(BlackWhiteSkin.HeaderStyle)
+            {
+                alignment = TextAnchor.MiddleCenter,
+                fontSize = 40,
+                fontStyle = FontStyle.Bold,
+            };
 
         private const string UrlModRepo = "https://github.com/Bytechey/SkinSync";
         private const string UrlModVideo = "https://www.bilibili.com/video/BV1p1GJ64EAG";
