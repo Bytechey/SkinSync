@@ -74,8 +74,11 @@ namespace SkinSyncMod.Patches
             if (!_localSeeded)
             {
                 string localSkin = SkinSync.Settings != null ? SkinSync.Settings.CurrentSkin.Value : null;
+                // netId 为 0 表示实体还没被分配到网络 ID（进图瞬间）。此时写表会在表里留下一个
+                // netId 0 的假条目，之后每个新加入的客机都会收到它，那边只能永远排队等 netId 0 注册。
                 if (!string.IsNullOrEmpty(localSkin)
-                    && RosterConsumer.TryGetLocalNetBody(out _, out uint localNetId, out _))
+                    && RosterConsumer.TryGetLocalNetBody(out _, out uint localNetId, out _)
+                    && localNetId != 0)
                 {
                     _serverSkinTable[localNetId] = localSkin;
                     _localSeeded = true;
@@ -101,7 +104,8 @@ namespace SkinSyncMod.Patches
                 int sent = 0;
                 foreach (var kv in _serverSkinTable)
                 {
-                    if (kv.Key == entry.NetId) continue;
+                    // netId 0 是无效条目（历史残留），单播出去对面无从应用。
+                    if (kv.Key == 0 || kv.Key == entry.NetId) continue;
                     MultiplayerSender.ServerSendSkinChangeToClient(entry.ClientId, kv.Key, kv.Value);
                     sent++;
                 }

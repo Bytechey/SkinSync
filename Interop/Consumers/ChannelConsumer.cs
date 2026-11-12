@@ -123,20 +123,25 @@ namespace SkinSyncMod.Interop.Consumers
         }
 
         /// <summary>服务端转发：向名册中除来源以外的每个客户端各单播一次同一写入器。</summary>
+        /// <param name="excludeClientId">来源客户端，不参与转发。</param>
+        /// <param name="writer">已写入子 ID 与消息体的写入器。</param>
+        /// <param name="subId">子 ID，仅用于诊断日志。</param>
+        /// <returns>实际转发的收件人数量。</returns>
         /// <remarks>
         /// 契约通道没有「广播但排除来源」的成员，这里按名册逐客户端单播实现；
         /// 写入器发送后不复位，重复发送同一写入器即重发同一缓冲。
         /// </remarks>
-        internal static void ForwardExcept(ushort excludeClientId, IInteropWriter writer, ushort subId)
+        internal static int ForwardExcept(ushort excludeClientId, IInteropWriter writer, ushort subId)
         {
             if (writer == null)
             {
-                return;
+                return 0;
             }
 
             IInteropRegistry registry = InteropBootstrap.Initialize();
             IInteropChannel channel = registry.Channel;
             IReadOnlyList<InteropPlayerRef> players = registry.Roster.GetPlayers();
+            int recipients = 0;
             for (int i = 0; i < players.Count; i++)
             {
                 InteropPlayerRef player = players[i];
@@ -146,25 +151,11 @@ namespace SkinSyncMod.Interop.Consumers
                 }
 
                 channel.SendToClient(player.ClientId, writer, true);
+                recipients++;
             }
 
-            DebugMessageTrace.Forwarded(subId, writer, CountRecipients(players, excludeClientId), excludeClientId);
-        }
-
-        /// <summary>Debug 构建用收件人计数：过滤条件与上面的转发循环保持一致。</summary>
-        private static int CountRecipients(IReadOnlyList<InteropPlayerRef> players, ushort excludeClientId)
-        {
-            int count = 0;
-            for (int i = 0; i < players.Count; i++)
-            {
-                InteropPlayerRef player = players[i];
-                if (player.IsValid && player.ClientId != excludeClientId)
-                {
-                    count++;
-                }
-            }
-
-            return count;
+            DebugMessageTrace.Forwarded(subId, writer, recipients, excludeClientId);
+            return recipients;
         }
     }
 }
