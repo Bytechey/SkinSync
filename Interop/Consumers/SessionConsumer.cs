@@ -8,7 +8,7 @@ namespace SkinSyncMod.Interop.Consumers
 {
     /// <summary>会话消费者：把契约会话状态收敛成 SkinSync 需要的三个判据。</summary>
     /// <remarks>
-    /// 目标程序集：CasualtiesMP.dll，BepInPlugin GUID "CasualtiesMP"（Together 5.3.1）。
+    /// 目标程序集：CasualtiesMP.dll，BepInPlugin GUID "CasualtiesMP"（Together 5.5.0）。
     /// 依赖的目标成员全名：Together.Net.IsRunning、Together.Net.IsServer、Together.Net.IsRunningSteam。
     /// 三个成员都由提供方在首次访问时解析，本消费者只读契约结果，不接触目标类型。
     /// 传输方式为 best-effort 推断值（"Steam" / "Direct"），只用于诊断，不得据此判定会话有效性。
