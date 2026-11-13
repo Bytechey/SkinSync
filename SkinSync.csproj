@@ -6,7 +6,7 @@
     <RootNamespace>SkinSyncMod</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.2.2</Version>
+    <Version>1.2.3</Version>
     <Description>Casualties Unknown — 皮肤切换 + 翼装配 mod</Description>
 
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>

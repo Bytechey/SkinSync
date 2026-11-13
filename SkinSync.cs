@@ -11,7 +11,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.2.2")]
+    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.2.3")]
     [BepInDependency(SaveManagerGuid, BepInDependency.DependencyFlags.SoftDependency)]
     [BepInDependency(TogetherGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public class SkinSync : BaseUnityPlugin
@@ -28,7 +28,6 @@ namespace SkinSyncMod
 
         private GameObject localPlayerObject;
         private object localNetBodyBox;
-        private uint localNetId;
         private GameObject localChara;
 
         internal static SkinSyncSettings Settings { get; private set; }
@@ -171,7 +170,6 @@ namespace SkinSyncMod
             _localSkinReportedNetId = 0;
             localPlayerObject = null;
             localNetBodyBox = null;
-            localNetId = 0;
             localChara = null;
         }
 
@@ -387,9 +385,10 @@ namespace SkinSyncMod
             AccessoryConfigLoader.Entry baseEntry = null;
             foreach (var e in entries) { if (e.Id == accId) { baseEntry = e; break; } }
             if (baseEntry == null) return;
+            if (!TryGetLocalNetId(out uint netId)) return;
             var ov = Settings.GetAccessoryOverride(skin, accId);
             MultiplayerSender.SendAccessory(
-                netId: localNetId,
+                netId: netId,
                 skinID: skin,
                 accId: accId,
                 enabled: ov?.Enabled ?? baseEntry.Enabled,
@@ -467,7 +466,8 @@ namespace SkinSyncMod
             if (Settings == null || !Settings.SyncTailDeform.Value) return;
             if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return;
             if (localNetBodyBox == null) return;
-            MultiplayerSender.SendTailFromConfig(localNetId, skin);
+            if (!TryGetLocalNetId(out uint netId)) return;
+            MultiplayerSender.SendTailFromConfig(netId, skin);
         }
 
         private bool TryGetLocalPlayer()
@@ -477,15 +477,18 @@ namespace SkinSyncMod
                 if (RosterConsumer.TryGetLocalNetBody(out object box, out uint nid, out GameObject chara))
                 {
                     localNetBodyBox = box;
-                    localNetId = nid;
                     localChara = chara;
-                    ModLog.Info($"多人模式：找到本地 NetBody (netId {localNetId})");
-                    ReportLocalSkinIfNeeded();
+                    ModLog.Info($"多人模式：找到本地 NetBody (netId {nid})");
                 }
             }
 
             if (localNetBodyBox != null)
+            {
+                // netId 要等实体被放进世界后才有值（进图瞬间为 0），这里每帧尝试补报一次；
+                // ReportLocalSkinIfNeeded 内部按 netId 去重，重复调用只会在 netId 变化时再报。
+                ReportLocalSkinIfNeeded();
                 return true;
+            }
 
             if (localPlayerObject == null)
             {
@@ -504,6 +507,26 @@ namespace SkinSyncMod
             }
 
             return localPlayerObject != null;
+        }
+
+        /// <summary>
+        /// 实时取本机 netId；未分配时返回 false。
+        /// </summary>
+        /// <remarks>
+        /// 刻意不做字段缓存：进图瞬间 NetBody 对象已存在但 netId 仍是 0，
+        /// 旧实现把那个 0 存进 <c>localNetId</c> 字段后，因外层以「句柄是否为空」为前置条件而再不刷新，
+        /// 结果之后每次上报都带 netId 0，服务端的 callerNetId 校验一律判为「冒充他人」并丢弃。
+        /// netId 在重连、同场景内角色重建/重生后还会变化，因此每次用到时都重新求值。
+        /// </remarks>
+        private static bool TryGetLocalNetId(out uint netId)
+        {
+            if (RosterConsumer.TryGetLocalNetBody(out _, out netId, out _) && netId != 0)
+            {
+                return true;
+            }
+
+            netId = 0;
+            return false;
         }
 
         private void SwitchToSkin(string skinID)
@@ -536,9 +559,17 @@ namespace SkinSyncMod
                 SkinApplier.ApplySkinToPlayer(localChara, skinID);
                 if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "PreGen")
                 {
-                    MultiplayerSender.SendSkinChange(localNetId, skinID);
-                    _localSkinReportedNetId = localNetId;
-                    ModLog.Info($"角色加载模式：多人 — 切到 {skinID} 并已广播");
+                    if (TryGetLocalNetId(out uint netId))
+                    {
+                        MultiplayerSender.SendSkinChange(netId, skinID);
+                        _localSkinReportedNetId = netId;
+                        ModLog.Info($"角色加载模式：多人 — 切到 {skinID} 并已广播 (netId {netId})");
+                    }
+                    else
+                    {
+                        // netId 还没分配：本地已应用，上报交给 TryGetLocalPlayer 每帧的补报。
+                        ModLog.Info($"角色加载模式：多人 — 切到 {skinID}，但本地 netId 尚未分配，等分配后补报");
+                    }
                 }
                 else
                 {
@@ -563,22 +594,31 @@ namespace SkinSyncMod
                     _switchAppliedToScene = false;
                 }
             }
+
+            // 面板/热键路径与每帧的 ApplyPersistentSkinIfNeeded 都会调到这里。
+            // 在此同步「已应用」标记：否则下一帧 ApplyPersistentSkinIfNeeded 会判定尚未应用，
+            // 把同一次切换再应用、再广播一遍（日志里表现为每次切换发两条 SkinChange）。
+            if (localNetBodyBox != null || localPlayerObject != null || _switchAppliedToScene)
+            {
+                _persistentApplied = skinID;
+            }
         }
 
         private bool _switchAppliedToScene;
         private uint _localSkinReportedNetId;
 
-        /// <summary>子端进入游戏拿到本地 NetBody 后，把当前皮肤上报一次给服务端建表；只对相同 netId 报一次。</summary>
+        /// <summary>子端拿到本地 NetBody 且 netId 已分配后，把当前皮肤上报一次给服务端建表；只对相同 netId 报一次。</summary>
         private void ReportLocalSkinIfNeeded()
         {
             if (localNetBodyBox == null) return;
-            if (_localSkinReportedNetId == localNetId) return;
+            if (!TryGetLocalNetId(out uint netId)) return;
+            if (_localSkinReportedNetId == netId) return;
             string cached = Settings != null ? Settings.CurrentSkin.Value : null;
             if (string.IsNullOrEmpty(cached)) return;
             if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return;
-            MultiplayerSender.SendSkinChange(localNetId, cached);
-            _localSkinReportedNetId = localNetId;
-            ModLog.Info($"多人模式：本地皮肤已上报 (netId {localNetId} → {cached})");
+            MultiplayerSender.SendSkinChange(netId, cached);
+            _localSkinReportedNetId = netId;
+            ModLog.Info($"多人模式：本地皮肤已上报 (netId {netId} → {cached})");
         }
     }
 }

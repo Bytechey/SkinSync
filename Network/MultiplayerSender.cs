@@ -15,16 +15,42 @@ namespace SkinSyncMod.Network
         /// <summary>客户端向服务端上报自己的皮肤。charType 由本地身体自动填入。</summary>
         public static void SendSkinChange(uint netId, string skinID)
         {
-            if (!SessionConsumer.IsRunning) return;
+            if (!SessionConsumer.IsRunning)
+            {
+                CommsTrace.SendSkipped(skinID, netId, "无活动会话（Together 未就绪或已断开）");
+                return;
+            }
+
+            // netId 为 0 表示本地实体尚未被分配网络 ID（进图瞬间常见）。
+            // 这种包发出去必然被服务端的 callerNetId 校验判为"冒充他人"，直接丢弃并留痕。
+            if (!IsNetIdReady(netId, skinID, "皮肤切换"))
+            {
+                return;
+            }
+
+            int charType = CharTypeOf(netId);
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
             SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage
             {
                 skinID = skinID,
                 netId = netId,
-                charType = CharTypeOf(netId),
+                charType = charType,
             });
+            CommsTrace.ClientSend(skinID, netId, charType);
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "服务端");
             ChannelConsumer.SendToServer(writer);
+        }
+
+        /// <summary>netId 是否已分配；未分配时记一条诊断，避免发必然被主机拒绝的包。</summary>
+        private static bool IsNetIdReady(uint netId, string skinID, string what)
+        {
+            if (netId != 0)
+            {
+                return true;
+            }
+
+            CommsTrace.SendSkipped(skinID, netId, what + "：本地 netId 尚未分配（0），本次不上报");
+            return false;
         }
 
         /// <summary>取某个 netId 对应身体的 charType；拿不到返回 0（未知）。</summary>
@@ -39,6 +65,7 @@ namespace SkinSyncMod.Network
             bool enabled, int offX, int offY, float rotation, int zOrder)
         {
             if (!SessionConsumer.IsRunning) return;
+            if (!IsNetIdReady(netId, skinID, "配件同步")) return;
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.AccessorySyncMessageId);
             SkinMessageCodec.WriteAccessory(writer, new AccessorySyncMessage
             {
@@ -58,6 +85,7 @@ namespace SkinSyncMod.Network
         public static void SendTailFromConfig(uint netId, string skinID)
         {
             if (!SessionConsumer.IsRunning) return;
+            if (!IsNetIdReady(netId, skinID, "尾巴同步")) return;
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.TailSyncMessageId);
             SkinMessageCodec.WriteTail(writer, new TailSyncMessage
             {
@@ -88,9 +116,15 @@ namespace SkinSyncMod.Network
 
         public static void ServerBroadcastSkinChange(uint netId, string skinID)
         {
-            if (!SessionConsumer.IsRunning) return;
+            if (!SessionConsumer.IsRunning)
+            {
+                CommsTrace.SendSkipped(skinID, netId, "无活动会话（主机广播自身切换）");
+                return;
+            }
+
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
             SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage { skinID = skinID, netId = netId });
+            CommsTrace.HostBroadcast(skinID, netId, -1, 0);
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "全部客户端");
             ChannelConsumer.Broadcast(writer);
         }
@@ -98,13 +132,15 @@ namespace SkinSyncMod.Network
         public static void ServerSendSkinChangeToClient(uint targetClientId, uint netId, string skinID)
         {
             if (!SessionConsumer.IsRunning) return;
+            int charType = CharTypeOf(netId);
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
             SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage
             {
                 skinID = skinID,
                 netId = netId,
-                charType = CharTypeOf(netId),
+                charType = charType,
             });
+            CommsTrace.HostUnicast(targetClientId, skinID, netId, charType);
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "客户端 " + targetClientId);
             ChannelConsumer.SendToClient((ushort)targetClientId, writer);
         }

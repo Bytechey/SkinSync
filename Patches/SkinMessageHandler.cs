@@ -18,7 +18,9 @@ namespace SkinSyncMod
             bool hasLocal = RosterConsumer.TryGetLocalNetBody(out _, out uint localNetId, out _);
             bool hasCid = RosterConsumer.TryGetLocalClientId(out uint localCid);
             bool isLocalEcho = hasLocal && localNetId == msg.netId;
-            SkinSyncMod.ModLog.Info($"客户端收到皮肤切换：{msg.skinID} (msg.netId {msg.netId}, local netId {(hasLocal ? localNetId.ToString() : "n/a")}, local clientId {(hasCid ? localCid.ToString() : "n/a")}, echo={isLocalEcho})");
+            CommsTrace.ClientReceive(msg.skinID, msg.netId, msg.charType, isLocalEcho);
+            // 附加本端上下文：排查"拿到消息却应用错人"时需要对照本地 netId / clientId。
+            SkinSyncMod.ModLog.Debug($"客户端接收上下文：local netId {(hasLocal ? localNetId.ToString() : "n/a")}，local clientId {(hasCid ? localCid.ToString() : "n/a")}，echo={isLocalEcho}");
 
             if (!isLocalEcho)
             {
@@ -35,16 +37,18 @@ namespace SkinSyncMod
         internal static void OnServerSkinMessage(uint callerId, IInteropReader reader)
         {
             SkinChangeMessage msg = SkinMessageCodec.ReadSkinChange(reader);
-            SkinSyncMod.ModLog.Info($"服务端收到客户端 {callerId} 的皮肤切换请求：{msg.skinID} (netId {msg.netId})");
+            CommsTrace.HostReceive(callerId, msg.skinID, msg.netId, msg.charType);
 
             if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
             {
+                CommsTrace.HostRejected(callerId, msg.netId, msg.skinID, "无法反查该 client 的 netId");
                 InteropDiagnostics.WarnOnce("SkinMessageHandler.SkinCallerNetId", $"服务端无法反查客户端 {callerId} 的 netId，皮肤切换请求已拒绝。");
                 return;
             }
 
             if (callerNetId != msg.netId)
             {
+                CommsTrace.HostRejected(callerId, msg.netId, msg.skinID, $"冒充他人（实际 netId {callerNetId}）");
                 SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried to change skin for {msg.netId}");
                 return;
             }
@@ -53,7 +57,8 @@ namespace SkinSyncMod
 
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
             SkinMessageCodec.WriteSkinChange(writer, msg);
-            ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.SkinChangeMessageId);
+            int recipients = ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.SkinChangeMessageId);
+            CommsTrace.HostBroadcast(msg.skinID, msg.netId, recipients, callerId);
 
             Patches.SkinCacheBroadcaster.RecordSkin(msg.netId, msg.skinID);
 
