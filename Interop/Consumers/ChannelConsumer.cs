@@ -8,7 +8,7 @@ namespace SkinSyncMod.Interop.Consumers
 {
     /// <summary>通道消费者：把契约具名通道收敛成 SkinSync 的单一包名收发入口。</summary>
     /// <remarks>
-    /// 目标程序集：CasualtiesMP.dll，BepInPlugin GUID "CasualtiesMP"（Together 5.3.1）。
+    /// 目标程序集：CasualtiesMP.dll，BepInPlugin GUID "CasualtiesMP"（Together 5.5.0）。
     /// 依赖的目标成员全名：Together.Multiplayer.CreateNamedWriter(string)、
     /// Together.Multiplayer.RegisterCustomServerReceiver(string, Action&lt;ScavPlayer, NetDataReader&gt;)、
     /// Together.Multiplayer.RegisterCustomClientReceiver(string, Action&lt;NetDataReader&gt;)、

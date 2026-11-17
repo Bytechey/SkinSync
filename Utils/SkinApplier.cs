@@ -199,7 +199,7 @@ namespace SkinSyncMod
                 foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
                     ReplaceFacialExpressionSprites(face, spriteDict, isRight, charType, fitScale);
 
-                EnsureWingsAttached(playerObj, spriteDict, wingsCfg, remoteCharType);
+                EnsureWingsAttached(playerObj, spriteDict, wingsCfg);
 
                 foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
                 {
@@ -481,12 +481,11 @@ namespace SkinSyncMod
             // 多次换皮肤时缓存会累积；已挂到 renderer 上的 Sprite 不受清空影响
             if (_fittedSprites.Count > 128) _fittedSprites.Clear();
 
-            // 整画布重采样：保留「内容画在画布哪个位置」的信息，这是头与眼睛能对齐的关键。
+            // 整画布重采样，保留内容在画布内的相对位置
             Texture2D resampled = ResampleRegion(skin.texture, skin.textureRect, targetW, targetH);
             if (resampled == null) return skin;
 
-            // pivot 用原图的归一化值（实测三角色肢体均为 0.5/0.5），ppu 也用原图的：
-            // 世界尺寸 = 目标画布 / ppu = 原图画布 × scale / ppu。
+            // pivot 与 ppu 沿用原图，世界尺寸 = 目标画布 / ppu
             var pivot = new Vector2(reference.pivot.x / reference.rect.width,
                                     reference.pivot.y / reference.rect.height);
             var sprite = Sprite.Create(resampled, new Rect(0f, 0f, targetW, targetH), pivot, reference.pixelsPerUnit);
@@ -779,10 +778,8 @@ namespace SkinSyncMod
             return outcome.Hit ? FitToTarget(outcome.Sprite, original, scale) : original;
         }
 
-        /// <summary>
-        /// 将 4 张翼按 wings.json 配置挂载到 UpTorso 子节点，下翼以上翼为父形成关节链。
-        /// </summary>
-        private static void EnsureWingsAttached(GameObject playerObj, Dictionary<string, Sprite> dict, WingsConfigLoader.Config cfg, int remoteCharType = 0)
+        /// <summary>挂载 4 张翅膀到 UpTorso，下翼作为上翼子节点。</summary>
+        private static void EnsureWingsAttached(GameObject playerObj, Dictionary<string, Sprite> dict, WingsConfigLoader.Config cfg)
         {
             if (playerObj == null) return;
             Body body = playerObj.GetComponentInChildren<Body>(true);
@@ -809,40 +806,16 @@ namespace SkinSyncMod
             int sortLayer = bodyRenderer != null ? bodyRenderer.sortingLayerID : 0;
             Material litMat = bodyRenderer != null ? bodyRenderer.sharedMaterial : null;
 
-            float wingScale = ComputeWingScale(body, wingUL ?? wingUR ?? wingDL ?? wingDR, remoteCharType);
-
             GameObject upL = null;
             GameObject upR = null;
-            float leftUpperHalfPx = (wingUL != null ? wingUL.rect.height * 0.5f : 16f) * wingScale;
-            float rightUpperHalfPx = (wingUR != null ? wingUR.rect.height * 0.5f : 16f) * wingScale;
-            if (wingUL != null) upL = AttachWing(container.transform, "WingUL", wingUL, cfg.WingUL, sortLayer, isLeft: true, litMat: litMat, scale: wingScale);
-            if (wingUR != null) upR = AttachWing(container.transform, "WingUR", wingUR, cfg.WingUR, sortLayer, isLeft: false, litMat: litMat, scale: wingScale);
-            if (wingDL != null && upL != null) AttachWing(upL.transform, "WingDL", wingDL, cfg.WingDL, sortLayer, isLeft: true, isLower: true, upperHalfPx: leftUpperHalfPx, litMat: litMat, scale: wingScale);
-            else if (wingDL != null) AttachWing(container.transform, "WingDL", wingDL, cfg.WingDL, sortLayer, isLeft: true, isLower: true, upperHalfPx: leftUpperHalfPx, litMat: litMat, scale: wingScale);
-            if (wingDR != null && upR != null) AttachWing(upR.transform, "WingDR", wingDR, cfg.WingDR, sortLayer, isLeft: false, isLower: true, upperHalfPx: rightUpperHalfPx, litMat: litMat, scale: wingScale);
-            else if (wingDR != null) AttachWing(container.transform, "WingDR", wingDR, cfg.WingDR, sortLayer, isLeft: false, isLower: true, upperHalfPx: rightUpperHalfPx, litMat: litMat, scale: wingScale);
-        }
-
-        /// <summary>翅膀缩放：只是「缩小一点」。内容高 21px 缩到躯干高 1.5 倍（Experiment 10px → 15px）。</summary>
-        /// <param name="remoteCharType">远端上报的真实角色类型，非 0 时优先于 body.charType。</param>
-        private static float ComputeWingScale(Body body, Sprite wingReference, int remoteCharType = 0)
-        {
-            if (body == null || wingReference == null) return 1f;
-
-            int charType = remoteCharType != 0 ? remoteCharType : body.charType;
-            var profile = Character.CharacterCatalog.ForCharType(charType);
-            var torso = profile != null ? profile.Find(Character.PartKeyNames.UpTorso) : null;
-            if (torso == null) return 1f;
-
-            float targetHeight = torso.PixelSize.y * 1.5f;
-            float actualHeight = wingReference.textureRect.height;
-            if (_contentRects.TryGetValue(wingReference.name, out Rect content) && content.height >= 1f)
-                actualHeight = content.height;
-            if (actualHeight <= 0.0001f) return 1f;
-
-            float scale = targetHeight / actualHeight;
-            if (scale <= 0f || float.IsNaN(scale) || float.IsInfinity(scale)) return 1f;
-            return Mathf.Clamp(scale, 0.2f, 2f);
+            float leftUpperHalfPx = wingUL != null ? wingUL.rect.height * 0.5f : 16f;
+            float rightUpperHalfPx = wingUR != null ? wingUR.rect.height * 0.5f : 16f;
+            if (wingUL != null) upL = AttachWing(container.transform, "WingUL", wingUL, cfg.WingUL, sortLayer, isLeft: true, litMat: litMat);
+            if (wingUR != null) upR = AttachWing(container.transform, "WingUR", wingUR, cfg.WingUR, sortLayer, isLeft: false, litMat: litMat);
+            if (wingDL != null && upL != null) AttachWing(upL.transform, "WingDL", wingDL, cfg.WingDL, sortLayer, isLeft: true, isLower: true, upperHalfPx: leftUpperHalfPx, litMat: litMat);
+            else if (wingDL != null) AttachWing(container.transform, "WingDL", wingDL, cfg.WingDL, sortLayer, isLeft: true, isLower: true, upperHalfPx: leftUpperHalfPx, litMat: litMat);
+            if (wingDR != null && upR != null) AttachWing(upR.transform, "WingDR", wingDR, cfg.WingDR, sortLayer, isLeft: false, isLower: true, upperHalfPx: rightUpperHalfPx, litMat: litMat);
+            else if (wingDR != null) AttachWing(container.transform, "WingDR", wingDR, cfg.WingDR, sortLayer, isLeft: false, isLower: true, upperHalfPx: rightUpperHalfPx, litMat: litMat);
         }
 
         private static Transform FindLimbTransform(Body body, string limbName)
@@ -860,10 +833,9 @@ namespace SkinSyncMod
         }
 
         private static GameObject AttachWing(Transform parent, string name, Sprite sprite, WingsConfigLoader.Piece piece,
-            int sortLayer, bool isLeft, bool isLower = false, float upperHalfPx = 16f, Material litMat = null,
-            float scale = 1f)
+            int sortLayer, bool isLeft, bool isLower = false, float upperHalfPx = 16f, Material litMat = null)
         {
-            // 坐标完全沿用原版：上翅 (piece.X-6, piece.Y+10) 像素，根部就落在背部；下翅挂在上翅下。
+            // 坐标按像素给，除以 8 转世界单位
             var go = new GameObject(name);
             go.transform.SetParent(parent, worldPositionStays: false);
             float localPxX = isLower ? piece.X : (piece.X - UPTORSO_OFFSET_X);
@@ -872,7 +844,7 @@ namespace SkinSyncMod
             float ly = -localPxY / PIXELS_PER_UNIT;
             if (isLower) ly += -upperHalfPx / PIXELS_PER_UNIT;
             go.transform.localPosition = new Vector3(lx, ly, 0f);
-            go.transform.localScale = Vector3.one * scale;
+            go.transform.localScale = Vector3.one;
 
             var sr = go.AddComponent<SpriteRenderer>();
             sr.sprite = sprite;

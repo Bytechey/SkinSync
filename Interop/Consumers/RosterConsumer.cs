@@ -11,7 +11,7 @@ namespace SkinSyncMod.Interop.Consumers
 {
     /// <summary>名册消费者：把契约名册与目标插件的身体对象解析成 SkinSync 需要的 netId 与角色对象。</summary>
     /// <remarks>
-    /// 目标程序集：CasualtiesMP.dll，BepInPlugin GUID "CasualtiesMP"（Together 5.3.1）。
+    /// 目标程序集：CasualtiesMP.dll，BepInPlugin GUID "CasualtiesMP"（Together 5.5.0）。
     /// 依赖的目标类型全名：Together.ScavPlayer、Together.NetBody、Together.knetid。
     /// 名册查询（本地玩家、按 clientId 查、枚举）走契约 IInteropRoster；
     /// 依赖的目标成员全名：Together.ScavPlayer.LocalPlayer（static field）、
