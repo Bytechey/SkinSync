@@ -64,6 +64,10 @@ namespace SkinSyncMod
         private static readonly HashSet<Sprite> _customSprites
             = new HashSet<Sprite>();
 
+        private const int ImagePruneThreshold = 256;
+
+        private static readonly Dictionary<int, Image> _trackedImages = new Dictionary<int, Image>();
+        private static readonly List<int> _deadImageIds = new List<int>();
         private static readonly Dictionary<int, Sprite> _origImageSprites = new Dictionary<int, Sprite>();
         private static readonly Dictionary<int, Vector2> _stockImageSizes = new Dictionary<int, Vector2>();
         private static readonly Dictionary<int, Sprite> _origSrSprites = new Dictionary<int, Sprite>();
@@ -71,18 +75,21 @@ namespace SkinSyncMod
 
         internal static void OnSceneChanged()
         {
+            _trackedImages.Clear();
+            _deadImageIds.Clear();
             _origImageSprites.Clear();
             _stockImageSizes.Clear();
             _origSrSprites.Clear();
             _lastAppliedByView.Clear();
         }
 
-        /// <summary>联机模组切换伤势面板目标或物种头图后重新对齐贴图。</summary>
+        /// <summary>伤势面板切换目标或重置物种头图后强制重涂自定义贴图并维持彩色肌肉层显示。</summary>
         internal static void OnTargetApplied(WoundView view, Body body)
         {
             if (view == null) return;
             _lastAppliedByView.Remove(view.GetInstanceID());
             Apply(view, body != null ? body : view.body);
+            ApplyCustomMuscleColors(view);
         }
 
         /// <summary>刷新场景中所有打开或已实例化的伤势面板。</summary>
@@ -176,9 +183,19 @@ namespace SkinSyncMod
                 Apply(view, body);
             }
 
-            if (view.armorMode || string.IsNullOrEmpty(skinName)) return;
+            ApplyCustomMuscleColors(view);
+        }
+
+        private static void ApplyCustomMuscleColors(WoundView view)
+        {
+            if (view == null || view.armorMode || view.limbImages == null) return;
+            string skinName = _lastAppliedByView.TryGetValue(view.GetInstanceID(), out ViewAppliedKey applied)
+                ? applied.SkinName
+                : SkinApplier.GetActiveSkinForBody(view.body);
+            if (string.IsNullOrEmpty(skinName)) return;
+
             WoundSkinData data = GetOrLoad(skinName);
-            if (data == null || data.ColoredSprites.Count == 0 || view.limbImages == null) return;
+            if (data == null || data.ColoredSprites.Count == 0) return;
 
             for (int i = 0; i < view.limbImages.Length; i++)
             {
@@ -192,10 +209,11 @@ namespace SkinSyncMod
         }
 
         /// <summary>替换动态挂载到肢体框上的伤口贴片并按原图比例缩放。</summary>
-        internal static void ApplyDynamicLimbImage(WoundView view, Image added)
+        internal static void ApplyDynamicLimbImage(WoundView view, Image added, Body limbBody = null)
         {
             if (view == null || added == null || added.sprite == null) return;
-            Body body = view.body;
+            PruneDeadImagesIfNeeded();
+            Body body = limbBody != null ? limbBody : view.body;
             string skinName = SkinApplier.GetActiveSkinForBody(body);
             if (string.IsNullOrEmpty(skinName)) return;
             WoundSkinData data = GetOrLoad(skinName);
@@ -205,6 +223,7 @@ namespace SkinSyncMod
             Sprite stock = added.sprite;
             int id = added.GetInstanceID();
             Vector2 stockSize = added.rectTransform.sizeDelta;
+            _trackedImages[id] = added;
             _origImageSprites[id] = stock;
             _stockImageSizes[id] = stockSize;
 
@@ -218,6 +237,7 @@ namespace SkinSyncMod
         private static void ApplyWithData(WoundView view, Body body, WoundSkinData data)
         {
             if (view == null) return;
+            PruneDeadImagesIfNeeded();
             int charType = body != null ? Mathf.Clamp(body.charType, 0, 2) : 0;
 
             Image headOuter = view.limbImages != null && view.limbImages.Length > 0 ? view.limbImages[0] : null;
@@ -234,13 +254,15 @@ namespace SkinSyncMod
                 Vector2 stockSize;
                 if (img == headOuter && TryGetStockHeadSprite(view, charType, false, out stockSprite))
                 {
-                    stockSize = stockSprite.rect.size;
+                    stockSize = ComputeNativeUiSize(img, stockSprite);
+                    _trackedImages[id] = img;
                     _origImageSprites[id] = stockSprite;
                     _stockImageSizes[id] = stockSize;
                 }
                 else if (img == headInner && TryGetStockHeadSprite(view, charType, true, out stockSprite))
                 {
-                    stockSize = stockSprite.rect.size;
+                    stockSize = ComputeNativeUiSize(img, stockSprite);
+                    _trackedImages[id] = img;
                     _origImageSprites[id] = stockSprite;
                     _stockImageSizes[id] = stockSize;
                 }
@@ -248,6 +270,7 @@ namespace SkinSyncMod
                 {
                     if (!_customSprites.Contains(img.sprite))
                     {
+                        _trackedImages[id] = img;
                         _origImageSprites[id] = img.sprite;
                         _stockImageSizes[id] = img.rectTransform.sizeDelta;
                     }
@@ -260,7 +283,6 @@ namespace SkinSyncMod
                     if (img.sprite != custom)
                     {
                         img.sprite = custom;
-                        img.SetNativeSize();
                     }
                     FitToStock(img, stockSize, stockSprite, custom, data.BaseSizes);
                 }
@@ -290,6 +312,37 @@ namespace SkinSyncMod
                     sr.sprite = stockSr;
                 }
             }
+        }
+
+        private static Vector2 ComputeNativeUiSize(Image img, Sprite sp)
+        {
+            if (sp == null) return Vector2.zero;
+            float ppu = sp.pixelsPerUnit > 0f ? sp.pixelsPerUnit : 100f;
+            float refPpu = img != null && img.canvas != null && img.canvas.referencePixelsPerUnit > 0f
+                ? img.canvas.referencePixelsPerUnit
+                : 100f;
+            return sp.rect.size * (refPpu / ppu);
+        }
+
+        private static void PruneDeadImagesIfNeeded()
+        {
+            if (_trackedImages.Count <= ImagePruneThreshold) return;
+            _deadImageIds.Clear();
+            foreach (var kv in _trackedImages)
+            {
+                if (kv.Value == null)
+                {
+                    _deadImageIds.Add(kv.Key);
+                }
+            }
+            for (int i = 0; i < _deadImageIds.Count; i++)
+            {
+                int deadId = _deadImageIds[i];
+                _trackedImages.Remove(deadId);
+                _origImageSprites.Remove(deadId);
+                _stockImageSizes.Remove(deadId);
+            }
+            _deadImageIds.Clear();
         }
 
         private static bool TryGetStockHeadSprite(WoundView view, int charType, bool inner, out Sprite sprite)

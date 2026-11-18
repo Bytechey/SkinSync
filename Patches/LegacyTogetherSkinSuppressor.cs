@@ -217,10 +217,16 @@ namespace SkinSyncMod.Patches
 
                 try { mb.StopAllCoroutines(); } catch { }
                 mb.enabled = false;
-                if (mb.gameObject != null)
+                if (mb.gameObject != null
+                    && (string.Equals(mb.gameObject.name, "SpriteReplacer", StringComparison.Ordinal)
+                        || string.Equals(mb.gameObject.name, "SpriteReplacerInputListener", StringComparison.Ordinal)))
+                {
                     UnityEngine.Object.Destroy(mb.gameObject);
+                }
                 else
+                {
                     UnityEngine.Object.Destroy(mb);
+                }
                 count++;
             }
 

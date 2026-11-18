@@ -121,32 +121,79 @@ namespace SkinSyncMod
             }
         }
 
-        /// <summary>清空血液配置缓存并释放动态生成的贴图与材质资源。</summary>
+        /// <summary>清空血液配置缓存并释放未被活跃粒子引用的动态贴图与材质资源。</summary>
         public static void ClearCaches()
         {
             _cfgCache.Clear();
             _noBloodSkins.Clear();
 
-            foreach (var kv in _particleMats)
+            foreach (var kv in _recoloredBlood)
             {
                 if (kv.Value != null) UnityEngine.Object.Destroy(kv.Value);
+            }
+            _recoloredBlood.Clear();
+
+            var origNoseSprites = new HashSet<Sprite>();
+            var origNoseTextures = new HashSet<Texture2D>();
+            foreach (var origSpr in _origNoseSprite.Values)
+            {
+                if (origSpr == null) continue;
+                origNoseSprites.Add(origSpr);
+                if (origSpr.texture != null) origNoseTextures.Add(origSpr.texture);
+            }
+
+            foreach (var kv in _recoloredNose)
+            {
+                if (kv.Value == null) continue;
+                if (!kv.Key.StartsWith("custom|", StringComparison.Ordinal)
+                    && kv.Value.texture != null
+                    && !origNoseTextures.Contains(kv.Value.texture))
+                {
+                    UnityEngine.Object.Destroy(kv.Value.texture);
+                }
+                if (!origNoseSprites.Contains(kv.Value))
+                {
+                    UnityEngine.Object.Destroy(kv.Value);
+                }
+            }
+            _recoloredNose.Clear();
+
+            // 保护场上尚未消散的临时呕血/飞溅粒子正在引用的材质及其主贴图，避免热刷瞬间变洋红或白块。
+            var activeMats = new HashSet<Material>();
+            foreach (var psr in UnityEngine.Object.FindObjectsOfType<ParticleSystemRenderer>())
+            {
+                if (psr != null && psr.sharedMaterial != null)
+                {
+                    activeMats.Add(psr.sharedMaterial);
+                }
+            }
+
+            var activeTexSet = new HashSet<Texture2D>();
+            foreach (var kv in _particleMats)
+            {
+                if (kv.Value == null) continue;
+                if (activeMats.Contains(kv.Value))
+                {
+                    kv.Value.hideFlags = HideFlags.None;
+                    if (kv.Value.mainTexture is Texture2D activeTex && activeTex != null)
+                    {
+                        activeTexSet.Add(activeTex);
+                    }
+                    continue;
+                }
+                UnityEngine.Object.Destroy(kv.Value);
             }
             _particleMats.Clear();
 
-            var customNoseKeys = new List<string>();
-            foreach (var kv in _recoloredNose)
-            {
-                if (kv.Key.StartsWith("custom|", StringComparison.Ordinal))
-                {
-                    if (kv.Value != null) UnityEngine.Object.Destroy(kv.Value);
-                    customNoseKeys.Add(kv.Key);
-                }
-            }
-            foreach (var k in customNoseKeys) _recoloredNose.Remove(k);
-
             foreach (var kv in _texCache)
             {
-                if (kv.Value != null) UnityEngine.Object.Destroy(kv.Value);
+                if (kv.Value == null) continue;
+                if (activeTexSet.Contains(kv.Value))
+                {
+                    kv.Value.hideFlags = HideFlags.None;
+                    continue;
+                }
+                UnityEngine.Object.Destroy(kv.Value);
             }
             _texCache.Clear();
         }

@@ -41,7 +41,7 @@ namespace SkinSyncMod.Interop.Consumers
             _localNetId = 0;
         }
 
-        /// <summary>获取本地玩家的 NetBody 实例、实体 netId 与角色 GameObject。</summary>
+        /// <summary>获取本地玩家的 NetBody 实例、实体 netId 与角色 GameObject；相机尚未重绑时按本地 ClientId 回退反查。</summary>
         internal static bool TryGetLocalNetBody(out object box, out uint netId, out GameObject chara)
         {
             box = null;
@@ -53,20 +53,38 @@ namespace SkinSyncMod.Interop.Consumers
             }
 
             object[] args = { null };
-            if (!InteropReflection.TryInvoke(_tryGetLocalNetBody, null, args, out object result) || !(result is bool found) || !found)
+            if (InteropReflection.TryInvoke(_tryGetLocalNetBody, null, args, out object result)
+                && result is bool found && found && args[0] != null)
             {
-                return false;
+                object candidateBox = args[0];
+                uint candidateNetId = ToClientId(InteropReflection.ReadMember(_netBodyNetId, candidateBox));
+                GameObject candidateChara = ReadChara(candidateBox);
+                if (candidateNetId != 0 && candidateChara != null)
+                {
+                    box = candidateBox;
+                    netId = candidateNetId;
+                    chara = candidateChara;
+                    return true;
+                }
             }
 
-            if (args[0] == null)
+            // 换物种重建网格早于相机重绑触发钩子时，旧 NetBody 已被剥离 syncBody 导致 netId 读为 0，需按本地 ClientId 回退反查新实例。
+            if (TryGetLocalClientId(out uint localCid)
+                && TryGetNetBodyOfClient(localCid, out uint fallbackNetId)
+                && fallbackNetId != 0
+                && TryGetNetBody(fallbackNetId, out object fallbackBox)
+                && fallbackBox != null)
             {
-                return false;
+                box = fallbackBox;
+                netId = fallbackNetId;
+                chara = ReadChara(fallbackBox);
+                return true;
             }
 
-            box = args[0];
-            netId = ToClientId(InteropReflection.ReadMember(_netBodyNetId, box));
-            chara = ReadChara(box);
-            return true;
+            box = null;
+            netId = 0;
+            chara = null;
+            return false;
         }
 
         /// <summary>从 NetBody 实例提取实体 netId、角色对象与本机归属标记。</summary>

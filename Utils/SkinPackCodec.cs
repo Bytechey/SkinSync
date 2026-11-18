@@ -17,7 +17,9 @@ namespace SkinSyncMod
         internal const int MAX_FILE_COUNT = 256;
 
         private static readonly Dictionary<string, Dictionary<string, byte[]>> _cache
-            = new Dictionary<string, Dictionary<string, byte[]>>();
+            = new Dictionary<string, Dictionary<string, byte[]>>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, bool> _remoteAllowPersist
+            = new Dictionary<string, bool>(StringComparer.Ordinal);
 
         internal static bool HasInMemory(string skinID)
             => !string.IsNullOrEmpty(skinID) && _cache.ContainsKey(skinID);
@@ -50,11 +52,48 @@ namespace SkinSyncMod
             }
         }
 
+        /// <summary>按来源归属打包指定皮肤并计算有效的持久化授权，防止中继节点篡改原作者隐私设置。</summary>
+        internal static bool TryPackForShare(string skinID, bool localAllowPersist, out byte[] payload, out bool effectiveAllowPersist)
+        {
+            payload = null;
+            effectiveAllowPersist = false;
+            if (!SkinPathResolver.IsSafeSkinName(skinID)) return false;
+
+            if (SkinPathResolver.HasLocalCustomSkin(skinID))
+            {
+                string localDir = SkinPathResolver.GetSkinDir(skinID);
+                payload = TryPackDirectory(skinID, localDir);
+                if (payload == null) return false;
+                effectiveAllowPersist = localAllowPersist;
+                return true;
+            }
+
+            if (_cache.TryGetValue(skinID, out var memDict))
+            {
+                payload = PackFromMemoryDict(skinID, memDict);
+            }
+            if (payload == null)
+            {
+                string syncDir = Path.Combine(SkinPathResolver.SyncCacheRoot, skinID);
+                if (Directory.Exists(syncDir))
+                {
+                    payload = TryPackDirectory(skinID, syncDir);
+                }
+            }
+            if (payload == null) return false;
+
+            effectiveAllowPersist = _remoteAllowPersist.TryGetValue(skinID, out bool origAllow) && origAllow;
+            return true;
+        }
+
         /// <summary>读取指定皮肤的贴图与配置文件并编码为字节数组，超限或缺失时返回 null。</summary>
         internal static byte[] PackLocalSkin(string skinID)
         {
-            if (!SkinPathResolver.IsSafeSkinName(skinID)) return null;
-            string baseDir = SkinPathResolver.GetSkinDir(skinID);
+            return TryPackForShare(skinID, false, out byte[] payload, out _) ? payload : null;
+        }
+
+        private static byte[] TryPackDirectory(string skinID, string baseDir)
+        {
             if (string.IsNullOrEmpty(baseDir) || !Directory.Exists(baseDir)) return null;
 
             var files = new List<KeyValuePair<string, byte[]>>();
@@ -64,8 +103,25 @@ namespace SkinSyncMod
             if (!TryAppendRootJson(baseDir, "blood.json", files)) return null;
             if (!TryAppendRootJson(baseDir, "accessories.json", files)) return null;
             if (!TryAppendRootJson(baseDir, "wings.json", files)) return null;
-            if (files.Count == 0) return null;
+            return EncodeFiles(skinID, files);
+        }
 
+        private static byte[] PackFromMemoryDict(string skinID, Dictionary<string, byte[]> memDict)
+        {
+            if (memDict == null || memDict.Count == 0 || memDict.Count > MAX_FILE_COUNT) return null;
+            var files = new List<KeyValuePair<string, byte[]>>(memDict.Count);
+            foreach (var kv in memDict)
+            {
+                if (!IsSafeRelPath(kv.Key) || kv.Value == null || kv.Value.Length == 0 || kv.Value.Length > MAX_FILE_SIZE)
+                    continue;
+                files.Add(new KeyValuePair<string, byte[]>(kv.Key, kv.Value));
+            }
+            return EncodeFiles(skinID, files);
+        }
+
+        private static byte[] EncodeFiles(string skinID, List<KeyValuePair<string, byte[]>> files)
+        {
+            if (files == null || files.Count == 0 || files.Count > MAX_FILE_COUNT) return null;
             using (var ms = new MemoryStream())
             using (var bw = new BinaryWriter(ms))
             {
@@ -125,10 +181,39 @@ namespace SkinSyncMod
             return true;
         }
 
-        /// <summary>校验并解包皮肤数据字节流，写入内存缓存与永久或会话缓存目录。</summary>
-        internal static bool UnpackAndCache(byte[] payload, bool persistToDisk, out string skinID)
+        /// <summary>纯校验二进制皮肤包结构与文件头合法性而不写入内存或磁盘，供服务端保护本地同名皮肤时转发校验。</summary>
+        internal static bool ValidatePack(byte[] payload, out string skinID)
+        {
+            return TryDecodePayload(payload, skipIfLocalOwned: false, out skinID, out _);
+        }
+
+        /// <summary>校验并解包皮肤数据字节流，保护本机同名自有皮肤不被覆盖，通过后写入内存缓存与磁盘目录。</summary>
+        internal static bool UnpackAndCache(byte[] payload, bool persistToDisk, out string skinID, bool remoteAllowPersist = false)
+        {
+            if (!TryDecodePayload(payload, skipIfLocalOwned: true, out skinID, out Dictionary<string, byte[]> dict))
+            {
+                return false;
+            }
+
+            _remoteAllowPersist[skinID] = remoteAllowPersist;
+            _cache[skinID] = dict;
+            bool persisted = PersistToDisk(skinID, dict, persistent: persistToDisk);
+            SkinPathResolver.Invalidate(skinID);
+            if (persistToDisk && persisted)
+            {
+                SkinSync.NotifyDiskSkinsChanged(skinID);
+            }
+            return true;
+        }
+
+        private static bool TryDecodePayload(
+            byte[] payload,
+            bool skipIfLocalOwned,
+            out string skinID,
+            out Dictionary<string, byte[]> dict)
         {
             skinID = null;
+            dict = null;
             if (payload == null || payload.Length < 16 || payload.Length > MAX_PACK_SIZE) return false;
 
             try
@@ -145,10 +230,16 @@ namespace SkinSyncMod
                     skinID = Encoding.UTF8.GetString(idBytes);
                     if (!SkinPathResolver.IsSafeSkinName(skinID)) return false;
 
+                    if (skipIfLocalOwned && SkinPathResolver.HasLocalCustomSkin(skinID))
+                    {
+                        SkinSyncMod.ModLog.Debug($"SkinPackCodec: 本机已存在自有皮肤 {skinID}，跳过远端皮肤包解包与缓存写入。");
+                        return false;
+                    }
+
                     int fileCount = br.ReadInt32();
                     if (fileCount <= 0 || fileCount > MAX_FILE_COUNT) return false;
 
-                    var dict = new Dictionary<string, byte[]>(fileCount, StringComparer.OrdinalIgnoreCase);
+                    var parsed = new Dictionary<string, byte[]>(fileCount, StringComparer.OrdinalIgnoreCase);
                     for (int i = 0; i < fileCount; i++)
                     {
                         int pl = br.ReadInt32();
@@ -169,11 +260,9 @@ namespace SkinSyncMod
                                 || data[4] != 0x0D || data[5] != 0x0A || data[6] != 0x1A || data[7] != 0x0A)
                                 return false;
                         }
-                        dict[path] = data;
+                        parsed[path] = data;
                     }
-                    _cache[skinID] = dict;
-                    PersistToDisk(skinID, dict, persistent: persistToDisk);
-                    SkinPathResolver.Invalidate(skinID);
+                    dict = parsed;
                     return true;
                 }
             }
@@ -184,7 +273,7 @@ namespace SkinSyncMod
             }
         }
 
-        private static void PersistToDisk(string skinID, Dictionary<string, byte[]> dict, bool persistent)
+        private static bool PersistToDisk(string skinID, Dictionary<string, byte[]> dict, bool persistent)
         {
             try
             {
@@ -201,8 +290,13 @@ namespace SkinSyncMod
                 }
                 SkinPathResolver.Invalidate(skinID);
                 SkinSyncMod.ModLog.Info($"SkinPackCodec: 已落盘 {skinID}（{dict.Count} 个文件，persistent={persistent}）");
+                return true;
             }
-            catch (Exception ex) { SkinSyncMod.ModLog.Warning("SkinPackCodec.PersistToDisk failed: " + ex.Message); }
+            catch (Exception ex)
+            {
+                SkinSyncMod.ModLog.Warning("SkinPackCodec.PersistToDisk failed: " + ex.Message);
+                return false;
+            }
         }
 
         private static string MakeRelative(string baseDir, string fullPath)

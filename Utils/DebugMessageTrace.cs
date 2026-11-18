@@ -129,6 +129,8 @@ namespace SkinSyncMod
                     return "50003/SkinPackRequest";
                 case SkinNetworkIDs.SkinPackDataMessageId:
                     return "50004/SkinPackData";
+                case SkinNetworkIDs.SkinPackChunkMessageId:
+                    return "50005/SkinPackChunk";
                 default:
                     return subId + "/Unknown";
             }

@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>按发送端与传输编号重组大型皮肤包分片，执行超时回收、并发限额与 CRC32 校验。</summary>
+    /// <summary>按发送端与传输编号重组大型皮肤包分片，执行首片包头预检、超时回收、并发限额与 CRC32 校验。</summary>
     internal static class SkinPackChunkAssembler
     {
         // 客户端接收服务端转发的分片时统一归入 senderKey = ushort.MaxValue，放宽至 16 以覆盖满房并发大皮肤包同步。
@@ -81,6 +81,17 @@ namespace SkinSyncMod
 
             if (!_pending.TryGetValue(key, out InboundState state))
             {
+                // 可靠有序通道上第 0 片必先送达，未通过首片包头与安全名称预检前绝不分配整包缓冲区。
+                if (msg.chunkIndex != 0
+                    || !SkinPackCodec.TryPeekSkinId(msg.data, msg.data.Length, out string peekedSkinId))
+                {
+                    return false;
+                }
+                if (senderKey == ushort.MaxValue && SkinPathResolver.HasLocalCustomSkin(peekedSkinId))
+                {
+                    return false;
+                }
+
                 EnforceSenderQuota(senderKey);
                 state = new InboundState
                 {
@@ -89,6 +100,7 @@ namespace SkinSyncMod
                     TotalChunks = msg.totalChunks,
                     ExpectedCrc32 = msg.crc32,
                     AllowPersist = msg.allowPersist,
+                    SkinId = peekedSkinId,
                     Buffer = new byte[msg.totalBytes],
                     ReceivedMask = new bool[msg.totalChunks],
                     UpdatedAt = now,
@@ -97,7 +109,8 @@ namespace SkinSyncMod
             }
             else if (state.TotalBytes != msg.totalBytes
                 || state.TotalChunks != msg.totalChunks
-                || state.ExpectedCrc32 != msg.crc32)
+                || state.ExpectedCrc32 != msg.crc32
+                || state.AllowPersist != msg.allowPersist)
             {
                 _pending.Remove(key);
                 NotifyDropped(state);
@@ -105,10 +118,6 @@ namespace SkinSyncMod
             }
 
             Buffer.BlockCopy(msg.data, 0, state.Buffer, destOffset, msg.data.Length);
-            if (msg.chunkIndex == 0 && state.SkinId == null)
-            {
-                SkinPackCodec.TryPeekSkinId(state.Buffer, msg.data.Length, out state.SkinId);
-            }
 
             state.UpdatedAt = now;
             if (!state.ReceivedMask[msg.chunkIndex])

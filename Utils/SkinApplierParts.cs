@@ -72,6 +72,11 @@ namespace SkinSyncMod
                     for (int i = 0; i < n; i++) face.disfiguredHeadHeal[i] = f.DisfiguredHeadHeal[i];
                 }
                 RestoreEyeList(face, f.Eyes);
+                // 死亡或暂停期间 FacialExpression 不再每帧刷新渲染器，需立即回写实时贴图以防热重载销毁旧字典后残留悬空引用。
+                if (face.head != null && f.DefaultHead != null)
+                    face.head.sprite = f.DefaultHead;
+                if (face.eyes != null && f.Eyes != null && f.Eyes.Length > 0)
+                    face.eyes.sprite = f.Eyes[0].front;
             }
         }
 

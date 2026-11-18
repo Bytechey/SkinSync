@@ -78,6 +78,14 @@ namespace SkinSyncMod
             return direct;
         }
 
+        /// <summary>判断本机 CustomSprites 目录下是否已存在包含有效贴图或配置的同名自有皮肤。</summary>
+        public static bool HasLocalCustomSkin(string characterName)
+        {
+            if (!IsSafeSkinName(characterName)) return false;
+            string direct = Path.Combine(Paths.PluginPath, "CustomSprites", characterName);
+            return Directory.Exists(direct) && HasAnyContent(direct);
+        }
+
         /// <summary>清除单个或全部皮肤目录的解析缓存。</summary>
         public static void Invalidate(string characterName = null)
         {
@@ -89,8 +97,14 @@ namespace SkinSyncMod
         {
             try
             {
-                foreach (var _ in Directory.EnumerateFileSystemEntries(dir))
-                    return true;
+                foreach (string fp in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+                {
+                    if (fp.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                        || fp.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
             }
             catch { }
             return false;

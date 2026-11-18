@@ -185,6 +185,7 @@ namespace SkinSyncMod
             localNetBodyBox = null;
             localChara = null;
             RosterConsumer.ResetLocalCache();
+            Network.MultiplayerSender.ClearOutboundQueue();
             SkinApplier.OnSceneChanged();
             SkinMessageHandlers.OnSceneChanged();
         }
@@ -235,6 +236,18 @@ namespace SkinSyncMod
             SkinApplier.ReloadAllCachedSkins();
         }
 
+        /// <summary>当远端皮肤包持久化落盘后将其增量纳入可用皮肤列表并保持自然排序。</summary>
+        internal static void NotifyDiskSkinsChanged(string skinID)
+        {
+            if (_instance == null || string.IsNullOrEmpty(skinID) || _instance.availableSkins.Contains(skinID))
+            {
+                return;
+            }
+
+            _instance.availableSkins.Add(skinID);
+            _instance.availableSkins.Sort(NaturalCompare);
+        }
+
         private static int NaturalCompare(string a, string b)
         {
             int ai = 0, bi = 0;
@@ -265,6 +278,7 @@ namespace SkinSyncMod
         private void Update()
         {
             if (_quitting) return;
+            Network.MultiplayerSender.TickOutboundChunks();
             UiBlocker.EnforceBlocked();
 
             if (!_embeddedInSaveManager && SkinSyncSettings.TriggeredThisFrame(Settings.TogglePanelHotkey))
@@ -691,15 +705,20 @@ namespace SkinSyncMod
             }
 
             GameObject targetGo = chara != null ? chara : body.gameObject;
-            int resolvedCharType = body.charType != 0 ? body.charType : charType;
+            int resolvedCharType = charType >= 0 ? charType : body.charType;
 
             if (isLocal)
             {
                 if (_instance == null) return;
+                if (RosterConsumer.TryGetLocalNetBody(out object freshBox, out _, out _) && freshBox != null)
+                {
+                    _instance.localNetBodyBox = freshBox;
+                }
+                _instance.localChara = targetGo;
+
                 string localSkin = _instance.ResolveCurrentSkin();
                 if (string.IsNullOrEmpty(localSkin)) return;
 
-                _instance.localChara = targetGo;
                 if (!isRebuild
                     && _instance._appliedTargetObject == targetGo
                     && _instance._appliedCharType == resolvedCharType

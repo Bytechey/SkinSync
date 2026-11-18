@@ -122,12 +122,14 @@ namespace SkinSyncMod.Patches
                 PruneDeadEntries();
             }
 
+            bool hasLocalCid = RosterConsumer.TryGetLocalClientId(out uint localCid);
             foreach (var entry in RosterConsumer.EnumeratePlayersWithBody())
             {
                 if (entry.Chara == null || entry.NetId == 0) continue;
                 // 按 netId 对比以识别同一客户端死亡重生后的新实体。
                 if (_sentToClient.TryGetValue(entry.ClientId, out uint lastNetId) && lastNetId == entry.NetId) continue;
                 _sentToClient[entry.ClientId] = entry.NetId;
+                if (hasLocalCid && entry.ClientId == localCid) continue;
 
                 int sent = 0;
                 foreach (var kv in _serverSkinTable)

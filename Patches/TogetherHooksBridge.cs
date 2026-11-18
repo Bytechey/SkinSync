@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace SkinSyncMod.Patches
 {
-    /// <summary>可选反射对接 Together 官方扩展接口（兼容 Together.Api 与 Together.ModHooks，存量旧版静默跳过）。</summary>
+    /// <summary>可选反射对接 Together 官方扩展接口，优先绑定 TogetherPanelApi 并按事件互斥回退 ModHooks，存量旧版静默跳过。</summary>
     internal static class TogetherHooksBridge
     {
         private struct BoundEvent
@@ -31,15 +31,17 @@ namespace SkinSyncMod.Patches
 
             _bindAttempted = true;
             int boundCount = 0;
+            bool boundBodyHook = false;
+            bool boundWoundHook = false;
 
             if (host.Types.TryResolveType("Together.Api.TogetherPanelApi", out Type panelApiType) && panelApiType != null)
             {
-                boundCount += BindPanelApi(panelApiType);
+                boundCount += BindPanelApi(panelApiType, out boundBodyHook, out boundWoundHook);
             }
 
             if (host.Types.TryResolveType("Together.ModHooks", out Type modHooksType) && modHooksType != null)
             {
-                boundCount += BindModHooks(modHooksType);
+                boundCount += BindModHooks(modHooksType, skipBodyHooks: boundBodyHook, skipWoundHook: boundWoundHook);
             }
 
             if (boundCount > 0)
@@ -73,18 +75,20 @@ namespace SkinSyncMod.Patches
             _bindAttempted = false;
         }
 
-        private static int BindPanelApi(Type panelApiType)
+        private static int BindPanelApi(Type panelApiType, out bool boundBodyHook, out bool boundWoundHook)
         {
             int count = 0;
 
             Action<Body, ushort, int, bool> onBody = (body, netBodyId, species, isRebuild) =>
                 SkinSync.OnExternalBodyReadyOrRebuilt(body, netBodyId, species, isRebuild);
-            if (TrySubscribeStaticEvent(panelApiType, "OnBodyReadyOrRebuilt", onBody))
+            boundBodyHook = TrySubscribeStaticEvent(panelApiType, "OnBodyReadyOrRebuilt", onBody);
+            if (boundBodyHook)
                 count++;
 
             Action<WoundView, Body, int> onWound = (view, body, _) =>
                 WoundViewAttacher.OnTargetApplied(view, body);
-            if (TrySubscribeStaticEvent(panelApiType, "OnWoundViewTargetApplied", onWound))
+            boundWoundHook = TrySubscribeStaticEvent(panelApiType, "OnWoundViewTargetApplied", onWound);
+            if (boundWoundHook)
                 count++;
 
             MethodInfo registerBlocker = InteropReflection.FindMethod(
@@ -104,19 +108,25 @@ namespace SkinSyncMod.Patches
             return count;
         }
 
-        private static int BindModHooks(Type modHooksType)
+        private static int BindModHooks(Type modHooksType, bool skipBodyHooks, bool skipWoundHook)
         {
             int count = 0;
 
-            if (TryBindBodyHook(modHooksType, "OnBodySpawned", isRebuild: false))
-                count++;
-            if (TryBindBodyHook(modHooksType, "OnBodyMeshRebuilt", isRebuild: true))
-                count++;
+            if (!skipBodyHooks)
+            {
+                if (TryBindBodyHook(modHooksType, "OnBodySpawned", isRebuild: false))
+                    count++;
+                if (TryBindBodyHook(modHooksType, "OnBodyMeshRebuilt", isRebuild: true))
+                    count++;
+            }
 
-            Action<WoundView, Body> onWoundChanged = (view, body) =>
-                WoundViewAttacher.OnTargetApplied(view, body);
-            if (TrySubscribeStaticEvent(modHooksType, "OnWoundViewTargetChanged", onWoundChanged))
-                count++;
+            if (!skipWoundHook)
+            {
+                Action<WoundView, Body> onWoundChanged = (view, body) =>
+                    WoundViewAttacher.OnTargetApplied(view, body);
+                if (TrySubscribeStaticEvent(modHooksType, "OnWoundViewTargetChanged", onWoundChanged))
+                    count++;
+            }
 
             return count;
         }
@@ -127,10 +137,15 @@ namespace SkinSyncMod.Patches
             if (ev == null || ev.EventHandlerType == null) return false;
 
             Delegate handler = null;
-            if (ev.EventHandlerType == typeof(Action<Body, uint, ushort, bool>))
+            if (ev.EventHandlerType == typeof(Action<Body, ushort, int, bool>))
             {
-                handler = (Action<Body, uint, ushort, bool>)((body, netId, _, __) =>
-                    SkinSync.OnExternalBodyReadyOrRebuilt(body, netId, body != null ? body.charType : 0, isRebuild));
+                handler = (Action<Body, ushort, int, bool>)((body, netId, species, rebuild) =>
+                    SkinSync.OnExternalBodyReadyOrRebuilt(body, netId, species, rebuild));
+            }
+            else if (ev.EventHandlerType == typeof(Action<Body, uint, ushort, bool>))
+            {
+                handler = (Action<Body, uint, ushort, bool>)((body, netId, _, rebuild) =>
+                    SkinSync.OnExternalBodyReadyOrRebuilt(body, netId, body != null ? body.charType : 0, rebuild));
             }
             else if (ev.EventHandlerType == typeof(Action<uint, GameObject, int>))
             {

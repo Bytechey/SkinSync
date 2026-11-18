@@ -13,6 +13,7 @@ namespace SkinSyncMod
         private const float PIXELS_PER_UNIT = 8f;
         private const float UPTORSO_OFFSET_X = 6f;
         private const float UPTORSO_OFFSET_Y = -10f;
+        private const float RequestRetryCooldownSec = 30f;
 
         private static readonly Dictionary<string, Dictionary<string, Sprite>> _skinCache
             = new Dictionary<string, Dictionary<string, Sprite>>(StringComparer.Ordinal);
@@ -24,8 +25,8 @@ namespace SkinSyncMod
             = new Dictionary<GameObject, int>();
         private static readonly HashSet<GameObject> _vanillaApplied
             = new HashSet<GameObject>();
-        private static readonly HashSet<string> _requestedPacks
-            = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, float> _requestedPacks
+            = new Dictionary<string, float>(StringComparer.Ordinal);
         private static readonly Dictionary<int, Material> _cleanLitMaterials
             = new Dictionary<int, Material>();
 
@@ -144,7 +145,7 @@ namespace SkinSyncMod
             return false;
         }
 
-        /// <summary>场景切换时清理已销毁角色的缓存引用、远端临时覆盖与皮肤包请求去重锁。</summary>
+        /// <summary>场景切换时清理已销毁角色的缓存引用、远端临时覆盖与皮肤包请求冷却记录。</summary>
         internal static void OnSceneChanged()
         {
             PruneDeadObjects();
@@ -170,7 +171,7 @@ namespace SkinSyncMod
         }
 
         /// <summary>将指定皮肤完整应用到目标角色对象。</summary>
-        public static void ApplySkinToPlayer(GameObject playerObj, string characterName, int remoteCharType = 0)
+        public static void ApplySkinToPlayer(GameObject playerObj, string characterName, int remoteCharType = -1)
         {
             if (playerObj == null) return;
 
@@ -197,7 +198,7 @@ namespace SkinSyncMod
             DisableConflictingReplacers(playerObj);
 
             Body bodyRef = playerObj.GetComponentInChildren<Body>(true);
-            int charType = bodyRef != null && bodyRef.charType != 0 ? bodyRef.charType : remoteCharType;
+            int charType = bodyRef != null ? bodyRef.charType : (remoteCharType >= 0 ? remoteCharType : (_charTypeByChara.TryGetValue(playerObj, out int cachedCt) ? cachedCt : 0));
             bool sameCharType = _charTypeByChara.TryGetValue(playerObj, out int prevCharType) && prevCharType == charType;
             bool sameSkin = !wasVanilla && hadPrev && prevSkin == characterName && sameCharType;
             if (hadPrev && !wasVanilla && prevSkin == characterName && !sameCharType)
@@ -342,16 +343,38 @@ namespace SkinSyncMod
         internal static bool IsLocalCharacter(GameObject playerObj)
         {
             if (playerObj == null) return false;
+            Body body = playerObj.GetComponentInChildren<Body>(true);
             var cam = PlayerCamera.main;
+            if (cam != null && cam.body != null && body != null && body == cam.body)
+            {
+                return true;
+            }
+
+            // 换物种重建网格早于相机重绑触发时，优先经联机名册核验归属，防止同帧旧 cam.body 导致本机被误判为远端。
+            if (SessionConsumer.IsAvailable)
+            {
+                if (RosterConsumer.TryGetLocalNetBody(out _, out _, out var localGo) && localGo != null
+                    && (playerObj == localGo || (body != null && localGo == body.gameObject)))
+                {
+                    return true;
+                }
+
+                if (body != null && RosterConsumer.TryResolveBodyIdentity(body, out _, out _, out bool isLocalPlayer))
+                {
+                    return isLocalPlayer;
+                }
+            }
+
             if (cam != null && cam.body != null)
             {
-                var body = playerObj.GetComponentInChildren<Body>(true);
-                return body != null && body == cam.body;
+                return false;
             }
-            if (SessionConsumer.IsAvailable && RosterConsumer.TryGetLocalNetBody(out _, out _, out var localGo) && localGo != null)
+
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen")
             {
-                return playerObj == localGo;
+                return true;
             }
+
             return !SessionConsumer.IsRunning;
         }
 
@@ -600,14 +623,20 @@ namespace SkinSyncMod
 
         private static bool TryRequestSkinPack(string character)
         {
+            if (string.IsNullOrEmpty(character)) return false;
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return false;
             if (!SessionConsumer.IsAvailable || !SessionConsumer.IsRunning) return false;
-            if (!_requestedPacks.Add(character)) return false;
+            float now = Time.realtimeSinceStartup;
+            if (_requestedPacks.TryGetValue(character, out float lastAt) && now - lastAt < RequestRetryCooldownSec)
+            {
+                return false;
+            }
+            _requestedPacks[character] = now;
             Network.MultiplayerSender.SendSkinPackRequest(character);
             return true;
         }
 
-        /// <summary>释放单个皮肤包的请求去重锁，允许分片传输超时或配额淘汰后重新请求。</summary>
+        /// <summary>释放单个皮肤包的请求冷却记录，允许分片传输超时或配额淘汰后立即重新请求。</summary>
         internal static void ClearRequestedPack(string skinId)
         {
             if (!string.IsNullOrEmpty(skinId))

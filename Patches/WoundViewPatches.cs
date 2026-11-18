@@ -4,7 +4,7 @@ using UnityEngine.UI;
 
 namespace SkinSyncMod.Patches
 {
-    /// <summary>在 WoundView.Start 初始化物种头图后按需挂载自定义伤势贴图，若官方视图钩子已同帧涂装则命中缓存短路。</summary>
+    /// <summary>在 WoundView.Start 重置物种头图后强制重涂自定义伤势贴图与彩色肌肉层，防止首次激活面板时覆盖官方钩子预涂装结果。</summary>
     [HarmonyPatch(typeof(WoundView), "Start")]
     public static class WoundViewStartSkinPatch
     {
@@ -15,7 +15,7 @@ namespace SkinSyncMod.Patches
             if (__instance == null) return;
             try
             {
-                WoundViewAttacher.OnUpdateView(__instance);
+                WoundViewAttacher.OnTargetApplied(__instance, __instance.body);
             }
             catch (System.Exception ex)
             {
@@ -44,17 +44,17 @@ namespace SkinSyncMod.Patches
         }
     }
 
-    /// <summary>在 WoundView.AddImageToLimb 动态生成伤口贴片后替换为皮肤包内的同名自定义贴图。</summary>
+    /// <summary>在 WoundView.AddImageToLimb 动态生成伤口贴片后按受伤肢体所属躯体替换为自定义贴图，规避面板目标还原顺序竞态。</summary>
     [HarmonyPatch(typeof(WoundView), nameof(WoundView.AddImageToLimb))]
     public static class WoundViewAddImageSkinPatch
     {
         [HarmonyPostfix]
-        public static void Postfix(WoundView __instance, Image __result)
+        public static void Postfix(WoundView __instance, Limb __0, Image __result)
         {
             if (__instance == null || __result == null) return;
             try
             {
-                WoundViewAttacher.ApplyDynamicLimbImage(__instance, __result);
+                WoundViewAttacher.ApplyDynamicLimbImage(__instance, __result, __0 != null ? __0.body : null);
             }
             catch (System.Exception ex)
             {
