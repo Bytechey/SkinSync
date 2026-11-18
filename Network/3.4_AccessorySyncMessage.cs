@@ -1,9 +1,6 @@
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 子端改动配件覆盖时发到服务端，服务端校验后广播全员。
-    /// 字段对齐 SkinSyncSettings.AccessoryOverride（5 个字段任选其一改动 + enabled 必填），编解码见 SkinMessageCodec。
-    /// </summary>
+    /// <summary>配件参数覆盖同步消息体。</summary>
     public struct AccessorySyncMessage
     {
         public uint netId;

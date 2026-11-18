@@ -3,17 +3,12 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 游戏内（ESC 暂停 brightnessPanel 打开时）的 IMGUI 浮动唤起按钮。
-    /// 主菜单按钮已迁移到 MenuButtonInjector，本类只负责暂停面板的入口。
-    /// </summary>
+    /// <summary>在游戏内暂停界面右下角绘制打开 SkinSync 面板的入口按钮。</summary>
     internal sealed class InGameOverlay
     {
         private const float ButtonWidth = 320f;
         private const float ButtonHeight = 84f;
         private const float MarginRight = 24f;
-        // SaveManager overlay 占屏幕右下 (right=24, bottom=24)，
-        // SkinSync 上移一格避免重叠：bottom = 24 + 84 + 16 = 124。
         private const float MarginBottom = 124f;
 
         private static readonly System.Type PauseHandlerType = typeof(PlayerCamera).Assembly.GetType("PauseHandler");
@@ -28,6 +23,7 @@ namespace SkinSyncMod
 
         internal static bool ShouldShow()
         {
+            if (UiBlocker.IsBlocking) return false;
             if (PlayerCamera.main == null) return false;
 
             if (TryGetPauseMenuVisible(out bool visible)) return visible;

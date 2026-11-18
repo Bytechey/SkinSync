@@ -3,9 +3,7 @@ using UnityEngine.Rendering.Universal;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 为后挂的渲染器添加 URP 2D ShadowCaster2D，复用其轮廓投射阴影。
-    /// </summary>
+    /// <summary>为动态创建的贴图挂载点附加 URP ShadowCaster2D 组件。</summary>
     public static class ShadowAttacher
     {
         public static void Ensure(GameObject target)

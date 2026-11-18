@@ -1,28 +1,30 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
-using BepInEx;
 using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>读皮肤目录下的 baseSizes.json，把每张标准化 sprite 的原始像素尺寸暴露给 SkinApplier 计算自适应 PPU。</summary>
+    /// <summary>解析并缓存皮肤目录下的 baseSizes.json 原始尺寸配置。</summary>
     internal static class BaseSizesLoader
     {
         private static readonly Dictionary<string, Dictionary<string, Vector2Int>> _cache
             = new Dictionary<string, Dictionary<string, Vector2Int>>();
 
-        /// <summary>返回 fileName(无扩展) → (baseW, baseH) 字典；缺文件 / 解析失败返回空字典。</summary>
+        /// <summary>读取指定皮肤的贴图基准像素尺寸表，缺失或失败返回空字典。</summary>
         internal static Dictionary<string, Vector2Int> Load(string characterName)
         {
             if (string.IsNullOrEmpty(characterName)) return new Dictionary<string, Vector2Int>();
             if (_cache.TryGetValue(characterName, out var cached)) return cached;
-            string path = Path.Combine(SkinPathResolver.GetSkinDir(characterName), "baseSizes.json");
+            string skinDir = SkinPathResolver.GetSkinDir(characterName);
+            if (string.IsNullOrEmpty(skinDir)) return new Dictionary<string, Vector2Int>();
+            string path = Path.Combine(skinDir, "baseSizes.json");
             var dict = File.Exists(path) ? ParseContent(File.ReadAllText(path)) : new Dictionary<string, Vector2Int>();
             _cache[characterName] = dict;
             return dict;
         }
 
-        /// <summary>从 baseSizes.json 文本解析 fileName → (baseW, baseH)；空 / 解析失败返回空字典。</summary>
+        /// <summary>从 JSON 文本解析贴图名到基准像素尺寸的映射。</summary>
         internal static Dictionary<string, Vector2Int> ParseContent(string json)
         {
             var dict = new Dictionary<string, Vector2Int>();
@@ -46,8 +48,8 @@ namespace SkinSyncMod
                     string nums = json.Substring(arrStart + 1, arrEnd - arrStart - 1);
                     var parts = nums.Split(',');
                     if (parts.Length >= 2 &&
-                        int.TryParse(parts[0].Trim(), out int w) &&
-                        int.TryParse(parts[1].Trim(), out int h) &&
+                        int.TryParse(parts[0].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int w) &&
+                        int.TryParse(parts[1].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int h) &&
                         w > 0 && h > 0)
                     {
                         int slash = key.LastIndexOf('/');
@@ -63,8 +65,8 @@ namespace SkinSyncMod
             return dict;
         }
 
-        /// <summary>切皮肤 / rescan 时调用，让 baseSizes 重新读盘。</summary>
-        internal static void Invalidate(string characterName)
+        /// <summary>失效单个或全部皮肤的基准尺寸缓存。</summary>
+        internal static void Invalidate(string characterName = null)
         {
             if (string.IsNullOrEmpty(characterName)) _cache.Clear();
             else _cache.Remove(characterName);

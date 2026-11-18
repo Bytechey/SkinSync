@@ -5,10 +5,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 解析部件区块（mask + 配置）：与编辑器 zones.rs / web 端 ZoneEntry schema 1:1 对齐。
-    /// mask PNG：RGBA8，R 通道存区块 ID（1~255），A=0 视为无区块。
-    /// </summary>
+    /// <summary>解析部件区块遮罩图（.zones.png）与特效配置（.zones.json）。</summary>
     public static class ZonesConfigLoader
     {
         public class Entry
@@ -61,7 +58,6 @@ namespace SkinSyncMod
             public bool Loop;
         }
 
-        /// <summary>区块的几何数据：mask 包围盒中心（PNG 像素坐标）+ 半径（像素）。</summary>
         public class ZoneGeometry
         {
             public byte Id;
@@ -70,7 +66,7 @@ namespace SkinSyncMod
             public float Radius;
         }
 
-        /// <summary>读取 zones.json + zones.png；任一缺失返回 null。</summary>
+        /// <summary>读取部件区块配置与遮罩几何数据，任一缺失或解析失败返回空元组。</summary>
         public static (List<Entry> entries, List<ZoneGeometry> geom) Load(string maskPath, string configPath, int spriteW, int spriteH)
         {
             if (!File.Exists(maskPath) || !File.Exists(configPath)) return (null, null);
@@ -91,54 +87,66 @@ namespace SkinSyncMod
             return (entries, geom);
         }
 
-        /// <summary>解码 mask PNG，扫每个 ID 的像素得到包围盒中心 + 包围盒对角线一半作为半径。</summary>
         private static List<ZoneGeometry> ComputeGeometry(string maskPath, int expectedW, int expectedH)
         {
             byte[] data;
             try { data = File.ReadAllBytes(maskPath); }
-            catch { return null; }
-            var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-            if (!ImageConversion.LoadImage(tex, data)) { Object.Destroy(tex); return null; }
-            int w = tex.width;
-            int h = tex.height;
-            var pixels = tex.GetPixels32();
-            Object.Destroy(tex);
-
-            var minX = new Dictionary<byte, int>();
-            var maxX = new Dictionary<byte, int>();
-            var minY = new Dictionary<byte, int>();
-            var maxY = new Dictionary<byte, int>();
-            for (int y = 0; y < h; y++)
+            catch (System.Exception ex)
             {
-                for (int x = 0; x < w; x++)
+                SkinSyncMod.ModLog.Warning("zones.png read failed: " + ex.Message);
+                return null;
+            }
+            var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+            try
+            {
+                if (!ImageConversion.LoadImage(tex, data)) return null;
+                int w = tex.width;
+                int h = tex.height;
+                if (w <= 0 || h <= 0) return null;
+                var pixels = tex.GetPixels32();
+
+                var minX = new Dictionary<byte, int>();
+                var maxX = new Dictionary<byte, int>();
+                var minY = new Dictionary<byte, int>();
+                var maxY = new Dictionary<byte, int>();
+                for (int y = 0; y < h; y++)
                 {
-                    var p = pixels[y * w + x];
-                    if (p.a == 0) continue;
-                    byte id = p.r;
-                    if (id == 0) continue;
-                    if (!minX.ContainsKey(id)) { minX[id] = x; maxX[id] = x; minY[id] = y; maxY[id] = y; }
-                    else
+                    for (int x = 0; x < w; x++)
                     {
-                        if (x < minX[id]) minX[id] = x;
-                        if (x > maxX[id]) maxX[id] = x;
-                        if (y < minY[id]) minY[id] = y;
-                        if (y > maxY[id]) maxY[id] = y;
+                        var p = pixels[y * w + x];
+                        if (p.a == 0) continue;
+                        byte id = p.r;
+                        if (id == 0) continue;
+                        if (!minX.ContainsKey(id)) { minX[id] = x; maxX[id] = x; minY[id] = y; maxY[id] = y; }
+                        else
+                        {
+                            if (x < minX[id]) minX[id] = x;
+                            if (x > maxX[id]) maxX[id] = x;
+                            if (y < minY[id]) minY[id] = y;
+                            if (y > maxY[id]) maxY[id] = y;
+                        }
                     }
                 }
-            }
 
-            var geom = new List<ZoneGeometry>();
-            foreach (var kv in minX)
-            {
-                byte id = kv.Key;
-                float cx = (kv.Value + maxX[id]) * 0.5f;
-                float cy = (minY[id] + maxY[id]) * 0.5f;
-                float dx = (maxX[id] - kv.Value) * 0.5f;
-                float dy = (maxY[id] - minY[id]) * 0.5f;
-                float radius = Mathf.Sqrt(dx * dx + dy * dy);
-                geom.Add(new ZoneGeometry { Id = id, CenterX = cx, CenterY = cy, Radius = radius });
+                float scaleX = expectedW > 0 && expectedW != w ? (float)expectedW / w : 1f;
+                float scaleY = expectedH > 0 && expectedH != h ? (float)expectedH / h : 1f;
+                var geom = new List<ZoneGeometry>();
+                foreach (var kv in minX)
+                {
+                    byte id = kv.Key;
+                    float cx = (kv.Value + maxX[id]) * 0.5f * scaleX;
+                    float cy = (minY[id] + maxY[id]) * 0.5f * scaleY;
+                    float dx = (maxX[id] - kv.Value) * 0.5f * scaleX;
+                    float dy = (maxY[id] - minY[id]) * 0.5f * scaleY;
+                    float radius = Mathf.Sqrt(dx * dx + dy * dy);
+                    geom.Add(new ZoneGeometry { Id = id, CenterX = cx, CenterY = cy, Radius = radius });
+                }
+                return geom;
             }
-            return geom;
+            finally
+            {
+                Object.Destroy(tex);
+            }
         }
 
         private static List<Entry> ToEntries(RawConfig raw)
@@ -147,7 +155,7 @@ namespace SkinSyncMod
             if (raw == null || raw.zones == null) return list;
             foreach (var z in raw.zones)
             {
-                if (z == null || z.id == 0) continue;
+                if (z == null || z.id < 1 || z.id > 255) continue;
                 var e = new Entry { Id = (byte)z.id, Name = z.name };
                 if (z.light != null)
                 {

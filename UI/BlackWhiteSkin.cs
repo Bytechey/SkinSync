@@ -2,10 +2,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 黑底白线条风格 GUISkin。OnGUI 顶层 Push、绘制结束 Pop 即可全局生效。
-    /// 与 SaveManager 同款风格保持视觉一致；两份 mod 各持一份避免跨 dll 依赖。
-    /// </summary>
+    /// <summary>提供黑白线条风格的 GUISkin 与基础线框绘制工具。</summary>
     internal static class BlackWhiteSkin
     {
         private static GUISkin _skin;
@@ -85,7 +82,7 @@ namespace SkinSyncMod
             float dx = x2 - x1;
             float dy = y2 - y1;
             float length = Mathf.Sqrt(dx * dx + dy * dy);
-            // 沿对角线铺轴对齐小方块，避免 RotateAroundPivot 与外层 Scale 矩阵复合时的纹理走样
+            // 沿对角线铺轴对齐方块，避免外层缩放矩阵下旋转绘制产生纹理走样。
             int steps = Mathf.Max(2, Mathf.CeilToInt(length / Mathf.Max(0.5f, thickness * 0.5f)));
             for (int i = 0; i <= steps; i++)
             {
@@ -110,6 +107,7 @@ namespace SkinSyncMod
             _line = MakeColorTex(255, 255, 255, 255);
 
             _skin = ScriptableObject.CreateInstance<GUISkin>();
+            _skin.hideFlags = HideFlags.HideAndDontSave;
             CopyDefaultsInto(_skin);
 
             ApplyMonochrome(_skin.box, _bgPanel, Color.white);
@@ -241,7 +239,6 @@ namespace SkinSyncMod
             return t;
         }
 
-        /// <summary>生成带白边的九宫格纹理：外圈 borderPx 像素为边色，内部为填充色。配 GUIStyle.border 用。</summary>
         private static Texture2D MakeBorderedTex(byte fr, byte fg, byte fb, byte fa,
             byte br, byte bg, byte bb, byte ba, int borderPx)
         {

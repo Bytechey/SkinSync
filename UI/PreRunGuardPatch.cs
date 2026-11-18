@@ -1,14 +1,11 @@
+using System.Collections.Generic;
+using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// SkinSync 防穿透 patch：
-    /// - AdaptiveButton.overlayActive getter：UiBlocker.IsBlocking 或鼠标在 SkinSync 主菜单按钮区域时强制 true。
-    /// - AdaptiveButton.Clicked：同上条件 return false 拦截穿透。
-    /// - PlayerCamera.HandleInput：UiBlocker.IsBlocking 时整段 return false 吞输入（含 ESC）。
-    /// </summary>
+    /// <summary>面板打开或光标悬停在主菜单注入按钮上时，将 AdaptiveButton.overlayActive 置为 true 以阻断悬停穿透。</summary>
     [HarmonyPatch(typeof(AdaptiveButton), "overlayActive", MethodType.Getter)]
     internal static class SkinSyncAdaptiveButtonOverlayActiveGuard
     {
@@ -16,7 +13,7 @@ namespace SkinSyncMod
         {
             if (UiBlocker.IsBlocking) { __result = true; return; }
             var rt = MenuButtonInjector.InjectedRect;
-            if (rt == null) return;
+            if (rt == null || !rt.gameObject.activeInHierarchy) return;
             try
             {
                 if (RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null))
@@ -28,10 +25,11 @@ namespace SkinSyncMod
         }
     }
 
+    /// <summary>面板打开或光标位于主菜单注入按钮上时拦截 AdaptiveButton.Clicked 点击。</summary>
     [HarmonyPatch]
     internal static class SkinSyncAdaptiveButtonClickedGuard
     {
-        private static System.Reflection.MethodBase TargetMethod()
+        private static MethodBase TargetMethod()
         {
             return AccessTools.Method(typeof(AdaptiveButton), "Clicked");
         }
@@ -40,7 +38,7 @@ namespace SkinSyncMod
         {
             if (UiBlocker.IsBlocking) return false;
             var rt = MenuButtonInjector.InjectedRect;
-            if (rt == null) return true;
+            if (rt == null || !rt.gameObject.activeInHierarchy) return true;
             try
             {
                 if (RectTransformUtility.RectangleContainsScreenPoint(rt, Input.mousePosition, null))
@@ -53,9 +51,29 @@ namespace SkinSyncMod
         }
     }
 
+    /// <summary>面板打开期间阻断 PlayerCamera.HandleInput 键盘与视角输入。</summary>
     [HarmonyPatch(typeof(PlayerCamera), "HandleInput")]
     internal static class SkinSyncPlayerCameraHandleInputGuard
     {
+        [HarmonyPrefix]
+        private static bool Prefix()
+        {
+            return !UiBlocker.IsBlocking;
+        }
+    }
+
+    /// <summary>面板打开期间阻断 PlayerCamera 世界物体悬停高亮与右键拖拽拾取。</summary>
+    [HarmonyPatch]
+    internal static class SkinSyncPlayerCameraMouseGuard
+    {
+        private static IEnumerable<MethodBase> TargetMethods()
+        {
+            var m1 = AccessTools.Method(typeof(PlayerCamera), "HandleMouseOver");
+            if (m1 != null) yield return m1;
+            var m2 = AccessTools.Method(typeof(PlayerCamera), "HandleDragging");
+            if (m2 != null) yield return m2;
+        }
+
         [HarmonyPrefix]
         private static bool Prefix()
         {

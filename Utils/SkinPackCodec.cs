@@ -6,12 +6,14 @@ using BepInEx;
 
 namespace SkinSyncMod
 {
-    /// <summary>本地皮肤目录与 byte[] 之间的打包/解包；含路径/大小校验、内存缓存与可选落盘，给实验性"按需拉取皮肤包"用。</summary>
+    /// <summary>将皮肤目录文件打包为单包二进制负载，或解包校验并写入内存与缓存目录。</summary>
     internal static class SkinPackCodec
     {
         private const int MAGIC = 0x4B505331;
-        internal const int MAX_PACK_SIZE = 512 * 1024;
-        internal const int MAX_FILE_SIZE = 64 * 1024;
+        internal const int SINGLE_PACKET_LIMIT = 48 * 1024;
+        internal const int CHUNK_PAYLOAD_SIZE = 32 * 1024;
+        internal const int MAX_PACK_SIZE = 2 * 1024 * 1024;
+        internal const int MAX_FILE_SIZE = 512 * 1024;
         internal const int MAX_FILE_COUNT = 256;
 
         private static readonly Dictionary<string, Dictionary<string, byte[]>> _cache
@@ -21,82 +23,47 @@ namespace SkinSyncMod
             => !string.IsNullOrEmpty(skinID) && _cache.ContainsKey(skinID);
 
         internal static Dictionary<string, byte[]> GetInMemory(string skinID)
-            => _cache.TryGetValue(skinID, out var d) ? d : null;
+            => !string.IsNullOrEmpty(skinID) && _cache.TryGetValue(skinID, out var d) ? d : null;
 
-        /// <summary>打包 plugins/CustomSprites/&lt;skinID&gt;/ 下所有 .png 为 byte[]；缺目录、超限、含不合法路径返回 null。</summary>
+        /// <summary>从首片缓冲区头部预读并校验皮肤名称，供分片组装器在超时或淘汰时释放对应请求去重锁。</summary>
+        internal static bool TryPeekSkinId(byte[] buffer, int validBytes, out string skinID)
+        {
+            skinID = null;
+            if (buffer == null || validBytes < 12 || buffer.Length < validBytes) return false;
+
+            int magic = buffer[0] | (buffer[1] << 8) | (buffer[2] << 16) | (buffer[3] << 24);
+            if (magic != MAGIC) return false;
+
+            int idLen = buffer[4] | (buffer[5] << 8) | (buffer[6] << 16) | (buffer[7] << 24);
+            if (idLen <= 0 || idLen > 128 || 8 + idLen > validBytes) return false;
+
+            try
+            {
+                string candidate = Encoding.UTF8.GetString(buffer, 8, idLen);
+                if (!SkinPathResolver.IsSafeSkinName(candidate)) return false;
+                skinID = candidate;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>读取指定皮肤的贴图与配置文件并编码为字节数组，超限或缺失时返回 null。</summary>
         internal static byte[] PackLocalSkin(string skinID)
         {
-            if (!IsSafeSkinId(skinID)) return null;
+            if (!SkinPathResolver.IsSafeSkinName(skinID)) return null;
             string baseDir = SkinPathResolver.GetSkinDir(skinID);
-            if (!Directory.Exists(baseDir)) return null;
+            if (string.IsNullOrEmpty(baseDir) || !Directory.Exists(baseDir)) return null;
 
             var files = new List<KeyValuePair<string, byte[]>>();
-            foreach (string fp in Directory.GetFiles(baseDir, "*.png", SearchOption.AllDirectories))
-            {
-                string rel = MakeRelative(baseDir, fp);
-                if (!IsSafeRelPath(rel)) continue;
-                byte[] bytes;
-                try { bytes = File.ReadAllBytes(fp); }
-                catch { continue; }
-                if (bytes.Length == 0 || bytes.Length > MAX_FILE_SIZE) continue;
-                files.Add(new KeyValuePair<string, byte[]>(rel, bytes));
-                if (files.Count > MAX_FILE_COUNT) return null;
-            }
-            foreach (string fp in Directory.GetFiles(baseDir, "*.zones.json", SearchOption.AllDirectories))
-            {
-                string rel = MakeRelative(baseDir, fp);
-                if (!IsSafeRelPath(rel)) continue;
-                byte[] bytes;
-                try { bytes = File.ReadAllBytes(fp); }
-                catch { continue; }
-                if (bytes.Length == 0 || bytes.Length > MAX_FILE_SIZE) continue;
-                files.Add(new KeyValuePair<string, byte[]>(rel, bytes));
-                if (files.Count > MAX_FILE_COUNT) return null;
-            }
-            string baseSizesPath = Path.Combine(baseDir, "baseSizes.json");
-            if (File.Exists(baseSizesPath))
-            {
-                try
-                {
-                    byte[] bs = File.ReadAllBytes(baseSizesPath);
-                    if (bs.Length > 0 && bs.Length <= MAX_FILE_SIZE)
-                        files.Add(new KeyValuePair<string, byte[]>("baseSizes.json", bs));
-                }
-                catch { }
-            }
-            string bloodJsonPath = Path.Combine(baseDir, "blood.json");
-            if (File.Exists(bloodJsonPath))
-            {
-                try
-                {
-                    byte[] bj = File.ReadAllBytes(bloodJsonPath);
-                    if (bj.Length > 0 && bj.Length <= MAX_FILE_SIZE)
-                        files.Add(new KeyValuePair<string, byte[]>("blood.json", bj));
-                }
-                catch { }
-            }
-            string accPath = Path.Combine(baseDir, "accessories.json");
-            if (File.Exists(accPath))
-            {
-                try
-                {
-                    byte[] aj = File.ReadAllBytes(accPath);
-                    if (aj.Length > 0 && aj.Length <= MAX_FILE_SIZE)
-                        files.Add(new KeyValuePair<string, byte[]>("accessories.json", aj));
-                }
-                catch { }
-            }
-            string wingsPath = Path.Combine(baseDir, "wings.json");
-            if (File.Exists(wingsPath))
-            {
-                try
-                {
-                    byte[] wj = File.ReadAllBytes(wingsPath);
-                    if (wj.Length > 0 && wj.Length <= MAX_FILE_SIZE)
-                        files.Add(new KeyValuePair<string, byte[]>("wings.json", wj));
-                }
-                catch { }
-            }
+            if (!TryCollectFiles(baseDir, "*.png", files)) return null;
+            if (!TryCollectFiles(baseDir, "*.zones.json", files)) return null;
+            if (!TryAppendRootJson(baseDir, "baseSizes.json", files)) return null;
+            if (!TryAppendRootJson(baseDir, "blood.json", files)) return null;
+            if (!TryAppendRootJson(baseDir, "accessories.json", files)) return null;
+            if (!TryAppendRootJson(baseDir, "wings.json", files)) return null;
             if (files.Count == 0) return null;
 
             using (var ms = new MemoryStream())
@@ -116,12 +83,49 @@ namespace SkinSyncMod
                     bw.Write(kv.Value);
                 }
                 bw.Flush();
-                if (ms.Length > MAX_PACK_SIZE) return null;
+                if (ms.Length > MAX_PACK_SIZE)
+                {
+                    SkinSyncMod.ModLog.Warning($"SkinPackCodec: 皮肤包 {skinID} 打包后 {ms.Length} bytes 超过传输上限 {MAX_PACK_SIZE}，无法同步。");
+                    return null;
+                }
                 return ms.ToArray();
             }
         }
 
-        /// <summary>解包 + 全字段校验；成功后写入内存缓存，可选落盘到 plugins/CustomSprites/&lt;skinID&gt;/。</summary>
+        private static bool TryCollectFiles(string baseDir, string pattern, List<KeyValuePair<string, byte[]>> files)
+        {
+            foreach (string fp in Directory.GetFiles(baseDir, pattern, SearchOption.AllDirectories))
+            {
+                string rel = MakeRelative(baseDir, fp);
+                if (!IsSafeRelPath(rel)) continue;
+                byte[] bytes;
+                try { bytes = File.ReadAllBytes(fp); }
+                catch { continue; }
+                if (bytes.Length == 0 || bytes.Length > MAX_FILE_SIZE) continue;
+                if (files.Count >= MAX_FILE_COUNT) return false;
+                files.Add(new KeyValuePair<string, byte[]>(rel, bytes));
+            }
+            return true;
+        }
+
+        private static bool TryAppendRootJson(string baseDir, string fileName, List<KeyValuePair<string, byte[]>> files)
+        {
+            string path = Path.Combine(baseDir, fileName);
+            if (!File.Exists(path)) return true;
+            try
+            {
+                byte[] data = File.ReadAllBytes(path);
+                if (data.Length > 0 && data.Length <= MAX_FILE_SIZE)
+                {
+                    if (files.Count >= MAX_FILE_COUNT) return false;
+                    files.Add(new KeyValuePair<string, byte[]>(fileName, data));
+                }
+            }
+            catch { }
+            return true;
+        }
+
+        /// <summary>校验并解包皮肤数据字节流，写入内存缓存与永久或会话缓存目录。</summary>
         internal static bool UnpackAndCache(byte[] payload, bool persistToDisk, out string skinID)
         {
             skinID = null;
@@ -136,33 +140,40 @@ namespace SkinSyncMod
 
                     int idLen = br.ReadInt32();
                     if (idLen <= 0 || idLen > 128) return false;
-                    skinID = Encoding.UTF8.GetString(br.ReadBytes(idLen));
-                    if (!IsSafeSkinId(skinID)) return false;
+                    byte[] idBytes = br.ReadBytes(idLen);
+                    if (idBytes.Length != idLen) return false;
+                    skinID = Encoding.UTF8.GetString(idBytes);
+                    if (!SkinPathResolver.IsSafeSkinName(skinID)) return false;
 
                     int fileCount = br.ReadInt32();
                     if (fileCount <= 0 || fileCount > MAX_FILE_COUNT) return false;
 
-                    var dict = new Dictionary<string, byte[]>(fileCount);
+                    var dict = new Dictionary<string, byte[]>(fileCount, StringComparer.OrdinalIgnoreCase);
                     for (int i = 0; i < fileCount; i++)
                     {
                         int pl = br.ReadInt32();
                         if (pl <= 0 || pl > 256) return false;
-                        string path = Encoding.UTF8.GetString(br.ReadBytes(pl));
+                        byte[] pathBytes = br.ReadBytes(pl);
+                        if (pathBytes.Length != pl) return false;
+                        string path = Encoding.UTF8.GetString(pathBytes);
                         if (!IsSafeRelPath(path)) return false;
 
                         int dl = br.ReadInt32();
                         if (dl <= 0 || dl > MAX_FILE_SIZE) return false;
                         byte[] data = br.ReadBytes(dl);
                         if (data.Length != dl) return false;
-                        if (path.EndsWith(".png", System.StringComparison.OrdinalIgnoreCase))
+                        if (path.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
                         {
-                            if (data[0] != 0x89 || data[1] != 0x50 || data[2] != 0x4E || data[3] != 0x47) return false;
+                            if (data.Length < 8
+                                || data[0] != 0x89 || data[1] != 0x50 || data[2] != 0x4E || data[3] != 0x47
+                                || data[4] != 0x0D || data[5] != 0x0A || data[6] != 0x1A || data[7] != 0x0A)
+                                return false;
                         }
                         dict[path] = data;
                     }
                     _cache[skinID] = dict;
-                    if (persistToDisk) PersistToDisk(skinID, dict, persistent: true);
-                    else PersistToDisk(skinID, dict, persistent: false);
+                    PersistToDisk(skinID, dict, persistent: persistToDisk);
+                    SkinPathResolver.Invalidate(skinID);
                     return true;
                 }
             }
@@ -200,37 +211,35 @@ namespace SkinSyncMod
             return rel.Replace('\\', '/');
         }
 
-        private static bool IsSafeSkinId(string s)
-        {
-            if (string.IsNullOrEmpty(s) || s.Length > 64) return false;
-            foreach (char c in s)
-            {
-                if (char.IsLetterOrDigit(c)) continue;
-                if (c == '_' || c == '-' || c == ' ' || c == '(' || c == ')') continue;
-                return false;
-            }
-            return true;
-        }
-
         private static bool IsSafeRelPath(string p)
         {
             if (string.IsNullOrEmpty(p) || p.Length > 256) return false;
             if (p.IndexOf("..", StringComparison.Ordinal) >= 0) return false;
-            if (p[0] == '/' || p[0] == '\\') return false;
+            if (p[0] == '/' || p[0] == '\\' || char.IsWhiteSpace(p[0]) || char.IsWhiteSpace(p[p.Length - 1])) return false;
             if (p.Length >= 2 && p[1] == ':') return false;
+
+            string[] segs = p.Split('/');
+            for (int i = 0; i < segs.Length; i++)
+            {
+                string s = segs[i];
+                if (string.IsNullOrEmpty(s) || s == "." || s[s.Length - 1] == '.' || char.IsWhiteSpace(s[s.Length - 1]))
+                    return false;
+                if (SkinPathResolver.IsReservedFileStem(s)) return false;
+            }
+
             foreach (char c in p)
             {
-                if (char.IsLetterOrDigit(c)) continue;
-                if (c == '_' || c == '-' || c == '.' || c == '/' || c == ' ' || c == '(' || c == ')') continue;
-                return false;
+                if (char.IsControl(c)) return false;
+                if (c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|')
+                    return false;
             }
-            if (!p.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
-                && !p.EndsWith(".zones.json", StringComparison.OrdinalIgnoreCase)
-                && !p.Equals("baseSizes.json", StringComparison.OrdinalIgnoreCase)
-                && !p.Equals("blood.json", StringComparison.OrdinalIgnoreCase)
-                && !p.Equals("accessories.json", StringComparison.OrdinalIgnoreCase)
-                && !p.Equals("wings.json", StringComparison.OrdinalIgnoreCase)) return false;
-            return true;
+
+            return p.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                || p.EndsWith(".zones.json", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("baseSizes.json", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("blood.json", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("accessories.json", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("wings.json", StringComparison.OrdinalIgnoreCase);
         }
     }
 }

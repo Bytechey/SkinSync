@@ -9,7 +9,7 @@ using UnityEngine;
 
 namespace SkinSyncMod.Interop
 {
-    /// <summary>互操作层的统一日志出口与启动自检摘要。</summary>
+    /// <summary>提供互操作层的去重警告与启动自检日志输出。</summary>
     internal static class InteropDiagnostics
     {
         private const string Prefix = "[Interop]";
@@ -34,13 +34,7 @@ namespace SkinSyncMod.Interop
             InteropCapability.SettingsHub,
         };
 
-        /// <summary>同一 key 只输出一次警告，用于抑制重复的反射失败日志。</summary>
-        /// <remarks>
-        /// 只输出消息本身，不输出异常与堆栈。
-        /// 调用点分布在互不互斥的路径上（发送、接收器登记、各提供方自己的解析锁），
-        /// 因此键集合的读写必须串行化：HashSet 并发 Add 会破坏内部状态。
-        /// 日志输出放在锁外，避免宿主日志回调重入本入口时自锁。
-        /// </remarks>
+        /// <summary>按 key 去重输出单次警告日志。</summary>
         internal static void WarnOnce(string key, string message)
         {
             if (string.IsNullOrEmpty(key))
@@ -59,13 +53,7 @@ namespace SkinSyncMod.Interop
             Debug.LogWarning(Prefix + " " + message);
         }
 
-        /// <summary>输出一行启动摘要，格式为 [Interop] providers=[...] capabilities=[...] missing=[...]。</summary>
-        /// <remarks>
-        /// providers 列出全部已登记提供方及可用性（ok / off）；
-        /// capabilities 为 required 中已被可用提供方满足的位；
-        /// missing 为 required 中未被满足的位。
-        /// 能力名按枚举声明顺序输出，逗号分隔，不输出堆栈。
-        /// </remarks>
+        /// <summary>输出已注册提供方与能力满足情况的启动摘要。</summary>
         internal static void Report(IInteropRegistry registry, InteropCapability required)
         {
             if (registry == null)
@@ -104,7 +92,7 @@ namespace SkinSyncMod.Interop
             Debug.Log(line);
         }
 
-        /// <summary>把能力位格式化为逗号分隔的枚举名，按枚举声明顺序；无能力时返回空字符串。</summary>
+        /// <summary>将能力标志位格式化为逗号分隔的名称字符串。</summary>
         internal static string FormatCapabilities(InteropCapability capabilities)
         {
             StringBuilder names = new StringBuilder();

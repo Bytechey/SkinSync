@@ -7,29 +7,25 @@ using UnityEngine.UI;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 主菜单按钮注入：克隆原版 loadButton 挂到 PreRunScript.transform 下，
-    /// 生命周期跟随 PreRunScript，PreGen scene 重载时也会再次注入兜底。
-    /// </summary>
+    /// <summary>向主菜单注入打开 SkinSync 面板的入口按钮。</summary>
     internal static class MenuButtonInjector
     {
         private const string InjectedName = "SkinSync_MenuButton";
 
         private static Action _onClick;
-        /// <summary>注入后的按钮 RectTransform；patch AdaptiveButton.overlayActive 时用来阻穿透。</summary>
         internal static RectTransform InjectedRect;
 
         internal static void Setup(Action onClick)
         {
             _onClick = onClick;
-            // SkinSync 主 Harmony 实例已经 PatchAll 过 [HarmonyPatch] 类型，
-            // PreRunScriptStartPatch 会自动被收，无需在此再 new 一个 Harmony。
             SceneManager.sceneLoaded += OnSceneLoaded;
         }
 
         internal static void Dispose()
         {
             try { SceneManager.sceneLoaded -= OnSceneLoaded; } catch { }
+            InjectedRect = null;
+            _onClick = null;
         }
 
         private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
@@ -83,7 +79,6 @@ namespace SkinSyncMod
             CleanupLoadButtonChildren(clone);
             ReplaceAllTexts(clone, SkinSyncI18n.T("app.menu_button"));
 
-            // 主菜单按钮位置：右上角内嵌（保持距顶 240，避开主菜单中央堆叠的 5 个 AdaptiveButton）。
             var rt = clone.GetComponent<RectTransform>();
             if (rt != null)
             {
@@ -181,6 +176,7 @@ namespace SkinSyncMod
         }
     }
 
+    /// <summary>在 PreRunScript.Start 后触发主菜单入口按钮注入。</summary>
     [HarmonyPatch(typeof(PreRunScript), "Start")]
     internal static class SkinSyncPreRunScriptStartPatch
     {

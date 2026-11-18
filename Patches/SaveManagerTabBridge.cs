@@ -3,7 +3,7 @@ using HarmonyLib;
 
 namespace SkinSyncMod.Patches
 {
-    /// <summary>反射对接 SaveManager.ExternalTabRegistry 把皮肤同步面板嵌入侧栏分页。</summary>
+    /// <summary>通过反射将 SkinSync 面板注册为 CuSaveManager 侧栏外部页签。</summary>
     internal static class SaveManagerTabBridge
     {
         internal static bool Register(SkinSyncWindow window)
@@ -14,7 +14,7 @@ namespace SkinSyncMod.Patches
                 if (type == null) return false;
                 Action draw = window.DrawEmbedded;
                 Func<string> title = () => SkinSyncI18n.T("app.name");
-                Func<string> status = () => "由 SkinSync 提供 · v" + SkinSync.Version;
+                Func<string> status = () => SkinSyncI18n.F("bridge.status_by_skinsync", SkinSync.Version);
                 var fn3 = AccessTools.Method(type, "Register", new[] { typeof(Func<string>), typeof(Action), typeof(Func<string>) });
                 if (fn3 != null) { fn3.Invoke(null, new object[] { title, draw, status }); return true; }
                 var fn = AccessTools.Method(type, "Register", new[] { typeof(Func<string>), typeof(Action) });

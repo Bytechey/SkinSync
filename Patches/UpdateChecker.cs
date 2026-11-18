@@ -1,14 +1,13 @@
-using BepInEx.Bootstrap;
 using System;
 using System.Collections;
+using BepInEx.Bootstrap;
+using Newtonsoft.Json.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
 
 namespace SkinSyncMod.Patches
 {
-    /// <summary>
-    /// 启动时拉取 GitHub releases/latest 比对当前 mod 版本，发现新版即在屏幕右上角显示红字提示并提供打开 release 页的按钮。
-    /// </summary>
+    /// <summary>启动后检查 GitHub 最新版本并在发现新版本时绘制界面跳转提示。</summary>
     [DisallowMultipleComponent]
     public class UpdateChecker : MonoBehaviour
     {
@@ -21,13 +20,26 @@ namespace SkinSyncMod.Patches
         private static string _currentVersion = "";
         private static string _latestTag = "";
         private static bool _updateAvailable;
+        private static GUIStyle _noticeStyle;
 
         internal static bool Enabled = true;
 
         private void Start()
         {
+            TryStartCheck();
+        }
+
+        private void Update()
+        {
+            if (!_checked && Enabled)
+            {
+                TryStartCheck();
+            }
+        }
+
+        private void TryStartCheck()
+        {
             if (_checked || !Enabled) return;
-            _checked = true;
 
             try
             {
@@ -37,9 +49,11 @@ namespace SkinSyncMod.Patches
             catch (Exception ex)
             {
                 SkinSyncMod.ModLog.Warning("UpdateChecker init failed: " + ex.Message);
+                _checked = true;
                 return;
             }
 
+            _checked = true;
             StartCoroutine(CheckForUpdates());
         }
 
@@ -47,6 +61,7 @@ namespace SkinSyncMod.Patches
         {
             using (UnityWebRequest www = UnityWebRequest.Get(ApiUrl))
             {
+                www.timeout = 10;
                 www.SetRequestHeader("User-Agent", "SkinSyncMod");
                 yield return www.SendWebRequest();
 
@@ -56,14 +71,17 @@ namespace SkinSyncMod.Patches
                     yield break;
                 }
 
-                string json = www.downloadHandler.text;
-                const string key = "\"tag_name\":\"";
-                int idx = json.IndexOf(key, StringComparison.Ordinal);
-                if (idx < 0) yield break;
-                int start = idx + key.Length;
-                int end = json.IndexOf('"', start);
-                if (end <= start) yield break;
-                _latestTag = json.Substring(start, end - start);
+                try
+                {
+                    var root = JObject.Parse(www.downloadHandler.text);
+                    _latestTag = root["tag_name"]?.ToString() ?? "";
+                }
+                catch
+                {
+                    yield break;
+                }
+
+                if (string.IsNullOrEmpty(_latestTag)) yield break;
 
                 if (IsNewer(_currentVersion, _latestTag))
                 {
@@ -85,11 +103,10 @@ namespace SkinSyncMod.Patches
             return Version.TryParse(cur, out Version vc) && Version.TryParse(lat, out Version vl) && vl > vc;
         }
 
-        private void OnGUI()
+        private static GUIStyle EnsureStyle()
         {
-            if (!_updateAvailable || !Enabled) return;
-
-            var style = new GUIStyle(GUI.skin.label)
+            if (_noticeStyle != null) return _noticeStyle;
+            _noticeStyle = new GUIStyle(GUI.skin.label)
             {
                 fontSize = 26,
                 fontStyle = FontStyle.Bold,
@@ -99,14 +116,23 @@ namespace SkinSyncMod.Patches
                 hover = { textColor = new Color(1f, 0.55f, 0.55f) },
                 active = { textColor = new Color(1f, 0.2f, 0.2f) },
             };
+            return _noticeStyle;
+        }
 
-            string text = $"SkinSync 有新版本：{_latestTag}（点击此处打开 release 页）";
+        private void OnGUI()
+        {
+            if (!_updateAvailable || !Enabled) return;
+
+            var style = EnsureStyle();
+            string text = SkinSyncI18n.F("update.notice", _latestTag);
             float x = 32f;
             float y = Screen.height * 0.12f + UpdateNoticeSlot * 40f;
             Vector2 size = style.CalcSize(new GUIContent(text));
             var rect = new Rect(x, y, size.x + 8f, size.y + 4f);
             if (GUI.Button(rect, text, style))
-                Application.OpenURL(ReleasesUrl);
+            {
+                try { Application.OpenURL(ReleasesUrl); } catch { }
+            }
         }
     }
 }

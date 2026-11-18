@@ -4,15 +4,10 @@ using UnityEngine;
 
 namespace SkinSyncMod.Network
 {
-    /// <summary>皮肤同步的发送入口：全部发送经 Interop 通道契约，无活动会话时静默返回。</summary>
-    /// <remarks>
-    /// 发送一律以 SessionConsumer.IsRunning 为前提：无活动会话时贸然发送会在目标插件的网络层触发空引用崩溃。
-    /// 消息体由 SkinMessageCodec 按字段写入 IInteropWriter，包名与子 ID 由 ChannelConsumer 统一处理。
-    /// 字节数组负载受契约长度前缀限制（单包上限 65535 字节），超长皮肤包直接跳过并记一条警告，避免发出解析错位的数据包。
-    /// </remarks>
+    /// <summary>向服务端或指定客户端发送各类皮肤同步数据包。</summary>
     internal static class MultiplayerSender
     {
-        /// <summary>客户端向服务端上报自己的皮肤。charType 由本地身体自动填入。</summary>
+        /// <summary>向服务端上报本机当前皮肤与角色类型。</summary>
         public static void SendSkinChange(uint netId, string skinID)
         {
             if (!SessionConsumer.IsRunning)
@@ -21,8 +16,6 @@ namespace SkinSyncMod.Network
                 return;
             }
 
-            // netId 为 0 表示本地实体尚未被分配网络 ID（进图瞬间常见）。
-            // 这种包发出去必然被服务端的 callerNetId 校验判为"冒充他人"，直接丢弃并留痕。
             if (!IsNetIdReady(netId, skinID, "皮肤切换"))
             {
                 return;
@@ -41,7 +34,6 @@ namespace SkinSyncMod.Network
             ChannelConsumer.SendToServer(writer);
         }
 
-        /// <summary>netId 是否已分配；未分配时记一条诊断，避免发必然被主机拒绝的包。</summary>
         private static bool IsNetIdReady(uint netId, string skinID, string what)
         {
             if (netId != 0)
@@ -53,7 +45,6 @@ namespace SkinSyncMod.Network
             return false;
         }
 
-        /// <summary>取某个 netId 对应身体的 charType；拿不到返回 0（未知）。</summary>
         private static int CharTypeOf(uint netId)
         {
             if (!RosterConsumer.TryGetNetBodyFromId(netId, out _, out GameObject chara, out _) || chara == null) return 0;
@@ -61,6 +52,7 @@ namespace SkinSyncMod.Network
             return body != null ? body.charType : 0;
         }
 
+        /// <summary>向服务端上报单个配件的显隐与变换覆盖。</summary>
         public static void SendAccessory(uint netId, string skinID, string accId,
             bool enabled, int offX, int offY, float rotation, int zOrder)
         {
@@ -82,12 +74,10 @@ namespace SkinSyncMod.Network
             ChannelConsumer.SendToServer(writer);
         }
 
-        public static void SendTailFromConfig(uint netId, string skinID)
+        /// <summary>按当前本地配置生成指定实体与皮肤的尾巴参数同步消息体。</summary>
+        internal static TailSyncMessage BuildLocalTailMessage(uint netId, string skinID)
         {
-            if (!SessionConsumer.IsRunning) return;
-            if (!IsNetIdReady(netId, skinID, "尾巴同步")) return;
-            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.TailSyncMessageId);
-            SkinMessageCodec.WriteTail(writer, new TailSyncMessage
+            return new TailSyncMessage
             {
                 netId = netId,
                 skinID = skinID,
@@ -109,7 +99,16 @@ namespace SkinSyncMod.Network
                 windFreq = TailDeformConfig.WindFreq,
                 windAmp = TailDeformConfig.WindAmp,
                 speedDisturb = TailDeformConfig.SpeedDisturb,
-            });
+            };
+        }
+
+        /// <summary>从当前 TailDeformConfig 读取快照并上报给服务端。</summary>
+        public static void SendTailFromConfig(uint netId, string skinID)
+        {
+            if (!SessionConsumer.IsRunning) return;
+            if (!IsNetIdReady(netId, skinID, "尾巴同步")) return;
+            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.TailSyncMessageId);
+            SkinMessageCodec.WriteTail(writer, BuildLocalTailMessage(netId, skinID));
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.TailSyncMessageId, "服务端");
             ChannelConsumer.SendToServer(writer);
         }
@@ -122,13 +121,20 @@ namespace SkinSyncMod.Network
                 return;
             }
 
+            int charType = CharTypeOf(netId);
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
-            SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage { skinID = skinID, netId = netId });
+            SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage
+            {
+                skinID = skinID,
+                netId = netId,
+                charType = charType,
+            });
             CommsTrace.HostBroadcast(skinID, netId, -1, 0);
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "全部客户端");
             ChannelConsumer.Broadcast(writer);
         }
 
+        /// <summary>服务端向单个客户端单播指定实体的皮肤状态。</summary>
         public static void ServerSendSkinChangeToClient(uint targetClientId, uint netId, string skinID)
         {
             if (!SessionConsumer.IsRunning) return;
@@ -142,6 +148,26 @@ namespace SkinSyncMod.Network
             });
             CommsTrace.HostUnicast(targetClientId, skinID, netId, charType);
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "客户端 " + targetClientId);
+            ChannelConsumer.SendToClient((ushort)targetClientId, writer);
+        }
+
+        /// <summary>服务端向单个客户端单播指定实体的配件覆盖状态。</summary>
+        public static void ServerSendAccessoryToClient(uint targetClientId, AccessorySyncMessage msg)
+        {
+            if (!SessionConsumer.IsRunning) return;
+            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.AccessorySyncMessageId);
+            SkinMessageCodec.WriteAccessory(writer, msg);
+            DebugMessageTrace.Sent(writer, SkinNetworkIDs.AccessorySyncMessageId, "客户端 " + targetClientId);
+            ChannelConsumer.SendToClient((ushort)targetClientId, writer);
+        }
+
+        /// <summary>服务端向单个客户端单播指定实体的尾巴物理参数。</summary>
+        public static void ServerSendTailToClient(uint targetClientId, TailSyncMessage msg)
+        {
+            if (!SessionConsumer.IsRunning) return;
+            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.TailSyncMessageId);
+            SkinMessageCodec.WriteTail(writer, msg);
+            DebugMessageTrace.Sent(writer, SkinNetworkIDs.TailSyncMessageId, "客户端 " + targetClientId);
             ChannelConsumer.SendToClient((ushort)targetClientId, writer);
         }
 
@@ -163,31 +189,102 @@ namespace SkinSyncMod.Network
             ChannelConsumer.SendToClient((ushort)targetClientId, writer);
         }
 
-        public static void SendSkinPackData(byte[] payload, bool allowPersist)
+        private static uint _nextTransferId = 1;
+
+        /// <summary>客户端向服务端上传皮肤包字节流，超过单包上限时自动分片发送。</summary>
+        public static bool SendSkinPackData(byte[] payload, bool allowPersist)
+        {
+            if (!SessionConsumer.IsRunning || payload == null || payload.Length == 0) return false;
+            if (!IsPayloadWithinLimit(payload)) return false;
+
+            if (payload.Length <= SkinPackCodec.SINGLE_PACKET_LIMIT)
+            {
+                IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
+                SkinMessageCodec.WriteSkinPackData(writer, new SkinPackDataMessage { payload = payload, allowPersist = allowPersist });
+                DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinPackDataMessageId, "服务端");
+                ChannelConsumer.SendToServer(writer);
+                return true;
+            }
+
+            SendChunked(payload, allowPersist, "服务端", writer => ChannelConsumer.SendToServer(writer));
+            return true;
+        }
+
+        /// <summary>服务端向指定客户端单播皮肤包字节流，超过单包上限时自动分片发送。</summary>
+        public static bool ServerSendSkinPackDataToClient(uint targetClientId, byte[] payload, bool allowPersist)
+        {
+            if (!SessionConsumer.IsRunning || payload == null || payload.Length == 0) return false;
+            if (!IsPayloadWithinLimit(payload)) return false;
+
+            string targetLabel = "客户端 " + targetClientId;
+            if (payload.Length <= SkinPackCodec.SINGLE_PACKET_LIMIT)
+            {
+                IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
+                SkinMessageCodec.WriteSkinPackData(writer, new SkinPackDataMessage { payload = payload, allowPersist = allowPersist });
+                DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinPackDataMessageId, targetLabel);
+                ChannelConsumer.SendToClient((ushort)targetClientId, writer);
+                return true;
+            }
+
+            SendChunked(payload, allowPersist, targetLabel, writer => ChannelConsumer.SendToClient((ushort)targetClientId, writer));
+            return true;
+        }
+
+        /// <summary>服务端将已校验的皮肤包转发给除来源客户端外的其他远端客户端。</summary>
+        public static void ServerForwardSkinPackExcept(uint excludeClientId, byte[] payload, bool allowPersist)
         {
             if (!SessionConsumer.IsRunning || payload == null || payload.Length == 0) return;
             if (!IsPayloadWithinLimit(payload)) return;
-            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
-            SkinMessageCodec.WriteSkinPackData(writer, new SkinPackDataMessage { payload = payload, allowPersist = allowPersist });
-            DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinPackDataMessageId, "服务端");
-            ChannelConsumer.SendToServer(writer);
+
+            if (payload.Length <= SkinPackCodec.SINGLE_PACKET_LIMIT)
+            {
+                IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
+                SkinMessageCodec.WriteSkinPackData(writer, new SkinPackDataMessage { payload = payload, allowPersist = allowPersist });
+                ChannelConsumer.ForwardExcept((ushort)excludeClientId, writer, SkinNetworkIDs.SkinPackDataMessageId);
+                return;
+            }
+
+            SendChunked(payload, allowPersist, "其他客户端", writer =>
+                ChannelConsumer.ForwardExcept((ushort)excludeClientId, writer, SkinNetworkIDs.SkinPackChunkMessageId));
         }
 
-        public static void ServerSendSkinPackDataToClient(uint targetClientId, byte[] payload, bool allowPersist)
+        private static void SendChunked(byte[] payload, bool allowPersist, string targetLabel, System.Action<IInteropWriter> send)
         {
-            if (!SessionConsumer.IsRunning || payload == null || payload.Length == 0) return;
-            if (!IsPayloadWithinLimit(payload)) return;
-            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
-            SkinMessageCodec.WriteSkinPackData(writer, new SkinPackDataMessage { payload = payload, allowPersist = allowPersist });
-            DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinPackDataMessageId, "客户端 " + targetClientId);
-            ChannelConsumer.SendToClient((ushort)targetClientId, writer);
+            uint transferId = _nextTransferId++;
+            if (_nextTransferId == 0) _nextTransferId = 1;
+
+            int totalBytes = payload.Length;
+            int chunkSize = SkinPackCodec.CHUNK_PAYLOAD_SIZE;
+            ushort totalChunks = (ushort)((totalBytes + chunkSize - 1) / chunkSize);
+            uint crc = SkinPackChunkAssembler.ComputeCrc32(payload);
+
+            for (ushort idx = 0; idx < totalChunks; idx++)
+            {
+                int offset = idx * chunkSize;
+                int len = System.Math.Min(chunkSize, totalBytes - offset);
+                var slice = new byte[len];
+                System.Buffer.BlockCopy(payload, offset, slice, 0, len);
+
+                IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackChunkMessageId);
+                SkinMessageCodec.WriteSkinPackChunk(writer, new SkinPackChunkMessage
+                {
+                    transferId = transferId,
+                    chunkIndex = idx,
+                    totalChunks = totalChunks,
+                    totalBytes = totalBytes,
+                    crc32 = crc,
+                    allowPersist = allowPersist,
+                    data = slice,
+                });
+                DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinPackChunkMessageId, targetLabel);
+                send(writer);
+            }
         }
 
-        /// <summary>检查皮肤包长度；超过契约写入器的 2 字节长度前缀上限（65535）时跳过发送。</summary>
         private static bool IsPayloadWithinLimit(byte[] payload)
         {
-            if (payload.Length <= ushort.MaxValue) return true;
-            SkinSyncMod.ModLog.Warning($"皮肤包 {payload.Length} bytes 超过单包上限 {ushort.MaxValue}，已跳过发送。");
+            if (payload.Length <= SkinPackCodec.MAX_PACK_SIZE) return true;
+            SkinSyncMod.ModLog.Warning($"皮肤包 {payload.Length} bytes 超过总上限 {SkinPackCodec.MAX_PACK_SIZE}，已跳过发送。");
             return false;
         }
     }

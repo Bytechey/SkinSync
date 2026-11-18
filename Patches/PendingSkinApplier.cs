@@ -1,31 +1,62 @@
-using SkinSyncMod.Interop.Consumers;
-using SkinSyncMod.Network;
 using System.Collections.Generic;
+using SkinSyncMod.Interop.Consumers;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace SkinSyncMod.Patches
 {
-    /// <summary>子端可能先收到 SkinChange，此时对应玩家的 NetBody 还没注册；本组件每 0.25 秒重试待应用条目，对应 Together.NetBody.TryGetNetBodyFromId 成功即应用并清掉。</summary>
+    /// <summary>缓存尚未完成 NetBody 注册的远端皮肤请求并定时重试应用。</summary>
     [DisallowMultipleComponent]
     public class PendingSkinApplier : MonoBehaviour
     {
-        private static readonly Dictionary<uint, string> _pending = new Dictionary<uint, string>();
+        private struct PendingEntry
+        {
+            public string SkinId;
+            public int CharType;
+            public float EnqueuedAt;
+        }
+
+        private static readonly Dictionary<uint, PendingEntry> _pending = new Dictionary<uint, PendingEntry>();
         private const float TickIntervalSec = 0.25f;
         private const float MaxWaitSec = 30f;
         private float _nextTick;
-        private static readonly Dictionary<uint, float> _enqueuedAt = new Dictionary<uint, float>();
 
-        public static void Enqueue(uint netId, string skinId, string reason = null)
+        /// <summary>将暂未找到实体对象的皮肤同步请求加入重试队列。</summary>
+        public static void Enqueue(uint netId, string skinId, string reason = null, int charType = 0)
         {
-            if (string.IsNullOrEmpty(skinId)) return;
-            _pending[netId] = skinId;
-            _enqueuedAt[netId] = Time.unscaledTime;
-            SkinSyncMod.ModLog.Debug($"延迟应用入队：netId {netId} → {skinId}，队列 {_pending.Count} 条，等待原因：{(string.IsNullOrEmpty(reason) ? "NetBody 未注册" : reason)}");
+            if (netId == 0 || string.IsNullOrEmpty(skinId)) return;
+            _pending[netId] = new PendingEntry
+            {
+                SkinId = skinId,
+                CharType = charType,
+                EnqueuedAt = Time.unscaledTime,
+            };
+            SkinSyncMod.ModLog.Debug($"延迟应用入队：netId {netId} -> {skinId}，队列 {_pending.Count} 条，原因：{(string.IsNullOrEmpty(reason) ? "NetBody 未注册" : reason)}");
+        }
+
+        private void OnEnable()
+        {
+            SceneManager.sceneLoaded += OnSceneLoaded;
+        }
+
+        private void OnDisable()
+        {
+            SceneManager.sceneLoaded -= OnSceneLoaded;
+        }
+
+        private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+        {
+            _pending.Clear();
         }
 
         private void Update()
         {
             if (_pending.Count == 0) return;
+            if (!SessionConsumer.IsRunning)
+            {
+                _pending.Clear();
+                return;
+            }
             if (Time.unscaledTime < _nextTick) return;
             _nextTick = Time.unscaledTime + TickIntervalSec;
 
@@ -35,51 +66,49 @@ namespace SkinSyncMod.Patches
             {
                 if (RosterConsumer.TryGetNetBodyFromId(kv.Key, out _, out GameObject chara, out _) && chara != null)
                 {
-                    SkinApplier.ApplySkinToPlayer(chara, kv.Value);
-                    SkinSyncMod.ModLog.Info($"延迟应用：netId {kv.Key} → {kv.Value} 成功");
+                    AccessoryAttacher.BindPendingOverrides(kv.Key, chara);
+                    TailDeformConfig.BindPendingOverrides(kv.Key, chara);
+                    SkinApplier.ApplySkinToPlayer(chara, kv.Value.SkinId, kv.Value.CharType);
+                    SkinSyncMod.ModLog.Info($"延迟应用：netId {kv.Key} -> {kv.Value.SkinId} 成功");
                     (done ?? (done = new List<uint>())).Add(kv.Key);
                 }
-                else if (_enqueuedAt.TryGetValue(kv.Key, out float at) && Time.unscaledTime - at > MaxWaitSec)
+                else if (Time.unscaledTime - kv.Value.EnqueuedAt > MaxWaitSec)
                 {
-                    SkinSyncMod.ModLog.Info($"延迟应用：netId {kv.Key} → {kv.Value} 超过 {MaxWaitSec}s 未注册，放弃");
+                    AccessoryAttacher.DropPendingOverrides(kv.Key);
+                    TailDeformConfig.DropPendingOverrides(kv.Key);
+                    SkinSyncMod.ModLog.Info($"延迟应用：netId {kv.Key} -> {kv.Value.SkinId} 超过 {MaxWaitSec}s 未注册，放弃");
                     (expired ?? (expired = new List<uint>())).Add(kv.Key);
                 }
             }
-            if (done != null) foreach (var k in done) { _pending.Remove(k); _enqueuedAt.Remove(k); }
-            if (expired != null) foreach (var k in expired) { _pending.Remove(k); _enqueuedAt.Remove(k); }
+            if (done != null) foreach (var k in done) _pending.Remove(k);
+            if (expired != null) foreach (var k in expired) _pending.Remove(k);
 
             if (done == null && expired == null)
             {
-                SkinSyncMod.ModLog.Debug($"延迟应用重试：队列 {_pending.Count} 条，仍等待 NetBody 注册：{DescribePending()}");
+                SkinSyncMod.ModLog.Debug($"延迟应用重试：队列 {_pending.Count} 条，等待注册：{DescribePending()}");
             }
             else
             {
                 if (done != null)
                 {
-                    SkinSyncMod.ModLog.Debug($"延迟应用出队：netId {string.Join(", ", done)} 已应用，队列剩余 {_pending.Count} 条");
+                    SkinSyncMod.ModLog.Debug($"延迟应用出队：netId {string.Join(", ", done)} 已应用，剩余 {_pending.Count} 条");
                 }
-
                 if (expired != null)
                 {
-                    SkinSyncMod.ModLog.Debug($"延迟应用出队：netId {string.Join(", ", expired)} 超时放弃，队列剩余 {_pending.Count} 条");
+                    SkinSyncMod.ModLog.Debug($"延迟应用出队：netId {string.Join(", ", expired)} 超时放弃，剩余 {_pending.Count} 条");
                 }
             }
         }
 
-        /// <summary>Debug 构建用：列出队列里仍在等待的 netId、皮肤与已等待时长。</summary>
         private static string DescribePending()
         {
             var text = new System.Text.StringBuilder();
             foreach (var kv in _pending)
             {
                 if (text.Length > 0) text.Append("；");
-                text.Append("netId ").Append(kv.Key).Append(" → ").Append(kv.Value);
-                if (_enqueuedAt.TryGetValue(kv.Key, out float at))
-                {
-                    text.Append("（已等待 ").Append((Time.unscaledTime - at).ToString("0.0")).Append("s）");
-                }
+                text.Append("netId ").Append(kv.Key).Append(" -> ").Append(kv.Value.SkinId)
+                    .Append("（已等待 ").Append((Time.unscaledTime - kv.Value.EnqueuedAt).ToString("0.0")).Append("s）");
             }
-
             return text.ToString();
         }
     }

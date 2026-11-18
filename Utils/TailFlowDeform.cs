@@ -2,14 +2,13 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 用 Verlet 物理链替换尾巴 SpriteRenderer，模拟布条 / 关节链摆动；参数从 TailDeformConfig 读取。
-    /// </summary>
+    /// <summary>使用 Verlet 物理链将角色尾巴渲染为动态摆动的带状网格。</summary>
     [DisallowMultipleComponent]
     public class TailFlowDeform : MonoBehaviour
     {
         private SpriteRenderer _sr;
         private Body _body;
+        private GameObject _owner;
         private GameObject _meshGo;
         private MeshFilter _mf;
         private MeshRenderer _mr;
@@ -33,16 +32,25 @@ namespace SkinSyncMod
         private float[] _segHalf;
         private float[] _segCenter;
 
+        internal void BindOwner(GameObject owner)
+        {
+            if (owner != null) _owner = owner;
+        }
+
         private void Awake()
         {
             _sr = GetComponent<SpriteRenderer>();
             _body = GetComponentInParent<Body>();
+            if (_owner == null && _body != null)
+            {
+                _owner = _body.transform.parent != null ? _body.transform.parent.gameObject : _body.gameObject;
+            }
             BuildMeshChild();
         }
 
         private void BuildMeshChild()
         {
-            _meshGo = new GameObject("TailDeformMesh");
+            _meshGo = new GameObject("TailDeformMesh") { hideFlags = HideFlags.HideAndDontSave };
             Transform parent = _body != null ? _body.transform : transform;
             _meshGo.transform.SetParent(parent, worldPositionStays: false);
             _meshGo.transform.localPosition = Vector3.zero;
@@ -54,15 +62,15 @@ namespace SkinSyncMod
             _mat = refSr != null && refSr.sharedMaterial != null
                 ? new Material(refSr.sharedMaterial)
                 : new Material(Shader.Find("Sprites/Default"));
+            _mat.hideFlags = HideFlags.HideAndDontSave;
             ResetTransientLimbUniforms(_mat);
             _mr.sharedMaterial = _mat;
-            _mesh = new Mesh { name = "TailDeformMesh" };
+            _mesh = new Mesh { name = "TailDeformMesh", hideFlags = HideFlags.HideAndDontSave };
             _mesh.MarkDynamic();
             _mf.sharedMesh = _mesh;
         }
 
-        /// <summary>克隆肢体 lit material 后归零 Limb.Update 每帧驱动的 transient uniform，避免偷到肢体瞬时状态（如 Dirtyness）卡死污渍 alpha 形成断口。</summary>
-        private static void ResetTransientLimbUniforms(Material mat)
+        internal static void ResetTransientLimbUniforms(Material mat)
         {
             if (mat == null) return;
             string[] keys = { "_BloodOverlay", "_SkinDamage", "_MuscleDamage", "_InfectionPercent", "_SnowAmount", "_Dirtyness", "_Wetness", "_Pain" };
@@ -83,23 +91,24 @@ namespace SkinSyncMod
             return null;
         }
 
-        /// <summary>
-        /// 按当前 sprite 重建 ribbon 拓扑：逐段扫描实际像素求主轴范围与每段半宽 / 垂直中心，UV 贴合内容；扫描失败回退整张 bounds 等宽。
-        /// </summary>
-        private void RebuildForSprite(Sprite sprite)
+        private void RebuildForSprite(Sprite sprite, int segments)
         {
             _cachedSpriteId = sprite.GetInstanceID();
             var bounds = sprite.bounds;
             bool axisIsHorizontal = bounds.size.x >= bounds.size.y;
-            int n = Mathf.Max(2, TailDeformConfig.Segments);
+            int n = Mathf.Max(2, segments);
+            bool preserveBones = _physicsInited && _bonePos != null && _bonePos.Length == n + 1;
 
             int vCount = (n + 1) * 2;
             int tCount = n * 6;
             _verts = new Vector3[vCount];
             _uvs = new Vector2[vCount];
             _tris = new int[tCount];
-            _bonePos = new Vector2[n + 1];
-            _bonePrev = new Vector2[n + 1];
+            if (!preserveBones)
+            {
+                _bonePos = new Vector2[n + 1];
+                _bonePrev = new Vector2[n + 1];
+            }
             _segHalf = new float[n + 1];
             _segCenter = new float[n + 1];
 
@@ -123,10 +132,9 @@ namespace SkinSyncMod
             _mr.sortingLayerID = _sr.sortingLayerID;
             _mr.sortingOrder = _sr.sortingOrder;
             _mat.color = _sr.color;
-            _physicsInited = false;
+            if (!preserveBones) _physicsInited = false;
         }
 
-        /// <summary>逐段扫描贴图像素，填充主轴方向 / 长度、每段半宽 _segHalf、垂直中心 _segCenter 与逐段 UV；纹理不可读返回 false。</summary>
         private bool BuildProfileFromPixels(Sprite sprite, bool axisIsHorizontal, int n)
         {
             var tex = sprite.texture;
@@ -163,7 +171,6 @@ namespace SkinSyncMod
             }
             if (firstAxis < 0) return false;
 
-            // pivot 是整图坐标，扫描得到的轴/cross 是 texRect 局部坐标（Tight sprite 的 texRect 非整图），统一减去 texRect 原点。
             float pivotAxisPx = (axisIsHorizontal ? sprite.pivot.x : sprite.pivot.y) - (axisIsHorizontal ? texRect.x : texRect.y);
             bool rootAtLow = Mathf.Abs(firstAxis - pivotAxisPx) <= Mathf.Abs(lastAxis - pivotAxisPx);
 
@@ -213,7 +220,7 @@ namespace SkinSyncMod
                 }
             }
 
-            // segCenter 以根端段为基准归零：根部贴合物理链锚点，段间保留相对偏移，避免内容偏离 pivot 时整条尾巴飞离接缝。
+            // 以根端偏移归零，保证尾根贴合挂载锚点并保留段间相对曲率。
             float baseCenter = _segCenter[0];
             for (int i = 0; i <= n; i++) _segCenter[i] -= baseCenter;
 
@@ -251,12 +258,12 @@ namespace SkinSyncMod
         {
             if (axisIsHorizontal)
             {
-                _axisLen = bounds.extents.x;
+                _axisLen = bounds.size.x;
                 _halfWide = bounds.extents.y;
             }
             else
             {
-                _axisLen = bounds.extents.y;
+                _axisLen = bounds.size.y;
                 _halfWide = bounds.extents.x;
             }
             _segLen = _axisLen / n;
@@ -265,8 +272,6 @@ namespace SkinSyncMod
             float u1 = (texRect.x + texRect.width) / tex.width;
             float v0n = texRect.y / tex.height;
             float v1n = (texRect.y + texRect.height) / tex.height;
-            float uMid = (u0 + u1) * 0.5f;
-            float vMid = (v0n + v1n) * 0.5f;
             for (int i = 0; i <= n; i++)
             {
                 float t = (float)i / n;
@@ -274,13 +279,13 @@ namespace SkinSyncMod
                 _segCenter[i] = 0f;
                 if (axisIsHorizontal)
                 {
-                    float u = Mathf.Lerp(uMid, u0, t);
+                    float u = Mathf.Lerp(u1, u0, t);
                     _uvs[i * 2 + 0] = new Vector2(u, v0n);
                     _uvs[i * 2 + 1] = new Vector2(u, v1n);
                 }
                 else
                 {
-                    float v = Mathf.Lerp(vMid, v0n, t);
+                    float v = Mathf.Lerp(v1n, v0n, t);
                     _uvs[i * 2 + 0] = new Vector2(u0, v);
                     _uvs[i * 2 + 1] = new Vector2(u1, v);
                 }
@@ -298,24 +303,23 @@ namespace SkinSyncMod
             _physicsInited = true;
         }
 
-        /// <summary>
-        /// 每帧步进物理链并写入 ribbon mesh：固定子步迭代 Verlet + 距离 / 角度约束 + 前侧约束 + EMA 平滑。
-        /// </summary>
         private void LateUpdate()
         {
             if (_sr == null || _sr.sprite == null) return;
 
-            if (!TailDeformConfig.Enabled)
+            TailDeformParams cfg = TailDeformConfig.ResolveFor(_owner, _body);
+            if (!cfg.Enabled)
             {
                 if (!_sr.enabled) _sr.enabled = true;
-                if (_mr.enabled) _mr.enabled = false;
+                if (_mr != null && _mr.enabled) _mr.enabled = false;
                 return;
             }
+            if (_mr == null || _mesh == null || _mat == null) return;
             if (!_mr.enabled) _mr.enabled = true;
 
-            int wantSeg = Mathf.Max(2, TailDeformConfig.Segments);
+            int wantSeg = Mathf.Max(2, cfg.Segments);
             if (_sr.sprite.GetInstanceID() != _cachedSpriteId || _bonePos == null || _bonePos.Length != wantSeg + 1)
-                RebuildForSprite(_sr.sprite);
+                RebuildForSprite(_sr.sprite, wantSeg);
 
             if (_sr.enabled) _sr.enabled = false;
             _mat.color = _sr.color;
@@ -331,30 +335,30 @@ namespace SkinSyncMod
             if (dt <= 0f) return;
             int n = _bonePos.Length;
             float playerSpeed = (_body != null && _body.rb != null) ? Mathf.Abs(_body.rb.velocity.x) : 0f;
-            Vector2 gravity = new Vector2(TailDeformConfig.GravityX, TailDeformConfig.GravityY);
-            float baseDamping = Mathf.Clamp01(TailDeformConfig.Damping);
-            float speedDamping = Mathf.Max(0f, TailDeformConfig.SpeedDamping);
+            Vector2 gravity = new Vector2(cfg.GravityX, cfg.GravityY);
+            float baseDamping = Mathf.Clamp01(cfg.Damping);
+            float speedDamping = Mathf.Max(0f, cfg.SpeedDamping);
             float damping = Mathf.Clamp01(baseDamping + Mathf.Min(playerSpeed * speedDamping, 0.5f));
-            float maxBendRad = Mathf.Max(0f, TailDeformConfig.MaxBendDeg) * Mathf.Deg2Rad;
-            float stiffness = Mathf.Clamp01(TailDeformConfig.Stiffness);
-            int iters = Mathf.Max(1, TailDeformConfig.ConstraintIters);
-            float maxStep = Mathf.Max(0.001f, TailDeformConfig.MaxStep);
-            float smooth = Mathf.Clamp(TailDeformConfig.Smoothness, 0f, 0.99f);
+            float maxBendRad = Mathf.Max(0f, cfg.MaxBendDeg) * Mathf.Deg2Rad;
+            float stiffness = Mathf.Clamp01(cfg.Stiffness);
+            int iters = Mathf.Max(1, cfg.ConstraintIters);
+            float maxStep = Mathf.Max(0.001f, cfg.MaxStep);
+            float smooth = Mathf.Clamp(cfg.Smoothness, 0f, 0.99f);
 
             _bonePos[0] = root;
             _bonePrev[0] = root;
             Vector2 anchor1 = root + worldAxis * _segLen;
-            float anchorBlend = Mathf.Clamp01(TailDeformConfig.AnchorFollow);
+            float anchorBlend = Mathf.Clamp01(cfg.AnchorFollow);
             _bonePos[1] = Vector2.Lerp(_bonePos[1], anchor1, anchorBlend);
             _bonePrev[1] = Vector2.Lerp(_bonePrev[1], anchor1, anchorBlend);
 
             Vector2 perpWorld = Vector2.up;
-            float windFreq = TailDeformConfig.WindFreq + playerSpeed * 0.15f;
-            float baseAmp = TailDeformConfig.WindAmp + playerSpeed * TailDeformConfig.SpeedDisturb;
+            float windFreq = cfg.WindFreq + playerSpeed * 0.15f;
+            float baseAmp = cfg.WindAmp + playerSpeed * cfg.SpeedDisturb;
             _windPhase += dt * windFreq;
             _smoothBaseAmp = Mathf.Lerp(_smoothBaseAmp, baseAmp, 0.2f);
 
-            float maxFixedDt = Mathf.Max(0.005f, TailDeformConfig.MaxFixedDt);
+            float maxFixedDt = Mathf.Max(0.005f, cfg.MaxFixedDt);
             int subSteps = Mathf.Max(1, Mathf.CeilToInt(dt / maxFixedDt));
             float subDt = dt / subSteps;
             for (int step = 0; step < subSteps; step++)
@@ -404,9 +408,9 @@ namespace SkinSyncMod
                 }
             }
 
-            if (TailDeformConfig.FrontGuard)
+            if (cfg.FrontGuard)
             {
-                float margin = TailDeformConfig.FrontGuardMargin;
+                float margin = cfg.FrontGuardMargin;
                 for (int i = 2; i < n; i++)
                 {
                     Vector2 rel = _bonePos[i] - root;
@@ -452,6 +456,12 @@ namespace SkinSyncMod
             _mesh.uv = _uvs;
             _mesh.triangles = _tris;
             _mesh.RecalculateBounds();
+        }
+
+        private void OnDisable()
+        {
+            if (_mr != null) _mr.enabled = false;
+            if (_sr != null) _sr.enabled = true;
         }
 
         private void OnDestroy()

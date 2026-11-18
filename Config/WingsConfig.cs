@@ -1,12 +1,9 @@
 using System.IO;
 using Newtonsoft.Json;
-using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 解析皮肤目录下的 wings.json 配置。
-    /// </summary>
+    /// <summary>解析皮肤目录下的 wings.json 翅膀配置。</summary>
     public static class WingsConfigLoader
     {
         public struct Piece
@@ -17,15 +14,12 @@ namespace SkinSyncMod
             public int ZOrder;
         }
 
-        /// <summary>部位配置。</summary>
         public class Config
         {
             public Piece WingUL;
             public Piece WingDL;
             public Piece WingUR;
             public Piece WingDR;
-
-            /// <summary>是否为「没读到 wings.json」时的内置默认值。默认值不带作者意图，位置需要按角色几何重算。</summary>
             public bool IsDefault;
         }
 
@@ -38,19 +32,19 @@ namespace SkinSyncMod
             IsDefault = true,
         };
 
-        /// <summary>读取并解析 wings.json，文件缺失或失败时返回默认配置。</summary>
+        /// <summary>从磁盘路径读取翅膀配置，缺失或失败返回默认配置。</summary>
         public static Config Load(string path)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return Defaults();
             try { return Parse(File.ReadAllText(path)); }
             catch (System.Exception ex)
             {
-                SkinSyncMod.ModLog.Warning("wings.json parse failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("wings.json load failed: " + ex.Message);
                 return Defaults();
             }
         }
 
-        /// <summary>从 JSON 文本解析 wings.json；解析失败返回 Defaults()。给内存包 fallback 用。</summary>
+        /// <summary>从 JSON 文本解析翅膀配置，失败返回默认配置。</summary>
         public static Config Parse(string text)
         {
             var def = Defaults();
@@ -67,7 +61,11 @@ namespace SkinSyncMod
                     WingDR = ToPiece(raw.wingDR, def.WingDR),
                 };
             }
-            catch { return def; }
+            catch (System.Exception ex)
+            {
+                SkinSyncMod.ModLog.Warning("wings.json parse failed: " + ex.Message);
+                return def;
+            }
         }
 
         private static Piece ToPiece(RawPiece r, Piece fallback)

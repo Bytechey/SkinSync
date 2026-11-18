@@ -5,61 +5,44 @@ using UnityEngine;
 
 namespace SkinSyncMod.Character
 {
-    /// <summary>
-    /// 角色档案采集器：运行时从 Resources 读取所有角色 prefab，采集每个角色每个部位的贴图名与原生像素尺寸。
-    /// </summary>
-    /// <remarks>
-    /// 三条设计约束，全部来自游戏事实：
-    /// 1) 只读 prefab，不实例化——Resources.Load 拿到的是共享资产，任何改写都会污染后续 Utils.Create 生成的角色。
-    /// 2) charType 不靠手工映射，直接读 prefab 上 Body.charType（它本来就是序列化值）。
-    /// 3) 角色集合用 Resources.LoadAll 枚举（游戏自己在 ConsoleScript 里也这么干），新增角色无需改代码。
-    /// 采集结果用静态字段持有，避免场景切换的 UnloadUnusedAssets 把它回收。
-    /// </remarks>
+    /// <summary>从 Resources 采集所有角色预制体的部位贴图名与原生像素尺寸。</summary>
     internal static class CharacterCatalog
     {
-        /// <summary>角色 prefab 所在目录。</summary>
         private const string RootPath = "Special/Characters";
 
         private static List<CharacterProfile> _profiles;
         private static Dictionary<int, CharacterProfile> _byCharType;
         private static Dictionary<string, Vector2Int> _spriteSizes;
-        /// <summary>贴图名 → (部位键, 归属角色)。跨角色回退时用它反查「这张图属于哪个部位」。</summary>
         private static Dictionary<string, KeyValuePair<string, int>> _spriteOwners;
 
-        /// <summary>已采集的角色档案；未采集时为空列表。</summary>
         internal static IReadOnlyList<CharacterProfile> All
         {
             get
             {
                 EnsureLoaded();
-                return _profiles;
+                return _profiles ?? (IReadOnlyList<CharacterProfile>)Array.Empty<CharacterProfile>();
             }
         }
 
-        /// <summary>按 charType 取角色档案；未知 charType 返回 null（调用方应降级为"只显示原图"）。</summary>
+        /// <summary>按 charType 查询角色档案，未知类型返回 null。</summary>
         internal static CharacterProfile ForCharType(int charType)
         {
             EnsureLoaded();
-            return _byCharType.TryGetValue(charType, out var profile) ? profile : null;
+            return _byCharType != null && _byCharType.TryGetValue(charType, out var profile) ? profile : null;
         }
 
-        /// <summary>查某张贴图在游戏里的原生像素尺寸；未知贴图返回 false。</summary>
+        /// <summary>查询贴图在游戏预制体中的原生像素尺寸。</summary>
         internal static bool TryGetSpriteSize(string spriteName, out Vector2Int size)
         {
             EnsureLoaded();
             size = default;
-            return !string.IsNullOrEmpty(spriteName) && _spriteSizes.TryGetValue(spriteName, out size);
+            return !string.IsNullOrEmpty(spriteName) && _spriteSizes != null && _spriteSizes.TryGetValue(spriteName, out size);
         }
 
-        /// <summary>采集一次并缓存。多次调用无副作用。</summary>
+        /// <summary>加载并缓存全部角色档案。</summary>
         internal static void EnsureLoaded()
         {
             if (_profiles != null) return;
-
-            _profiles = new List<CharacterProfile>();
-            _byCharType = new Dictionary<int, CharacterProfile>();
-            _spriteSizes = new Dictionary<string, Vector2Int>(StringComparer.Ordinal);
-            _spriteOwners = new Dictionary<string, KeyValuePair<string, int>>(StringComparer.Ordinal);
 
             GameObject[] prefabs;
             try
@@ -72,9 +55,18 @@ namespace SkinSyncMod.Character
                 return;
             }
 
+            var profiles = new List<CharacterProfile>();
+            var byCharType = new Dictionary<int, CharacterProfile>();
+            var spriteSizes = new Dictionary<string, Vector2Int>(StringComparer.Ordinal);
+            var spriteOwners = new Dictionary<string, KeyValuePair<string, int>>(StringComparer.Ordinal);
+
             if (prefabs == null || prefabs.Length == 0)
             {
                 SkinSyncMod.ModLog.Warning($"未在 Resources/{RootPath} 下找到角色 prefab，跨角色贴图映射不可用。");
+                _profiles = profiles;
+                _byCharType = byCharType;
+                _spriteSizes = spriteSizes;
+                _spriteOwners = spriteOwners;
                 return;
             }
 
@@ -84,7 +76,7 @@ namespace SkinSyncMod.Character
                 if (prefab == null) continue;
 
                 Body body = prefab.GetComponentInChildren<Body>(true);
-                if (body == null) continue;                       // 目录下的非角色资源
+                if (body == null) continue;
 
                 var profile = new CharacterProfile
                 {
@@ -92,26 +84,30 @@ namespace SkinSyncMod.Character
                     PrefabPath = RootPath + "/" + prefab.name,
                 };
 
-                CollectLimbs(prefab, profile);
-                CollectFaces(prefab, profile);
-                CollectTail(prefab, profile);
+                CollectLimbs(prefab, profile, spriteSizes);
+                CollectFaces(prefab, profile, spriteSizes);
+                CollectTail(prefab, profile, spriteSizes);
 
-                if (profile.Limbs.Count == 0) continue;           // 结构不符，跳过
+                if (profile.Limbs.Count == 0) continue;
 
-                // 登记贴图归属，供按贴图名反查部位（表情走这条）
-                foreach (var kv in profile.Limbs) RegisterOwner(kv.Value, profile.CharType);
-                foreach (var kv in profile.Faces) RegisterOwner(kv.Value, profile.CharType);
-                if (profile.Tail != null) RegisterOwner(profile.Tail, profile.CharType);
+                foreach (var kv in profile.Limbs) RegisterOwner(spriteOwners, kv.Value, profile.CharType);
+                foreach (var kv in profile.Faces) RegisterOwner(spriteOwners, kv.Value, profile.CharType);
+                if (profile.Tail != null) RegisterOwner(spriteOwners, profile.Tail, profile.CharType);
 
-                if (!_byCharType.ContainsKey(profile.CharType))
+                if (!byCharType.ContainsKey(profile.CharType))
                 {
-                    _byCharType[profile.CharType] = profile;
+                    byCharType[profile.CharType] = profile;
                 }
-                _profiles.Add(profile);
+                profiles.Add(profile);
             }
+
+            _profiles = profiles;
+            _byCharType = byCharType;
+            _spriteSizes = spriteSizes;
+            _spriteOwners = spriteOwners;
         }
 
-        private static void CollectLimbs(GameObject prefab, CharacterProfile profile)
+        private static void CollectLimbs(GameObject prefab, CharacterProfile profile, Dictionary<string, Vector2Int> spriteSizes)
         {
             foreach (var limb in prefab.GetComponentsInChildren<Limb>(true))
             {
@@ -120,56 +116,56 @@ namespace SkinSyncMod.Character
                 if (string.IsNullOrEmpty(partKey) || profile.Limbs.ContainsKey(partKey)) continue;
 
                 SpriteRenderer renderer = limb.GetComponent<SpriteRenderer>();
-                PartBinding binding = MakeBinding(partKey, renderer);
+                PartBinding binding = MakeBinding(partKey, renderer, spriteSizes);
                 if (binding != null) profile.Limbs[partKey] = binding;
             }
         }
 
-        private static void CollectFaces(GameObject prefab, CharacterProfile profile)
+        private static void CollectFaces(GameObject prefab, CharacterProfile profile, Dictionary<string, Vector2Int> spriteSizes)
         {
             FacialExpression face = prefab.GetComponentInChildren<FacialExpression>(true);
             if (face == null) return;
 
-            AddFace(profile, PartKeyNames.DefaultHead, face.defaultHead);
-            AddFace(profile, PartKeyNames.DefaultHeadMouth, face.defaultHeadMouth);
-            AddFace(profile, PartKeyNames.DefaultHeadMouthHalf, face.defaultHeadMouthHalf);
-            AddFace(profile, PartKeyNames.EyesGone, face.eyesGone);
-            AddFace(profile, PartKeyNames.EyesGoneHealed, face.eyesGoneHealed);
+            AddFace(profile, PartKeyNames.DefaultHead, face.defaultHead, spriteSizes);
+            AddFace(profile, PartKeyNames.DefaultHeadMouth, face.defaultHeadMouth, spriteSizes);
+            AddFace(profile, PartKeyNames.DefaultHeadMouthHalf, face.defaultHeadMouthHalf, spriteSizes);
+            AddFace(profile, PartKeyNames.EyesGone, face.eyesGone, spriteSizes);
+            AddFace(profile, PartKeyNames.EyesGoneHealed, face.eyesGoneHealed, spriteSizes);
 
             if (face.disfiguredHead != null)
             {
                 for (int i = 0; i < face.disfiguredHead.Length; i++)
-                    AddFace(profile, PartKeyNames.DisfiguredHead(i), face.disfiguredHead[i]);
+                    AddFace(profile, PartKeyNames.DisfiguredHead(i), face.disfiguredHead[i], spriteSizes);
             }
             if (face.disfiguredHeadHeal != null)
             {
                 for (int i = 0; i < face.disfiguredHeadHeal.Length; i++)
-                    AddFace(profile, PartKeyNames.DisfiguredHeadHeal(i), face.disfiguredHeadHeal[i]);
+                    AddFace(profile, PartKeyNames.DisfiguredHeadHeal(i), face.disfiguredHeadHeal[i], spriteSizes);
             }
             if (face.eyeList != null)
             {
                 for (int i = 0; i < face.eyeList.Count; i++)
                 {
                     Eye eye = face.eyeList[i];
-                    AddFace(profile, PartKeyNames.EyeFront(i), eye.front);
-                    AddFace(profile, PartKeyNames.EyeBack(i), eye.back);
+                    AddFace(profile, PartKeyNames.EyeFront(i), eye.front, spriteSizes);
+                    AddFace(profile, PartKeyNames.EyeBack(i), eye.back, spriteSizes);
                 }
             }
         }
 
-        private static void CollectTail(GameObject prefab, CharacterProfile profile)
+        private static void CollectTail(GameObject prefab, CharacterProfile profile, Dictionary<string, Vector2Int> spriteSizes)
         {
             TailScript tail = prefab.GetComponentInChildren<TailScript>(true);
             if (tail == null) return;
 
             SpriteRenderer renderer = tail.GetComponent<SpriteRenderer>();
-            PartBinding binding = MakeBinding(PartKeyNames.Tail, renderer);
+            PartBinding binding = MakeBinding(PartKeyNames.Tail, renderer, spriteSizes);
             if (binding != null) profile.Tail = binding;
         }
 
-        private static void AddFace(CharacterProfile profile, string partKey, Sprite sprite)
+        private static void AddFace(CharacterProfile profile, string partKey, Sprite sprite, Dictionary<string, Vector2Int> spriteSizes)
         {
-            if (sprite == null) return;
+            if (sprite == null || string.IsNullOrEmpty(sprite.name)) return;
             var binding = new PartBinding
             {
                 PartKey = partKey,
@@ -179,10 +175,10 @@ namespace SkinSyncMod.Character
                 SortingOrder = 0,
             };
             profile.Faces[partKey] = binding;
-            if (!_spriteSizes.ContainsKey(binding.SpriteName)) _spriteSizes[binding.SpriteName] = binding.PixelSize;
+            if (!spriteSizes.ContainsKey(binding.SpriteName)) spriteSizes[binding.SpriteName] = binding.PixelSize;
         }
 
-        private static PartBinding MakeBinding(string partKey, SpriteRenderer renderer)
+        private static PartBinding MakeBinding(string partKey, SpriteRenderer renderer, Dictionary<string, Vector2Int> spriteSizes)
         {
             Sprite sprite = renderer != null ? renderer.sprite : null;
             if (sprite == null || string.IsNullOrEmpty(sprite.name)) return null;
@@ -195,34 +191,35 @@ namespace SkinSyncMod.Character
                     Mathf.RoundToInt(sprite.rect.width), Mathf.RoundToInt(sprite.rect.height)),
                 SortingOrder = renderer.sortingOrder,
             };
-            if (!_spriteSizes.ContainsKey(binding.SpriteName)) _spriteSizes[binding.SpriteName] = binding.PixelSize;
+            if (!spriteSizes.ContainsKey(binding.SpriteName)) spriteSizes[binding.SpriteName] = binding.PixelSize;
             return binding;
         }
 
-        /// <summary>反查某张贴图属于哪个部位键、哪个角色。同一张贴图（如前后臂共用）只记首次出现。</summary>
+        /// <summary>按原版贴图名反查所属部位键与角色类型。</summary>
         internal static bool TryFindPartBySpriteName(string spriteName, out string partKey, out int charType)
         {
             EnsureLoaded();
             partKey = null;
             charType = -1;
-            if (string.IsNullOrEmpty(spriteName)) return false;
+            if (string.IsNullOrEmpty(spriteName) || _spriteOwners == null) return false;
             if (!_spriteOwners.TryGetValue(spriteName, out var owner)) return false;
             partKey = owner.Key;
             charType = owner.Value;
             return true;
         }
 
-        private static void RegisterOwner(PartBinding binding, int charType)
+        private static void RegisterOwner(Dictionary<string, KeyValuePair<string, int>> spriteOwners, PartBinding binding, int charType)
         {
             if (binding == null || string.IsNullOrEmpty(binding.SpriteName)) return;
-            if (_spriteOwners.ContainsKey(binding.SpriteName)) return;
-            _spriteOwners[binding.SpriteName] = new KeyValuePair<string, int>(binding.PartKey, charType);
+            if (spriteOwners.ContainsKey(binding.SpriteName)) return;
+            spriteOwners[binding.SpriteName] = new KeyValuePair<string, int>(binding.PartKey, charType);
         }
 
-        /// <summary>诊断用：把采集结果格式化成多行文本，供日志输出核对。</summary>
+        /// <summary>将采集到的角色档案格式化为诊断日志文本。</summary>
         internal static string DescribeAll()
         {
             EnsureLoaded();
+            if (_profiles == null) return "角色档案：未加载";
             var sb = new StringBuilder();
             sb.Append("角色档案：").Append(_profiles.Count).Append(" 个，贴图尺寸表 ").Append(_spriteSizes.Count).Append(" 条");
             for (int i = 0; i < _profiles.Count; i++)
