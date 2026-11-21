@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using SkinSyncMod.Interop;
 using SkinSyncMod.Interop.Consumers;
 using SkinSyncMod.Network;
@@ -5,39 +7,193 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 处理皮肤切换网络消息：客户端收到广播后应用、服务器收到请求后校验并广播。
-    /// </summary>
-    /// <remarks>消息体由 SkinMessageCodec 在契约读取器/写入器上按字段编解码，发送经 ChannelConsumer 的具名通道。</remarks>
+    /// <summary>处理客户端与服务端收到的皮肤切换、配件覆盖、尾巴参数与皮肤包网络消息。</summary>
     internal static class SkinMessageHandlers
     {
+        private const float PackRequestForwardCooldownSec = 5f;
+        private const float CallerWarningCooldownSec = 5f;
+        private const float ClientTokenRefillPerSec = 20f;
+        private const float ClientTokenBurstLimit = 40f;
+        private const int MaxAccessoryIdLength = 64;
+
+        private readonly struct CallerSkinKey : IEquatable<CallerSkinKey>
+        {
+            public readonly uint CallerId;
+            public readonly string SkinId;
+
+            public CallerSkinKey(uint callerId, string skinId)
+            {
+                CallerId = callerId;
+                SkinId = skinId ?? string.Empty;
+            }
+
+            public bool Equals(CallerSkinKey other)
+                => CallerId == other.CallerId && string.Equals(SkinId, other.SkinId, StringComparison.Ordinal);
+
+            public override bool Equals(object obj) => obj is CallerSkinKey other && Equals(other);
+
+            public override int GetHashCode()
+                => ((int)CallerId * 397) ^ StringComparer.Ordinal.GetHashCode(SkinId);
+        }
+
+        private struct ClientRateBucket
+        {
+            public float Tokens;
+            public float LastRefillAt;
+            public float NextWarnAt;
+        }
+
+        private static readonly Dictionary<uint, string> _remoteSkinByNetId = new Dictionary<uint, string>();
+        private static readonly Dictionary<string, HashSet<uint>> _pendingPackRequesters
+            = new Dictionary<string, HashSet<uint>>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, float> _lastForwardedRequestAt
+            = new Dictionary<string, float>(StringComparer.Ordinal);
+        private static readonly Dictionary<CallerSkinKey, float> _lastPackRequestAt
+            = new Dictionary<CallerSkinKey, float>();
+        private static readonly Dictionary<uint, ClientRateBucket> _clientRateBuckets
+            = new Dictionary<uint, ClientRateBucket>();
+        private static readonly Dictionary<uint, float> _nextCallerWarnAt
+            = new Dictionary<uint, float>();
+
+        static SkinMessageHandlers()
+        {
+            SkinPackChunkAssembler.CanAcceptInboundSkin = IsAuthorizedPackUpload;
+        }
+
+        internal static void OnSceneChanged()
+        {
+            _remoteSkinByNetId.Clear();
+            _pendingPackRequesters.Clear();
+            _lastForwardedRequestAt.Clear();
+            _lastPackRequestAt.Clear();
+            _clientRateBuckets.Clear();
+            _nextCallerWarnAt.Clear();
+            SkinPackChunkAssembler.Clear();
+            SkinPackCodec.TrimSessionMemoryCache();
+        }
+
+        private static bool TryConsumeClientToken(uint callerId)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (!_clientRateBuckets.TryGetValue(callerId, out ClientRateBucket bucket))
+            {
+                _clientRateBuckets[callerId] = new ClientRateBucket
+                {
+                    Tokens = ClientTokenBurstLimit - 1f,
+                    LastRefillAt = now,
+                    NextWarnAt = 0f,
+                };
+                return true;
+            }
+
+            float elapsed = Mathf.Max(0f, now - bucket.LastRefillAt);
+            bucket.Tokens = Mathf.Min(ClientTokenBurstLimit, bucket.Tokens + elapsed * ClientTokenRefillPerSec);
+            bucket.LastRefillAt = now;
+
+            if (bucket.Tokens < 1f)
+            {
+                if (now >= bucket.NextWarnAt)
+                {
+                    bucket.NextWarnAt = now + CallerWarningCooldownSec;
+                    SkinSyncMod.ModLog.Warning($"服务端：client {callerId} 皮肤同步发包速率超限，已丢弃超额数据包。");
+                }
+                _clientRateBuckets[callerId] = bucket;
+                return false;
+            }
+
+            bucket.Tokens -= 1f;
+            _clientRateBuckets[callerId] = bucket;
+            return true;
+        }
+
+        private static void WarnCallerThrottled(uint callerId, string message)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (_nextCallerWarnAt.TryGetValue(callerId, out float nextAt) && now < nextAt)
+            {
+                return;
+            }
+            _nextCallerWarnAt[callerId] = now + CallerWarningCooldownSec;
+            SkinSyncMod.ModLog.Warning(message);
+        }
+
+        private static bool IsAuthorizedPackUpload(uint callerId, string skinId)
+        {
+            if (!SkinPathResolver.IsSafeSkinName(skinId))
+            {
+                return false;
+            }
+
+            bool wornByCaller = RosterConsumer.TryGetNetBodyOfClient(callerId, out uint cNetId)
+                && TryGetRecordedRemoteSkin(cNetId, out string worn)
+                && worn == skinId;
+            if (wornByCaller || _pendingPackRequesters.ContainsKey(skinId))
+            {
+                return true;
+            }
+
+            WarnCallerThrottled(callerId, $"服务端：拒绝来自 client {callerId} 未经请求且未穿着的皮肤包 {skinId}。");
+            return false;
+        }
+
+        internal static bool TryGetRecordedRemoteSkin(uint netId, out string skinId)
+        {
+            skinId = null;
+            if (netId == 0) return false;
+            if (_remoteSkinByNetId.TryGetValue(netId, out skinId) && !string.IsNullOrEmpty(skinId)) return true;
+            return Patches.SkinCacheBroadcaster.TryGetRecordedSkin(netId, out skinId);
+        }
+
+        internal static void DropRemoteNetId(uint netId)
+        {
+            if (netId == 0) return;
+            _remoteSkinByNetId.Remove(netId);
+            AccessoryAttacher.DropPendingOverrides(netId);
+            TailDeformConfig.DropPendingOverrides(netId);
+        }
+
+        private static void RecordRemoteSkin(uint netId, string skinId)
+        {
+            if (netId == 0 || string.IsNullOrEmpty(skinId)) return;
+            if (_remoteSkinByNetId.TryGetValue(netId, out string prev) && prev != skinId)
+            {
+                AccessoryAttacher.DropPendingOverrides(netId);
+                TailDeformConfig.DropPendingOverrides(netId);
+            }
+            _remoteSkinByNetId[netId] = skinId;
+        }
+
         internal static void OnClientSkinMessage(uint callerId, IInteropReader reader)
         {
             SkinChangeMessage msg = SkinMessageCodec.ReadSkinChange(reader);
+            if (!SkinPathResolver.IsSafeSkinName(msg.skinID)) return;
 
             bool hasLocal = RosterConsumer.TryGetLocalNetBody(out _, out uint localNetId, out _);
-            bool hasCid = RosterConsumer.TryGetLocalClientId(out uint localCid);
-            bool isLocalEcho = hasLocal && localNetId == msg.netId;
+            bool isLocalEcho = hasLocal && localNetId != 0 && localNetId == msg.netId;
             CommsTrace.ClientReceive(msg.skinID, msg.netId, msg.charType, isLocalEcho);
-            // 附加本端上下文：排查"拿到消息却应用错人"时需要对照本地 netId / clientId。
+#if DEBUG
+            bool hasCid = RosterConsumer.TryGetLocalClientId(out uint localCid);
             SkinSyncMod.ModLog.Debug($"客户端接收上下文：local netId {(hasLocal ? localNetId.ToString() : "n/a")}，local clientId {(hasCid ? localCid.ToString() : "n/a")}，echo={isLocalEcho}");
+#endif
 
             if (!isLocalEcho)
             {
+                RecordRemoteSkin(msg.netId, msg.skinID);
                 ApplySkinToPlayer(msg.netId, msg.skinID, msg.charType);
-            }
-
-            // 收到的是本地玩家自己 → 写回 Settings.CurrentSkin，让主菜单 / 单机也用同一个值。
-            if (RosterConsumer.TryGetNetBodyFromId(msg.netId, out _, out _, out bool isLocal) && isLocal)
-            {
-                if (SkinSync.Settings != null) SkinSync.Settings.CurrentSkin.Value = msg.skinID;
             }
         }
 
         internal static void OnServerSkinMessage(uint callerId, IInteropReader reader)
         {
             SkinChangeMessage msg = SkinMessageCodec.ReadSkinChange(reader);
+            if (!TryConsumeClientToken(callerId)) return;
+
             CommsTrace.HostReceive(callerId, msg.skinID, msg.netId, msg.charType);
+            if (!SkinPathResolver.IsSafeSkinName(msg.skinID))
+            {
+                CommsTrace.HostRejected(callerId, msg.netId, msg.skinID, "非法皮肤名称");
+                return;
+            }
 
             if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
             {
@@ -48,12 +204,19 @@ namespace SkinSyncMod
 
             if (callerNetId != msg.netId)
             {
-                CommsTrace.HostRejected(callerId, msg.netId, msg.skinID, $"冒充他人（实际 netId {callerNetId}）");
-                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried to change skin for {msg.netId}");
+                CommsTrace.HostRejected(callerId, msg.netId, msg.skinID, $"netId 不一致（当前实体 netId {callerNetId}）");
+                WarnCallerThrottled(callerId, $"服务端：忽略 client {callerId} 的皮肤切换请求（上报 netId {msg.netId} 与当前实体 netId {callerNetId} 不一致）。");
                 return;
             }
 
-            ApplySkinToPlayer(msg.netId, msg.skinID, msg.charType);
+            bool isHostLocal = RosterConsumer.TryGetLocalNetBody(out _, out uint hostLocalNetId, out _)
+                && hostLocalNetId != 0
+                && hostLocalNetId == msg.netId;
+            if (!isHostLocal)
+            {
+                RecordRemoteSkin(msg.netId, msg.skinID);
+                ApplySkinToPlayer(msg.netId, msg.skinID, msg.charType);
+            }
 
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
             SkinMessageCodec.WriteSkinChange(writer, msg);
@@ -61,38 +224,30 @@ namespace SkinSyncMod
             CommsTrace.HostBroadcast(msg.skinID, msg.netId, recipients, callerId);
 
             Patches.SkinCacheBroadcaster.RecordSkin(msg.netId, msg.skinID);
-
-            if (RosterConsumer.TryGetPlayerSteamId(callerId, out ulong steamId) && steamId != 0UL)
-                SkinCacheStore.Set(steamId, msg.skinID);
         }
 
-        /// <param name="charType">
-        /// 发送者上报的真实角色类型，0 表示未知。
-        /// 远端 Body 的 charType 只是本机 prefab 的角色类型（Together 不同步 characterSelected），
-        /// 所以翅膀缩放优先用消息里的值。
-        /// </param>
         private static void ApplySkinToPlayer(uint netId, string characterName, int charType = 0)
         {
             if (!RosterConsumer.TryGetNetBodyFromId(netId, out _, out GameObject playerObj, out _))
             {
-                Patches.PendingSkinApplier.Enqueue(netId, characterName, "NetBody 未注册");
+                Patches.PendingSkinApplier.Enqueue(netId, characterName, "NetBody 未注册", charType);
                 SkinSyncMod.ModLog.Info($"NetBody netId {netId} 暂未注册，已加入待应用队列：{characterName}");
                 return;
             }
             if (playerObj == null)
             {
-                Patches.PendingSkinApplier.Enqueue(netId, characterName, "NetBody 已注册但角色对象为空");
+                Patches.PendingSkinApplier.Enqueue(netId, characterName, "NetBody 已注册但角色对象为空", charType);
                 return;
             }
             SkinApplier.ApplySkinToPlayer(playerObj, characterName, charType);
         }
 
-        // —— Accessory sync —— //
-
         internal static void OnClientAccessorySync(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadAccessory(reader);
-            if (SkinSync.Settings != null && SkinSync.Settings.SyncMode.Value == "Passive")
+            if (!SkinPathResolver.IsSafeSkinName(msg.skinID)
+                || string.IsNullOrEmpty(msg.accId)
+                || msg.accId.Length > MaxAccessoryIdLength)
             {
                 return;
             }
@@ -102,6 +257,13 @@ namespace SkinSyncMod
         internal static void OnServerAccessorySync(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadAccessory(reader);
+            if (!TryConsumeClientToken(callerId)) return;
+            if (!SkinPathResolver.IsSafeSkinName(msg.skinID)
+                || string.IsNullOrEmpty(msg.accId)
+                || msg.accId.Length > MaxAccessoryIdLength)
+            {
+                return;
+            }
             if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
             {
                 InteropDiagnostics.WarnOnce("SkinMessageHandler.AccessoryCallerNetId", $"服务端无法反查客户端 {callerId} 的 netId，配件同步请求已拒绝。");
@@ -110,44 +272,65 @@ namespace SkinSyncMod
 
             if (callerNetId != msg.netId)
             {
-                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried accessory sync for {msg.netId}");
+                WarnCallerThrottled(callerId, $"服务端：忽略 client {callerId} 的配件同步请求（上报 netId {msg.netId} 与当前实体 netId {callerNetId} 不一致）。");
                 return;
             }
+
+            SanitizeAccessoryMessage(ref msg);
             ApplyAccessoryOverride(msg);
+            Patches.SkinCacheBroadcaster.RecordAccessory(msg);
 
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.AccessorySyncMessageId);
             SkinMessageCodec.WriteAccessory(writer, msg);
             ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.AccessorySyncMessageId);
         }
 
+        private static void SanitizeAccessoryMessage(ref AccessorySyncMessage msg)
+        {
+            msg.offX = Mathf.Clamp(msg.offX, -2048, 2048);
+            msg.offY = Mathf.Clamp(msg.offY, -2048, 2048);
+            msg.zOrder = Mathf.Clamp(msg.zOrder, -100, 100);
+            msg.rotation = SanitizeFloat(msg.rotation, -3600f, 3600f, 0f);
+        }
+
         private static void ApplyAccessoryOverride(AccessorySyncMessage msg)
         {
-            if (SkinSync.Settings == null) return;
-            // 写覆盖：5 字段都写。enabled 单独 + 4 个 transform 一并写。
-            SkinSync.Settings.SetAccessoryEnabled(msg.skinID, msg.accId, msg.enabled);
-            SkinSync.Settings.SetAccessoryTransform(msg.skinID, msg.accId, msg.offX, msg.offY, msg.rotation, msg.zOrder);
-            // 把目标玩家的 chara 重新装配一遍——AccessoryAttacher.Apply 内部会读最新 settings 覆盖。
-            if (RosterConsumer.TryGetNetBodyFromId(msg.netId, out _, out GameObject chara, out _) && chara != null)
+            if (SkinSync.Settings == null || msg.netId == 0) return;
+            int offX = Mathf.Clamp(msg.offX, -2048, 2048);
+            int offY = Mathf.Clamp(msg.offY, -2048, 2048);
+            int zOrder = Mathf.Clamp(msg.zOrder, -100, 100);
+            float rot = SanitizeFloat(msg.rotation, -3600f, 3600f, 0f);
+
+            if (!RosterConsumer.TryGetNetBodyFromId(msg.netId, out _, out GameObject chara, out bool isLocal) || chara == null)
+            {
+                AccessoryAttacher.StagePendingRemoteOverride(msg.netId, msg.skinID, msg.accId, msg.enabled, offX, offY, rot, zOrder);
+                return;
+            }
+
+            if (isLocal) return;
+
+            AccessoryAttacher.StagePendingRemoteOverride(msg.netId, msg.skinID, msg.accId, msg.enabled, offX, offY, rot, zOrder);
+            AccessoryAttacher.SetRemoteOverride(chara, msg.skinID, msg.accId, msg.enabled, offX, offY, rot, zOrder);
+
+            if (SkinApplier.GetAssignedSkin(chara) == msg.skinID
+                && !AccessoryAttacher.TryApplySingleRemoteOverride(chara, msg.skinID, msg.accId, msg.enabled, offX, offY, rot, zOrder))
             {
                 SkinApplier.ApplySkinToPlayer(chara, msg.skinID);
             }
         }
 
-        // —— Tail sync —— //
-
         internal static void OnClientTailSync(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadTail(reader);
-            if (SkinSync.Settings != null && SkinSync.Settings.SyncMode.Value == "Passive")
-            {
-                return;
-            }
+            if (!SkinPathResolver.IsSafeSkinName(msg.skinID)) return;
             ApplyTailOverride(msg);
         }
 
         internal static void OnServerTailSync(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadTail(reader);
+            if (!TryConsumeClientToken(callerId)) return;
+            if (!SkinPathResolver.IsSafeSkinName(msg.skinID)) return;
             if (!RosterConsumer.TryGetNetBodyOfClient(callerId, out uint callerNetId))
             {
                 InteropDiagnostics.WarnOnce("SkinMessageHandler.TailCallerNetId", $"服务端无法反查客户端 {callerId} 的 netId，尾巴同步请求已拒绝。");
@@ -156,10 +339,11 @@ namespace SkinSyncMod
 
             if (callerNetId != msg.netId)
             {
-                SkinSyncMod.ModLog.Warning($"Cheat attempt: client {callerId} (netId {callerNetId}) tried tail sync for {msg.netId}");
+                WarnCallerThrottled(callerId, $"服务端：忽略 client {callerId} 的尾巴同步请求（上报 netId {msg.netId} 与当前实体 netId {callerNetId} 不一致）。");
                 return;
             }
             ApplyTailOverride(msg);
+            Patches.SkinCacheBroadcaster.RecordTail(msg);
 
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.TailSyncMessageId);
             SkinMessageCodec.WriteTail(writer, msg);
@@ -168,107 +352,218 @@ namespace SkinSyncMod
 
         private static void ApplyTailOverride(TailSyncMessage msg)
         {
-            if (SkinSync.Settings == null) return;
-            // TailDeformConfig 是全局 static——直接覆盖立即生效（所有玩家共享一份尾巴形变参数）。
-            TailDeformConfig.Enabled = msg.enabled;
-            TailDeformConfig.FrontGuard = msg.frontGuard;
-            TailDeformConfig.Segments = msg.segments;
-            TailDeformConfig.ConstraintIters = msg.constraintIters;
-            TailDeformConfig.Damping = msg.damping;
-            TailDeformConfig.SpeedDamping = msg.speedDamping;
-            TailDeformConfig.Stiffness = msg.stiffness;
-            TailDeformConfig.MaxBendDeg = msg.maxBendDeg;
-            TailDeformConfig.AnchorFollow = msg.anchorFollow;
-            TailDeformConfig.Smoothness = msg.smoothness;
-            TailDeformConfig.MaxStep = msg.maxStep;
-            TailDeformConfig.MaxFixedDt = msg.maxFixedDt;
-            TailDeformConfig.FrontGuardMargin = msg.frontGuardMargin;
-            TailDeformConfig.GravityX = msg.gravityX;
-            TailDeformConfig.GravityY = msg.gravityY;
-            TailDeformConfig.WindFreq = msg.windFreq;
-            TailDeformConfig.WindAmp = msg.windAmp;
-            TailDeformConfig.SpeedDisturb = msg.speedDisturb;
-            // 同时写到该 skin 的 settings 覆盖，让本端下次切回该皮肤继续保持参数。
-            var ov = new SkinSyncSettings.TailDeformOverride
+            if (SkinSync.Settings == null || msg.netId == 0) return;
+
+            var p = new TailDeformParams
             {
+                Enabled = msg.enabled,
                 FrontGuard = msg.frontGuard,
-                Segments = msg.segments, ConstraintIters = msg.constraintIters,
-                Damping = msg.damping, Stiffness = msg.stiffness,
-                SpeedDamping = msg.speedDamping,
-                MaxBendDeg = msg.maxBendDeg, AnchorFollow = msg.anchorFollow,
-                Smoothness = msg.smoothness, MaxStep = msg.maxStep,
-                MaxFixedDt = msg.maxFixedDt, FrontGuardMargin = msg.frontGuardMargin,
-                GravityX = msg.gravityX, GravityY = msg.gravityY,
-                WindFreq = msg.windFreq, WindAmp = msg.windAmp, SpeedDisturb = msg.speedDisturb,
+                Segments = UnityEngine.Mathf.Clamp(msg.segments, 4, 40),
+                ConstraintIters = UnityEngine.Mathf.Clamp(msg.constraintIters, 1, 20),
+                Damping = SanitizeFloat(msg.damping, 0f, 5f, 0.45f),
+                SpeedDamping = SanitizeFloat(msg.speedDamping, 0f, 0.5f, 0.05f),
+                Stiffness = SanitizeFloat(msg.stiffness, 0f, 5f, 1.0f),
+                MaxBendDeg = SanitizeFloat(msg.maxBendDeg, 0f, 180f, 18f),
+                AnchorFollow = SanitizeFloat(msg.anchorFollow, 0f, 5f, 1.0f),
+                Smoothness = SanitizeFloat(msg.smoothness, 0f, 0.99f, 0.55f),
+                MaxStep = SanitizeFloat(msg.maxStep, 0.001f, 2f, 0.15f),
+                MaxFixedDt = SanitizeFloat(msg.maxFixedDt, 0.005f, 0.1f, 0.02f),
+                FrontGuardMargin = SanitizeFloat(msg.frontGuardMargin, 0f, 1f, 0.05f),
+                GravityX = SanitizeFloat(msg.gravityX, -10f, 10f, 0f),
+                GravityY = SanitizeFloat(msg.gravityY, -20f, 10f, -1.2f),
+                WindFreq = SanitizeFloat(msg.windFreq, 0f, 20f, 1.2f),
+                WindAmp = SanitizeFloat(msg.windAmp, 0f, 1f, 0.012f),
+                SpeedDisturb = SanitizeFloat(msg.speedDisturb, 0f, 0.5f, 0.005f),
             };
-            SkinSync.Settings.SetTailOverride(msg.skinID, ov);
+
+            if (!RosterConsumer.TryGetNetBodyFromId(msg.netId, out _, out GameObject chara, out bool isLocal) || chara == null)
+            {
+                TailDeformConfig.StagePendingRemoteOverride(msg.netId, msg.skinID, p);
+                return;
+            }
+
+            if (isLocal) return;
+
+            TailDeformConfig.StagePendingRemoteOverride(msg.netId, msg.skinID, p);
+            TailDeformConfig.SetRemoteOverride(chara, msg.skinID, p);
         }
 
-        // —— Skin pack sync (实验性) —— //
-
-        private static readonly System.Collections.Generic.HashSet<string> _broadcastedPackIds = new System.Collections.Generic.HashSet<string>();
+        private static float SanitizeFloat(float value, float min, float max, float fallback)
+        {
+            if (float.IsNaN(value) || float.IsInfinity(value)) return fallback;
+            return UnityEngine.Mathf.Clamp(value, min, max);
+        }
 
         internal static void OnServerSkinPackRequest(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadSkinPackRequest(reader);
-            if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
+            if (!TryConsumeClientToken(callerId)) return;
+            if (!SkinPathResolver.IsSafeSkinName(msg.skinID)) return;
 
-            byte[] local = SkinPackCodec.PackLocalSkin(msg.skinID);
-            if (local != null)
+            float now = Time.realtimeSinceStartup;
+            var reqKey = new CallerSkinKey(callerId, msg.skinID);
+            if (_lastPackRequestAt.TryGetValue(reqKey, out float lastReqAt)
+                && now - lastReqAt < PackRequestForwardCooldownSec)
             {
-                bool myAllow = SkinSync.Settings.AllowPeersPersistMyPack.Value;
-                MultiplayerSender.ServerSendSkinPackDataToClient(callerId, local, myAllow);
-                _broadcastedPackIds.Add(msg.skinID);
-                SkinSyncMod.ModLog.Info($"服务端：已把皮肤包 {msg.skinID} 直接回给 client {callerId}（allowPersist={myAllow}）");
                 return;
             }
+            _lastPackRequestAt[reqKey] = now;
+
+            bool hostSyncEnabled = SkinSync.Settings != null && SkinSync.Settings.EnableSkinPackSync.Value;
+            bool localPersistAllow = SkinSync.Settings != null && SkinSync.Settings.AllowPeersPersistMyPack.Value;
+            if ((hostSyncEnabled || !SkinPathResolver.HasLocalCustomSkin(msg.skinID))
+                && SkinPackCodec.TryPackForShare(msg.skinID, localPersistAllow, out byte[] local, out bool effectiveAllow))
+            {
+                if (MultiplayerSender.ServerSendSkinPackDataToClient(callerId, local, effectiveAllow))
+                {
+                    SkinSyncMod.ModLog.Info($"服务端：已把皮肤包 {msg.skinID} 直接回给 client {callerId}（allowPersist={effectiveAllow}）");
+                }
+                return;
+            }
+
+            if (!_pendingPackRequesters.TryGetValue(msg.skinID, out HashSet<uint> waiters))
+            {
+                waiters = new HashSet<uint>();
+                _pendingPackRequesters[msg.skinID] = waiters;
+            }
+            waiters.Add(callerId);
+
+            if (_lastForwardedRequestAt.TryGetValue(msg.skinID, out float lastAt)
+                && now - lastAt < PackRequestForwardCooldownSec)
+            {
+                return;
+            }
+            _lastForwardedRequestAt[msg.skinID] = now;
 
             IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackRequestMessageId);
             SkinMessageCodec.WriteSkinPackRequest(writer, msg);
             ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.SkinPackRequestMessageId);
-            SkinSyncMod.ModLog.Info($"服务端:转发皮肤包请求 {msg.skinID} 给其他 client");
+            SkinSyncMod.ModLog.Info($"服务端：转发皮肤包请求 {msg.skinID} 给其他 client");
         }
 
         internal static void OnClientSkinPackRequest(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadSkinPackRequest(reader);
+            if (!SkinPathResolver.IsSafeSkinName(msg.skinID)) return;
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
 
-            byte[] local = SkinPackCodec.PackLocalSkin(msg.skinID);
-            if (local == null) return;
-            bool myAllow = SkinSync.Settings.AllowPeersPersistMyPack.Value;
-            MultiplayerSender.SendSkinPackData(local, myAllow);
-            SkinSyncMod.ModLog.Info($"客户端：响应皮肤包请求 {msg.skinID}（{local.Length} bytes, allowPersist={myAllow}）");
+            if (!SkinPackCodec.TryPackForShare(
+                msg.skinID,
+                SkinSync.Settings.AllowPeersPersistMyPack.Value,
+                out byte[] local,
+                out bool effectiveAllow))
+            {
+                return;
+            }
+            if (MultiplayerSender.SendSkinPackData(local, effectiveAllow))
+            {
+                SkinSyncMod.ModLog.Info($"客户端：响应皮肤包请求 {msg.skinID}（{local.Length} bytes, allowPersist={effectiveAllow}）");
+            }
         }
 
         internal static void OnServerSkinPackData(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadSkinPackData(reader);
-            if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
-            if (msg.payload == null || msg.payload.Length == 0) return;
+            if (!TryConsumeClientToken(callerId)) return;
+            if (msg.payload == null || msg.payload.Length == 0 || msg.payload.Length > ushort.MaxValue) return;
+            ProcessServerCompleteSkinPack(callerId, msg.payload, msg.allowPersist);
+        }
 
-            bool persist = SkinSync.Settings.SkinPackPersistOnDisk.Value && msg.allowPersist;
-            if (!SkinPackCodec.UnpackAndCache(msg.payload, persist, out string skinID)) return;
-            SkinSyncMod.ModLog.Info($"服务端：收到 client {callerId} 的皮肤包 {skinID}（allowPersist={msg.allowPersist}），本机 persist={persist}");
-            if (_broadcastedPackIds.Contains(skinID)) return;
-            _broadcastedPackIds.Add(skinID);
+        internal static void OnServerSkinPackChunk(uint callerId, IInteropReader reader)
+        {
+            var msg = SkinMessageCodec.ReadSkinPackChunk(reader);
+            if (!SkinPackChunkAssembler.IsExpectedFollowUpChunk(callerId, msg)
+                && !TryConsumeClientToken(callerId))
+            {
+                return;
+            }
+            if (SkinPackChunkAssembler.TryPushChunk(callerId, msg, out byte[] complete, out bool allowPersist))
+            {
+                ProcessServerCompleteSkinPack(callerId, complete, allowPersist);
+            }
+        }
 
-            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
-            SkinMessageCodec.WriteSkinPackData(writer, msg);
-            ChannelConsumer.ForwardExcept((ushort)callerId, writer, SkinNetworkIDs.SkinPackDataMessageId);
+        private static void ProcessServerCompleteSkinPack(uint callerId, byte[] payload, bool allowPersist)
+        {
+            if (payload == null || !SkinPackCodec.TryPeekSkinId(payload, payload.Length, out string peekedId))
+            {
+                return;
+            }
+            if (!IsAuthorizedPackUpload(callerId, peekedId))
+            {
+                return;
+            }
 
-            SkinApplier.ReapplyForSkin(skinID);
+            bool hostSyncEnabled = SkinSync.Settings != null && SkinSync.Settings.EnableSkinPackSync.Value;
+            bool hostHasLocal = SkinPathResolver.HasLocalCustomSkin(peekedId);
+            string skinID;
+            bool unpackedForHost = false;
+
+            if (!hostSyncEnabled || hostHasLocal)
+            {
+                if (!SkinPackCodec.ValidatePack(payload, out skinID)) return;
+                SkinSyncMod.ModLog.Info($"服务端：收到 client {callerId} 的皮肤包 {skinID}（{payload.Length} bytes），仅安全校验并中继单播（hostSync={hostSyncEnabled}, hostHasLocal={hostHasLocal}）。");
+            }
+            else
+            {
+                bool persist = SkinSync.Settings.SkinPackPersistOnDisk.Value && allowPersist;
+                if (!SkinPackCodec.UnpackAndCache(payload, persist, out skinID, remoteAllowPersist: allowPersist)) return;
+                unpackedForHost = true;
+                SkinSyncMod.ModLog.Info($"服务端：收到 client {callerId} 的皮肤包 {skinID}（{payload.Length} bytes, allowPersist={allowPersist}），本机 persist={persist}");
+            }
+
+            if (_pendingPackRequesters.TryGetValue(skinID, out HashSet<uint> waiters))
+            {
+                _pendingPackRequesters.Remove(skinID);
+                bool hasLocalCid = RosterConsumer.TryGetLocalClientId(out uint hostCid);
+                foreach (uint waiter in waiters)
+                {
+                    if (waiter == callerId || (hasLocalCid && waiter == hostCid))
+                    {
+                        continue;
+                    }
+                    MultiplayerSender.ServerSendSkinPackDataToClient(waiter, payload, allowPersist);
+                }
+                waiters.Clear();
+            }
+
+            if (unpackedForHost)
+            {
+                SkinApplier.ReapplyForSkin(skinID);
+            }
         }
 
         internal static void OnClientSkinPackData(uint callerId, IInteropReader reader)
         {
             var msg = SkinMessageCodec.ReadSkinPackData(reader);
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
-            if (msg.payload == null || msg.payload.Length == 0) return;
+            if (msg.payload == null || msg.payload.Length == 0 || msg.payload.Length > ushort.MaxValue) return;
+            ProcessClientCompleteSkinPack(msg.payload, msg.allowPersist);
+        }
 
-            bool persist = SkinSync.Settings.SkinPackPersistOnDisk.Value && msg.allowPersist;
-            if (!SkinPackCodec.UnpackAndCache(msg.payload, persist, out string skinID)) return;
-            SkinSyncMod.ModLog.Info($"客户端：收到皮肤包 {skinID}（{msg.payload.Length} bytes, allowPersist={msg.allowPersist}），本机 persist={persist}");
+        internal static void OnClientSkinPackChunk(uint callerId, IInteropReader reader)
+        {
+            var msg = SkinMessageCodec.ReadSkinPackChunk(reader);
+            if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
+            if (SkinPackChunkAssembler.TryPushChunk(ushort.MaxValue, msg, out byte[] complete, out bool allowPersist))
+            {
+                ProcessClientCompleteSkinPack(complete, allowPersist);
+            }
+        }
+
+        private static void ProcessClientCompleteSkinPack(byte[] payload, bool allowPersist)
+        {
+            bool persist = SkinSync.Settings.SkinPackPersistOnDisk.Value && allowPersist;
+            if (!SkinPackCodec.UnpackAndCache(payload, persist, out string skinID, remoteAllowPersist: allowPersist))
+            {
+                if (SkinPackCodec.TryPeekSkinId(payload, payload != null ? payload.Length : 0, out string peeked)
+                    && !SkinPathResolver.HasLocalCustomSkin(peeked))
+                {
+                    SkinApplier.ClearRequestedPack(peeked);
+                }
+                return;
+            }
+            SkinSyncMod.ModLog.Info($"客户端：收到皮肤包 {skinID}（{payload.Length} bytes, allowPersist={allowPersist}），本机 persist={persist}");
 
             SkinApplier.ReapplyForSkin(skinID);
         }

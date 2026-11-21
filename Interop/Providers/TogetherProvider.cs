@@ -9,24 +9,14 @@ using System.Reflection;
 
 namespace SkinSyncMod.Interop
 {
-    /// <summary>Casualties: Together 的提供方适配器，全程通过反射访问目标程序集。</summary>
-    /// <remarks>
-    /// 目标程序集：CasualtiesMP.dll，BepInEx 插件 GUID "CasualtiesMP"，版本 5.5.0。
-    /// 依赖的目标类型：Together.Net、Together.Multiplayer、Together.NetBody、Together.ScavPlayer、Together.knetid。
-    /// 依赖的传输类型：NetDataWriter、NetDataReader、DeliveryMethod（三者均属传输库自身的 Utils / 根命名空间）。
-    /// 发送方法形参带 in，反射得到的是 by-ref 类型，因此成员一律按「名称 + 形参个数 + 剥掉 in/ref 后的元素类型」匹配。
-    /// 目标程序集尚未加载时不计为解析失败，下一次访问重试；程序集已加载但成员缺失时整个提供方判为不可用，缺失项只警告一次。
-    /// 16 位原语（写入器 Put(ushort)、读取器 GetUShort()）例外：缺失时只降级该原语，提供方与其余能力保持可用。
-    /// </remarks>
-    internal sealed class TogetherProvider : IInteropProvider, IInteropSession, IInteropRoster, IInteropChannel, IInteropEvents, IInteropTypeRegistry
+    /// <summary>通过反射对接 CasualtiesMP（Together）联机模组的会话、名册与具名通道。</summary>
+    internal sealed partial class TogetherProvider : IInteropProvider, IInteropSession, IInteropRoster, IInteropChannel, IInteropEvents, IInteropTypeRegistry
     {
         private const string TargetAssemblyName = "CasualtiesMP";
 
         private readonly object _sync = new object();
         private readonly List<Delegate> _callbacks = new List<Delegate>();
 
-        // 三个标志在锁内写、锁外读（EnsureResolved 的双检锁），必须带 volatile：
-        // 锁外读取只做 acquire，否则看到 _resolved 为 true 时其余成员字段仍可能不可见，表现为静默丢包。
         private volatile bool _resolved;
         private volatile bool _available;
         private volatile bool _ushortDegraded;
@@ -77,14 +67,10 @@ namespace SkinSyncMod.Interop
         private object _deliveryReliable;
         private object _deliveryUnreliable;
 
-        /// <inheritdoc/>
-        /// <remarks>16 位原语降级时名称附标记，启动自检行据此输出 Together(ushort降级):ok。</remarks>
         string IInteropProvider.Name => _ushortDegraded ? "Together(ushort降级)" : "Together";
 
-        /// <inheritdoc/>
         bool IInteropProvider.IsAvailable => EnsureResolved();
 
-        /// <inheritdoc/>
         InteropCapability IInteropProvider.Capabilities =>
             InteropCapability.Session
             | InteropCapability.Roster
@@ -92,10 +78,8 @@ namespace SkinSyncMod.Interop
             | InteropCapability.Events
             | InteropCapability.TypeRegistry;
 
-        /// <inheritdoc/>
         int IInteropProvider.Priority => 0;
 
-        /// <inheritdoc/>
         InteropSessionInfo IInteropSession.Info
         {
             get
@@ -114,7 +98,6 @@ namespace SkinSyncMod.Interop
             }
         }
 
-        /// <inheritdoc/>
         InteropPlayerRef IInteropRoster.LocalPlayer
         {
             get
@@ -129,7 +112,6 @@ namespace SkinSyncMod.Interop
             }
         }
 
-        /// <inheritdoc/>
         bool IInteropRoster.TryGetPlayer(ushort clientId, out InteropPlayerRef player)
         {
             player = InteropPlayerRef.None;
@@ -142,7 +124,6 @@ namespace SkinSyncMod.Interop
             return true;
         }
 
-        /// <inheritdoc/>
         IReadOnlyList<InteropPlayerRef> IInteropRoster.GetPlayers()
         {
             List<InteropPlayerRef> players = new List<InteropPlayerRef>();
@@ -171,7 +152,6 @@ namespace SkinSyncMod.Interop
             return players;
         }
 
-        /// <remarks>角色对象可以是目标插件的 NetBody，也可以是 NetBody.body 指向的身体对象。</remarks>
         bool IInteropRoster.TryGetPlayerByActor(object actor, out InteropPlayerRef player)
         {
             player = InteropPlayerRef.None;
@@ -212,7 +192,6 @@ namespace SkinSyncMod.Interop
             return false;
         }
 
-        /// <inheritdoc/>
         IInteropWriter IInteropChannel.CreateWriter(string channel)
         {
             if (string.IsNullOrEmpty(channel) || !EnsureResolved())
@@ -228,7 +207,6 @@ namespace SkinSyncMod.Interop
             return new TogetherWriter(this, writer);
         }
 
-        /// <remarks>可靠标志映射到 DeliveryMethod.ReliableOrdered 与 DeliveryMethod.Unreliable。</remarks>
         void IInteropChannel.SendToServer(IInteropWriter writer, bool reliable)
         {
             object native = ReadWriter(writer);
@@ -241,7 +219,6 @@ namespace SkinSyncMod.Interop
             InteropReflection.TryInvoke(_netClientSend, null, new object[] { delivery, native }, out object ignored);
         }
 
-        /// <remarks>广播目标取自 Together.ScavPlayer.ClientIdToPlayerDict 的全部 clientId。</remarks>
         void IInteropChannel.Broadcast(IInteropWriter writer, bool reliable)
         {
             object native = ReadWriter(writer);
@@ -260,7 +237,6 @@ namespace SkinSyncMod.Interop
             InteropReflection.TryInvoke(_netServerSendToClients, null, new object[] { delivery, native, clientIds }, out object ignored);
         }
 
-        /// <inheritdoc/>
         void IInteropChannel.SendToClient(ushort clientId, IInteropWriter writer, bool reliable)
         {
             object native = ReadWriter(writer);
@@ -279,7 +255,6 @@ namespace SkinSyncMod.Interop
             InteropReflection.TryInvoke(_netServerSendTo, null, new object[] { delivery, native, id }, out object ignored);
         }
 
-        /// <inheritdoc/>
         bool IInteropChannel.Register(string channel, Action<InteropPlayerRef, IInteropReader> onServer, Action<IInteropReader> onClient)
         {
             if (string.IsNullOrEmpty(channel) || (onServer == null && onClient == null) || !EnsureResolved())
@@ -301,13 +276,11 @@ namespace SkinSyncMod.Interop
             return registered;
         }
 
-        /// <remarks>目标插件 5.5.0 的玩家加入事件 Together.ScavPlayer.OnPlayerJoined 不在本适配器允许访问的成员清单内，固定返回 false。</remarks>
         bool IInteropEvents.TrySubscribePlayerJoined(Action<InteropPlayerRef> handler)
         {
             return false;
         }
 
-        /// <inheritdoc/>
         bool IInteropEvents.TrySubscribePlayerLeft(Action<InteropPlayerRef> handler)
         {
             if (handler == null || !EnsureResolved())
@@ -332,11 +305,10 @@ namespace SkinSyncMod.Interop
                 return false;
             }
 
-            _callbacks.Add(bound);
+            lock (_sync) { _callbacks.Add(bound); }
             return true;
         }
 
-        /// <remarks>只用 Assembly.GetType 查目标程序集，不扫描 AppDomain；类型成员缺失时仍可解析类型。</remarks>
         bool IInteropTypeRegistry.TryResolveType(string fullName, out Type type)
         {
             type = null;
@@ -350,8 +322,7 @@ namespace SkinSyncMod.Interop
             return type != null;
         }
 
-        /// <summary>首次访问时解析目标程序集及全部依赖成员并缓存；目标程序集尚未加载时不置缓存，下次访问重试。</summary>
-        /// <remarks>目标程序集不存在属于可选场景，不计失败也不记警告；成员解析失败后缓存并只警告一次，重新解析走 <see cref="TryRefresh"/> 显式入口。</remarks>
+        /// <summary>解析并缓存目标程序集成员；程序集未加载时不置完成标志以便后续重试。</summary>
         private bool EnsureResolved()
         {
             if (_resolved)
@@ -384,14 +355,14 @@ namespace SkinSyncMod.Interop
                     ReportResolvedMembers();
                 }
 
-                // 标志最后发布：锁外的读者看到 _resolved 为 true 时，此前写入的成员字段与降级标志均已可见。
+                // 所有成员字段写入完成后再发布标志，保证锁外读取可见。
                 _resolved = true;
             }
 
             return _available;
         }
 
-        /// <summary>丢弃已缓存的解析结果并重新解析，用于目标插件晚加载或成员变化后的显式重试。</summary>
+        /// <summary>清除缓存并重新执行成员反射解析。</summary>
         internal bool TryRefresh()
         {
             lock (_sync)
@@ -403,7 +374,6 @@ namespace SkinSyncMod.Interop
             return EnsureResolved();
         }
 
-        /// <summary>16 位原语缺失时各警告一次；降级只影响该原语，提供方整体仍可用。</summary>
         private void ReportPrimitiveDegradation()
         {
             _ushortDegraded = _putUShort == null || _getUShort == null;
@@ -418,11 +388,9 @@ namespace SkinSyncMod.Interop
             }
         }
 
-        /// <summary>Debug 构建用：统计本次解析后非空缓存的反射成员数量。</summary>
         [System.Diagnostics.Conditional("DEBUG")]
         private void ReportResolvedMembers()
         {
-            // 成员全员都是 System.Reflection 下的 MemberInfo 字段，按此筛选避免把锁、回调列表、程序集等非成员字段算进去。
             int count = 0;
             FieldInfo[] fields = typeof(TogetherProvider).GetFields(BindingFlags.Instance | BindingFlags.NonPublic);
             for (int i = 0; i < fields.Length; i++)
@@ -436,7 +404,6 @@ namespace SkinSyncMod.Interop
             SkinSyncMod.ModLog.Debug("TogetherProvider: 已解析 " + count + " 个成员");
         }
 
-        /// <summary>解析目标程序集的全部依赖成员，并把缺失项写进 <paramref name="missing"/>。</summary>
         private bool Resolve(Assembly assembly, List<string> missing)
         {
             _assembly = assembly;
@@ -502,7 +469,6 @@ namespace SkinSyncMod.Interop
             {
                 _putInt = Require(InteropReflection.FindMethod(_writerType, "Put", typeof(int)), "NetDataWriter.Put(int)", missing);
                 _putUInt = Require(InteropReflection.FindMethod(_writerType, "Put", typeof(uint)), "NetDataWriter.Put(uint)", missing);
-                // 16 位原语可选：缺失时只降级该原语，不把提供方判为不可用。
                 _putUShort = InteropReflection.FindMethod(_writerType, "Put", typeof(ushort));
                 _putBool = Require(InteropReflection.FindMethod(_writerType, "Put", typeof(bool)), "NetDataWriter.Put(bool)", missing);
                 _putFloat = Require(InteropReflection.FindMethod(_writerType, "Put", typeof(float)), "NetDataWriter.Put(float)", missing);
@@ -514,7 +480,6 @@ namespace SkinSyncMod.Interop
             {
                 _getInt = Require(InteropReflection.FindMethod(readerType, "GetInt"), "NetDataReader.GetInt()", missing);
                 _getUInt = Require(InteropReflection.FindMethod(readerType, "GetUInt"), "NetDataReader.GetUInt()", missing);
-                // 16 位原语可选：缺失时只降级该原语，不把提供方判为不可用。
                 _getUShort = InteropReflection.FindMethod(readerType, "GetUShort");
                 _getBool = Require(InteropReflection.FindMethod(readerType, "GetBool"), "NetDataReader.GetBool()", missing);
                 _getFloat = Require(InteropReflection.FindMethod(readerType, "GetFloat"), "NetDataReader.GetFloat()", missing);
@@ -526,7 +491,6 @@ namespace SkinSyncMod.Interop
             return missing.Count == 0;
         }
 
-        /// <summary>在已加载程序集里按简单名查找目标程序集；不加载新程序集。</summary>
         private static Assembly FindTargetAssembly()
         {
             Assembly[] assemblies = AppDomain.CurrentDomain.GetAssemblies();
@@ -541,7 +505,6 @@ namespace SkinSyncMod.Interop
             return null;
         }
 
-        /// <summary>从 RegisterCustomServerReceiver 的第 2 个形参 Action&lt;ScavPlayer, NetDataReader&gt; 取出 NetDataReader 类型。</summary>
         private static Type ReceiverReaderType(MethodInfo register)
         {
             if (register == null)
@@ -559,7 +522,6 @@ namespace SkinSyncMod.Interop
             return arguments.Length == 2 ? arguments[1] : null;
         }
 
-        /// <summary>记录缺失成员并把成员原样返回。</summary>
         private static T Require<T>(T member, string name, List<string> missing) where T : class
         {
             if (member == null)
@@ -618,7 +580,6 @@ namespace SkinSyncMod.Interop
             return local != null && ReferenceEquals(local, player);
         }
 
-        /// <remarks>玩家或其 playerId 读取失败时返回 <see cref="InteropPlayerRef.None"/>，不产出 clientId=0 的幽灵引用。</remarks>
         private InteropPlayerRef ToRef(object player, bool isLocal)
         {
             if (player == null || !InteropReflection.TryReadMember(_scavPlayerId, player, out object playerId) || playerId == null)
@@ -629,7 +590,6 @@ namespace SkinSyncMod.Interop
             return ToRef(player, ReadClientId(playerId), isLocal);
         }
 
-        /// <remarks>名称恒为 null：允许访问的成员清单未包含 Together.ScavPlayer.playerName。</remarks>
         private InteropPlayerRef ToRef(object player, ushort clientId, bool isLocal)
         {
             object steamId = InteropReflection.ReadMember(_scavSteamId, player);
@@ -666,7 +626,6 @@ namespace SkinSyncMod.Interop
             return ids;
         }
 
-        /// <summary>把写入器交给目标接收器登记方法；委托类型取自目标方法的形参。</summary>
         private static Delegate BindCallback(MethodInfo register, object receiver, MethodInfo callback)
         {
             if (register == null || callback == null)
@@ -710,7 +669,7 @@ namespace SkinSyncMod.Interop
                 return false;
             }
 
-            _callbacks.Add(callback);
+            lock (_sync) { _callbacks.Add(callback); }
             return true;
         }
 
@@ -719,8 +678,6 @@ namespace SkinSyncMod.Interop
             InteropReflection.TryInvoke(method, writer, new object[] { value }, out object ignored);
         }
 
-        /// <summary>写入 16 位无符号整数；目标写入器缺少该原语时降级为 32 位无符号写入。</summary>
-        /// <remarks>降级只影响该原语：会话、名册与通道能力保持可用，降级在解析阶段警告一次。</remarks>
         private void PutUShort(object writer, ushort value)
         {
             if (_putUShort != null)
@@ -732,21 +689,20 @@ namespace SkinSyncMod.Interop
             Put(writer, _putUInt, (uint)value);
         }
 
-        /// <remarks>NetDataWriter.Put(string, int) 的 maxLength 形参传 0，表示不限长度。</remarks>
         private void PutString(object writer, string value)
         {
             InteropReflection.TryInvoke(_putString, writer, new object[] { value, 0 }, out object ignored);
         }
 
-        /// <remarks>NetDataWriter.PutBytesWithLength(byte[]) 的长度前缀是 2 字节，超过 65535 字节的负载不写入。</remarks>
         private void PutBytes(object writer, byte[] value)
         {
-            if (value == null || value.Length > ushort.MaxValue)
+            if (value != null && value.Length > ushort.MaxValue)
             {
-                return;
+                InteropDiagnostics.WarnOnce("TogetherProvider.PutBytes.Limit", "PutBytes 负载超过 65535 字节，已降级为空负载以保持流边界。");
             }
 
-            InteropReflection.TryInvoke(_putBytes, writer, new object[] { value }, out object ignored);
+            byte[] safe = value == null || value.Length > ushort.MaxValue ? Array.Empty<byte>() : value;
+            InteropReflection.TryInvoke(_putBytes, writer, new object[] { safe }, out object ignored);
         }
 
         private T Get<T>(object reader, MethodInfo method, T fallback)
@@ -754,8 +710,6 @@ namespace SkinSyncMod.Interop
             return InteropReflection.TryInvoke(method, reader, Array.Empty<object>(), out object result) && result is T value ? value : fallback;
         }
 
-        /// <summary>读取 16 位无符号整数；目标读取器缺少该原语时返回 0，且不推进读取位置。</summary>
-        /// <remarks>降级只影响该原语：会话、名册与通道能力保持可用，降级在解析阶段警告一次。</remarks>
         private ushort GetUShort(object reader)
         {
             return _getUShort == null ? (ushort)0 : Get(reader, _getUShort, (ushort)0);
@@ -765,157 +719,6 @@ namespace SkinSyncMod.Interop
         {
             object value = InteropReflection.ReadMember(_readerAvailableBytes, reader);
             return value is int count ? count : 0;
-        }
-
-        /// <summary>把 NetDataWriter 包成契约写入器，写操作转发给一次性解析好的 Put 重载。</summary>
-        /// <remarks>字节数组走 NetDataWriter.PutBytesWithLength(byte[])：先写 2 字节无符号长度，再写原始字节，与 NetDataReader.GetBytesWithLength() 对应。
-        /// 字符串走 NetDataWriter.Put(string, int)，maxLength 传 0 表示不限长度。</remarks>
-        private sealed class TogetherWriter : IInteropWriter
-        {
-            private readonly TogetherProvider _provider;
-            private readonly object _native;
-
-            internal TogetherWriter(TogetherProvider provider, object native)
-            {
-                _provider = provider;
-                _native = native;
-            }
-
-            /// <inheritdoc/>
-            object IInteropWriter.NativeHandle => _native;
-
-            /// <inheritdoc/>
-            void IInteropWriter.PutInt(int value) => _provider.Put(_native, _provider._putInt, value);
-
-            /// <inheritdoc/>
-            void IInteropWriter.PutUInt(uint value) => _provider.Put(_native, _provider._putUInt, value);
-
-            /// <inheritdoc/>
-            /// <remarks>目标写入器缺少 16 位原语时降级为 32 位无符号写入。</remarks>
-            void IInteropWriter.PutUShort(ushort value) => _provider.PutUShort(_native, value);
-
-            /// <inheritdoc/>
-            void IInteropWriter.PutBool(bool value) => _provider.Put(_native, _provider._putBool, value);
-
-            /// <inheritdoc/>
-            void IInteropWriter.PutFloat(float value) => _provider.Put(_native, _provider._putFloat, value);
-
-            /// <inheritdoc/>
-            void IInteropWriter.PutString(string value) => _provider.PutString(_native, value);
-
-            /// <inheritdoc/>
-            void IInteropWriter.PutBytes(byte[] value) => _provider.PutBytes(_native, value);
-
-            /// <inheritdoc/>
-            void IInteropWriter.PutVector2(float x, float y)
-            {
-                _provider.Put(_native, _provider._putFloat, x);
-                _provider.Put(_native, _provider._putFloat, y);
-            }
-        }
-
-        /// <summary>把 NetDataReader 包成契约读取器，读操作转发给一次性解析好的 Get 重载。</summary>
-        /// <remarks>包装器不改变读取位置，读位置由底层 NetDataReader 维护；底层读取失败时返回默认值。</remarks>
-        private sealed class TogetherReader : IInteropReader
-        {
-            private readonly TogetherProvider _provider;
-            private readonly object _native;
-
-            internal TogetherReader(TogetherProvider provider, object native)
-            {
-                _provider = provider;
-                _native = native;
-            }
-
-            /// <inheritdoc/>
-            object IInteropReader.NativeHandle => _native;
-
-            /// <inheritdoc/>
-            int IInteropReader.RemainingBytes => _provider.ReadRemainingBytes(_native);
-
-            /// <inheritdoc/>
-            int IInteropReader.GetInt() => _provider.Get(_native, _provider._getInt, 0);
-
-            /// <inheritdoc/>
-            uint IInteropReader.GetUInt() => _provider.Get(_native, _provider._getUInt, 0u);
-
-            /// <inheritdoc/>
-            /// <remarks>目标读取器缺少 16 位原语时返回 0，且不推进读取位置。</remarks>
-            ushort IInteropReader.GetUShort() => _provider.GetUShort(_native);
-
-            /// <inheritdoc/>
-            bool IInteropReader.GetBool() => _provider.Get(_native, _provider._getBool, false);
-
-            /// <inheritdoc/>
-            float IInteropReader.GetFloat() => _provider.Get(_native, _provider._getFloat, 0f);
-
-            /// <inheritdoc/>
-            string IInteropReader.GetString() => _provider.Get(_native, _provider._getString, string.Empty);
-
-            /// <inheritdoc/>
-            byte[] IInteropReader.GetBytes() => _provider.Get(_native, _provider._getBytes, Array.Empty<byte>());
-
-            /// <inheritdoc/>
-            (float x, float y) IInteropReader.GetVector2()
-            {
-                float x = _provider.Get(_native, _provider._getFloat, 0f);
-                float y = _provider.Get(_native, _provider._getFloat, 0f);
-                return (x, y);
-            }
-        }
-
-        /// <summary>把 Action&lt;ScavPlayer, NetDataReader&gt; 转发到契约处理器。</summary>
-        private sealed class ServerReceiver
-        {
-            private readonly TogetherProvider _provider;
-            private readonly Action<InteropPlayerRef, IInteropReader> _handler;
-
-            internal ServerReceiver(TogetherProvider provider, Action<InteropPlayerRef, IInteropReader> handler)
-            {
-                _provider = provider;
-                _handler = handler;
-            }
-
-            private void Invoke(object player, object reader)
-            {
-                _handler(_provider.ToRef(player, _provider.IsLocalPlayer(player)), new TogetherReader(_provider, reader));
-            }
-        }
-
-        /// <summary>把 Action&lt;NetDataReader&gt; 转发到契约处理器。</summary>
-        private sealed class ClientReceiver
-        {
-            private readonly TogetherProvider _provider;
-            private readonly Action<IInteropReader> _handler;
-
-            internal ClientReceiver(TogetherProvider provider, Action<IInteropReader> handler)
-            {
-                _provider = provider;
-                _handler = handler;
-            }
-
-            private void Invoke(object reader)
-            {
-                _handler(new TogetherReader(_provider, reader));
-            }
-        }
-
-        /// <summary>把 Action&lt;ScavPlayer&gt; 转发到契约处理器。</summary>
-        private sealed class PlayerLeftReceiver
-        {
-            private readonly TogetherProvider _provider;
-            private readonly Action<InteropPlayerRef> _handler;
-
-            internal PlayerLeftReceiver(TogetherProvider provider, Action<InteropPlayerRef> handler)
-            {
-                _provider = provider;
-                _handler = handler;
-            }
-
-            private void Invoke(object player)
-            {
-                _handler(_provider.ToRef(player, _provider.IsLocalPlayer(player)));
-            }
         }
     }
 }

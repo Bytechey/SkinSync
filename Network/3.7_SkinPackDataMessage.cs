@@ -1,6 +1,6 @@
 namespace SkinSyncMod
 {
-    /// <summary>承载 SkinPackCodec 打包后的皮肤目录字节流；接收端调用 SkinPackCodec.UnpackAndCache 写缓存。编解码见 SkinMessageCodec。</summary>
+    /// <summary>承载打包后皮肤目录字节流与落盘许可标记的消息体。</summary>
     public struct SkinPackDataMessage
     {
         public byte[] payload;

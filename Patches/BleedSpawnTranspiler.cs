@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace SkinSyncMod.Patches
 {
-    /// <summary>Transpiler patch BleedParticle.Update：在落地血 / 墙血 Instantiate 后按 owner 染色，仅玩家肢体生效，怪物跳过。</summary>
+    /// <summary>拦截 BleedParticle.Update 生成的落地血与墙面血实例并按角色皮肤血色染色。</summary>
     [HarmonyPatch(typeof(BleedParticle), "Update")]
     public static class BleedSpawnTranspiler
     {
@@ -16,19 +16,25 @@ namespace SkinSyncMod.Patches
         [HarmonyTranspiler]
         public static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> instructions)
         {
+            int matched = 0;
             foreach (var ins in instructions)
             {
                 yield return ins;
                 if (IsInstantiateCall(ins))
                 {
+                    matched++;
                     yield return new CodeInstruction(OpCodes.Dup);
                     yield return new CodeInstruction(OpCodes.Ldarg_0);
                     yield return new CodeInstruction(OpCodes.Call, _colorHook);
                 }
             }
+
+            if (matched != 2)
+            {
+                ModLog.Warning($"BleedSpawnTranspiler: 预期匹配 2 处 Instantiate，实际匹配 {matched} 处。");
+            }
         }
 
-        // 匹配 UnityEngine.Object.Instantiate(Object,Vector3,Quaternion)，兼容编译器选用的泛型/非泛型重载。
         private static bool IsInstantiateCall(CodeInstruction ins)
         {
             if (!(ins.operand is MethodInfo mi)) return false;
@@ -38,24 +44,24 @@ namespace SkinSyncMod.Patches
             return ps.Length == 3 && ps[1].ParameterType == typeof(Vector3) && ps[2].ParameterType == typeof(Quaternion);
         }
 
-        /// <summary>对刚生成的血迹对象按 BleedParticle 的 owner character 染色；解析不到（怪物）则不动。</summary>
+        /// <summary>按 BleedParticle 所属角色的血液配置为新生成的血迹对象着色。</summary>
         public static void ColorSpawnedBlood(Object spawned, BleedParticle source)
         {
             if (!BloodRenderConfig.Enabled) return;
-            if (source == null) return;
+            if (source == null || source.vomit) return;
             var go = spawned as GameObject;
             if (go == null) return;
 
             string character = ResolveCharacter(source.transform);
             if (string.IsNullOrEmpty(character)) return;
-            if (!BloodAttacher.TryLoadCharacterBlood(character, out var cfg, out _)) return;
+            if (!BloodAttacher.TryGetBloodConfig(character, out var cfg) || cfg == null) return;
             Color32? main = cfg.ParticleStartColor ?? cfg.BloodLight;
             if (!main.HasValue) return;
 
             var sr = go.GetComponent<SpriteRenderer>();
             if (sr == null) return;
             Color c = (Color)main.Value;
-            // 墙血生成当帧会被游戏覆盖为白色，延迟到 LateUpdate 染；地血游戏只改 alpha，可立即染。
+            // 墙面血迹在生成当帧会被原方法末尾置白，延后至 LateUpdate 染色。
             string n = go.name ?? "";
             if (n.IndexOf("wall", System.StringComparison.OrdinalIgnoreCase) >= 0)
             {
@@ -68,7 +74,8 @@ namespace SkinSyncMod.Patches
             }
         }
 
-        private static string ResolveCharacter(Transform t)
+        /// <summary>沿节点父链向上查找所属角色当前生效的自定义皮肤名。</summary>
+        internal static string ResolveCharacter(Transform t)
         {
             while (t != null)
             {

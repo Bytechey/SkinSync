@@ -3,22 +3,17 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 隐藏所有玩家身上装备的可见 SpriteRenderer，但保留装备 GameObject 与游戏装备逻辑（armor / isolation / GetWearableBySlotID）。
-    /// 识别：装备主体 = Limb 子节点中含 Item 组件且 Stats.wearable=true 的物体；副件 sprite = 含 WearableExtension 组件的物体。
-    /// 配件 GO（HwAccessories_*）不含这两种组件，不会被误隐藏。
-    /// </summary>
+    /// <summary>定时隐藏或恢复角色身上已穿戴装备的 SpriteRenderer，不影响装备数值与逻辑。</summary>
     [DisallowMultipleComponent]
     public class EquipmentHider : MonoBehaviour
     {
-        /// <summary>设置开关：true=每帧 enforce 隐藏，false=恢复显示。</summary>
         public static bool Active;
 
         private const float TickIntervalSec = 0.25f;
         private float _nextTick;
 
-        // 记录被本组件强制设过 enabled=false 的 SpriteRenderer，关闭功能时统一恢复 enabled=true。
         private readonly HashSet<SpriteRenderer> _hidden = new HashSet<SpriteRenderer>();
+        private readonly List<SpriteRenderer> _toRemove = new List<SpriteRenderer>();
 
         private void Update()
         {
@@ -31,22 +26,64 @@ namespace SkinSyncMod
 
         private void ApplyHide()
         {
+            PruneDetachedRenderers();
+
             var bodies = FindObjectsOfType<Body>();
             foreach (var body in bodies)
             {
-                if (body == null) continue;
-                foreach (var tf in body.GetComponentsInChildren<Transform>(true))
+                if (body == null || body.limbs == null) continue;
+                for (int i = 0; i < body.limbs.Length; i++)
                 {
-                    if (tf == null || tf.gameObject == null) continue;
-                    var sr = tf.GetComponent<SpriteRenderer>();
-                    if (sr == null || !sr.enabled) continue;
-                    bool isItem = tf.GetComponent<Item>() != null;
-                    bool isExt = tf.GetComponent<WearableExtension>() != null;
-                    if (!isItem && !isExt) continue;
-                    sr.enabled = false;
-                    _hidden.Add(sr);
+                    var limb = body.limbs[i];
+                    if (limb == null) continue;
+                    var limbTf = limb.transform;
+                    for (int c = 0; c < limbTf.childCount; c++)
+                    {
+                        var child = limbTf.GetChild(c);
+                        if (child == null) continue;
+                        var sr = child.GetComponent<SpriteRenderer>();
+                        if (sr == null || !sr.enabled) continue;
+
+                        var item = child.GetComponent<Item>();
+                        bool isWearable = item != null && item.Stats != null && item.Stats.wearable;
+                        bool isExt = child.GetComponent<WearableExtension>() != null;
+                        if (!isWearable && !isExt) continue;
+
+                        sr.enabled = false;
+                        _hidden.Add(sr);
+                    }
                 }
             }
+        }
+
+        private void PruneDetachedRenderers()
+        {
+            if (_hidden.Count == 0) return;
+            _toRemove.Clear();
+            foreach (var sr in _hidden)
+            {
+                if (sr == null)
+                {
+                    _toRemove.Add(sr);
+                    continue;
+                }
+                Transform parent = sr.transform.parent;
+                if (parent == null)
+                {
+                    sr.enabled = true;
+                    _toRemove.Add(sr);
+                }
+                else if (parent.GetComponent<Limb>() == null)
+                {
+                    // 移入背包等 Container 节点的物品由容器自身控制隐藏，仅解除本组件跟踪而不篡改 sr.enabled。
+                    _toRemove.Add(sr);
+                }
+            }
+            for (int i = 0; i < _toRemove.Count; i++)
+            {
+                _hidden.Remove(_toRemove[i]);
+            }
+            _toRemove.Clear();
         }
 
         private void RestoreAll()
@@ -54,7 +91,12 @@ namespace SkinSyncMod
             if (_hidden.Count == 0) return;
             foreach (var sr in _hidden)
             {
-                if (sr != null) sr.enabled = true;
+                if (sr == null) continue;
+                Transform parent = sr.transform.parent;
+                if (parent == null || parent.GetComponent<Limb>() != null)
+                {
+                    sr.enabled = true;
+                }
             }
             _hidden.Clear();
         }

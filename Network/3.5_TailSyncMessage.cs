@@ -1,9 +1,6 @@
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 子端改动尾巴形变参数时发到服务端，服务端校验后广播全员。
-    /// 18 字段对齐 TailDeformConfig；接收端覆盖到全局 static + 写 settings.SetTailOverride（按 skin）。编解码见 SkinMessageCodec。
-    /// </summary>
+    /// <summary>尾巴形变参数同步消息体。</summary>
     public struct TailSyncMessage
     {
         public uint netId;

@@ -6,13 +6,9 @@ using System.Collections.Generic;
 
 namespace SkinSyncMod.Interop
 {
-    /// <summary>探测目标插件、登记提供方并输出一次自检摘要，重复调用幂等。</summary>
-    /// <remarks>
-    /// 本 mod 只登记 TogetherProvider；追加其他提供方时在此登记，并把 RequiredCapabilities 改成本 mod 实际消费的能力位。
-    /// </remarks>
+    /// <summary>初始化互操作登记表并注册联机提供方。</summary>
     internal static class InteropBootstrap
     {
-        /// <summary>SkinSync 消费的能力位。</summary>
         private const InteropCapability RequiredCapabilities =
             InteropCapability.Session
             | InteropCapability.Roster
@@ -22,7 +18,7 @@ namespace SkinSyncMod.Interop
 
         private static IInteropRegistry _registry;
 
-        /// <summary>首次调用时创建登记表、登记提供方并输出自检摘要；后续调用返回同一实例。</summary>
+        /// <summary>创建并返回全局互操作登记表实例。</summary>
         internal static IInteropRegistry Initialize()
         {
             if (_registry != null)
@@ -38,7 +34,6 @@ namespace SkinSyncMod.Interop
             return registry;
         }
 
-        /// <summary>Debug 构建用：逐个提供方输出可用性与声明的全部能力位。</summary>
         private static string DescribeProviders(IInteropRegistry registry)
         {
             IReadOnlyList<IInteropProvider> providers = registry.Providers;
@@ -61,7 +56,6 @@ namespace SkinSyncMod.Interop
             return text.ToString();
         }
 
-        /// <summary>已初始化的登记表；未初始化时返回空实现。</summary>
         internal static IInteropRegistry Current => _registry ?? NullInteropRegistry.Instance;
     }
 }

@@ -2,22 +2,18 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 单只翅膀的姿态控制器。
-    /// - 静态角度由 wings.json 的 Rotation + 前后翼偏移（frontOffset/backOffset）共同决定。
-    /// - 动态摆动方向左右一致（同相），摆动幅度可独立调节（amplitudeScale）。
-    /// - 自动根据角色朝向交换左右翅膀的渲染层级。
-    /// </summary>
+    /// <summary>根据角色运动状态与朝向实时更新单片翅膀的旋转角度与渲染排序。</summary>
     public class WingScript : MonoBehaviour
     {
         public bool isLeft;
+        public bool isLowerWing;
         public float baseAngleDeg = 0f;
 
         public float frontOffsetZ = -30f;
         public float backOffsetZ = -45f;
-        public float frontOffsetX = 0f;    
-        public float frontOffsetY = 0f;    
-        public float backOffsetX = 20f;      
+        public float frontOffsetX = 0f;
+        public float frontOffsetY = 0f;
+        public float backOffsetX = 20f;
         public float backOffsetY = 0f;
 
         public float restAngleDeg = 18f;
@@ -55,30 +51,28 @@ namespace SkinSyncMod
             bool grounded = body.grounded;
             float vy = body.rb != null ? body.rb.velocity.y : 0f;
 
-            if (!grounded && vy < -0.1f) target = fallSpread;      
-            else if (!grounded && vy > 0.1f) target = jumpSpread;  
-            else if (body.crouching) target = crouchSpread;       
-            else target = 0f;                                    
+            if (!grounded && vy < -0.1f) target = fallSpread;
+            else if (!grounded && vy > 0.1f) target = jumpSpread;
+            else if (body.crouching) target = crouchSpread;
+            else target = 0f;
 
             currentSpread = Mathf.Lerp(currentSpread, target, Time.deltaTime * lerpSpeed);
 
             float spreadDelta = (maxAngleDeg - restAngleDeg) * currentSpread;
 
             bool isFront = body.isRight ? !isLeft : isLeft;
-            float dynamicAngle = isFront ? (- spreadDelta * frontAmplitudeScale): (-spreadDelta * backAmplitudeScale);
-            float dyn = (restAngleDeg + dynamicAngle);
+            float dynamicAngle = isFront ? (-spreadDelta * frontAmplitudeScale) : (-spreadDelta * backAmplitudeScale);
+            float dyn = restAngleDeg + dynamicAngle;
             float staticOffset = isFront ? frontOffsetZ : backOffsetZ;
             float finalAngle = baseAngleDeg + staticOffset + dyn;
-            float xOffset = isFront ? frontOffsetX : backOffsetX;
-            float yOffset = isFront ? frontOffsetY : backOffsetY;
+            // 下翼已作为上翼子节点继承 3D 倾角，不再重复叠加 X/Y 倾转。
+            float xOffset = isLowerWing ? 0f : (isFront ? frontOffsetX : backOffsetX);
+            float yOffset = isLowerWing ? 0f : (isFront ? frontOffsetY : backOffsetY);
             transform.localEulerAngles = new Vector3(xOffset, yOffset, finalAngle);
 
             UpdateSortingOrder();
         }
 
-        /// <summary>
-        /// 根据角色朝向动态调整翅膀的渲染层级。
-        /// </summary>
         private void UpdateSortingOrder()
         {
             if (_renderer == null || body == null) return;

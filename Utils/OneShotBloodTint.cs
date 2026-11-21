@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>给墙血对象延迟到 LateUpdate 染色一次后自毁，绕过游戏在生成当帧把 color 覆盖为白色。</summary>
+    /// <summary>在 LateUpdate 对墙面血迹 SpriteRenderer 执行一次着色后自动销毁自身组件。</summary>
     [DisallowMultipleComponent]
     public class OneShotBloodTint : MonoBehaviour
     {

@@ -2,7 +2,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>每帧 poll body.isRight，变化时触发 SkinApplier.RefreshSidedSprites 重选 R_/无前缀 sprite。</summary>
+    /// <summary>监听角色左右朝向翻转并刷新其侧向部位与配件贴图。</summary>
     [DisallowMultipleComponent]
     public class LimbDirWatcher : MonoBehaviour
     {
@@ -10,9 +10,16 @@ namespace SkinSyncMod
         private bool _lastIsRight;
         private bool _initialized;
 
+        internal void SyncDirection(Body body, bool isRight)
+        {
+            if (body != null) _body = body;
+            _lastIsRight = isRight;
+            _initialized = true;
+        }
+
         private void Awake()
         {
-            _body = GetComponentInChildren<Body>(true);
+            if (_body == null) _body = GetComponentInChildren<Body>(true);
         }
 
         private void Update()

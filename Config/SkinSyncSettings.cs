@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
@@ -6,14 +7,9 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 集中维护持久化配置：改键、当前皮肤、配件覆盖、尾巴形变 per-skin 覆盖。
-    /// 写入 BepInEx ConfigFile（plugins/.../config 目录），重启游戏后自动恢复。
-    /// </summary>
+    /// <summary>管理模组持久化配置项、快捷键绑定以及按皮肤存储的配件与尾巴参数覆盖。</summary>
     internal sealed class SkinSyncSettings
     {
-        private static readonly KeyboardShortcut Unbound = new KeyboardShortcut(KeyCode.None);
-
         internal ConfigEntry<KeyboardShortcut> TogglePanelHotkey { get; }
         internal ConfigEntry<KeyboardShortcut> NextSkinHotkey { get; }
         internal ConfigEntry<KeyboardShortcut> PrevSkinHotkey { get; }
@@ -25,32 +21,23 @@ namespace SkinSyncMod
         internal ConfigEntry<bool> RequireEquipmentForAccessories { get; }
         internal ConfigEntry<bool> RenderCustomBlood { get; }
         internal ConfigEntry<bool> TailDeformEnabled { get; }
-        internal ConfigEntry<bool> NormalizeSpriteSize { get; }
-
-        // —— 原版皮肤（只影响游戏内，不影响预览图）—— //
-        /// <summary>自己使用游戏原版皮肤：本地玩家不套自定义皮肤，其他玩家照常。</summary>
         internal ConfigEntry<bool> VanillaSkinForSelf { get; }
-
-        /// <summary>除自己外都用原版：远端玩家不套自定义皮肤，自己的皮肤照常。</summary>
         internal ConfigEntry<bool> VanillaSkinForOthers { get; }
 
-        // —— 杂项 —— //
         internal ConfigEntry<bool> ShowLogInConsole { get; }
         internal ConfigEntry<bool> AcceptUpdateNotice { get; }
         internal ConfigEntry<string> PreferredLanguage { get; }
+        internal ConfigEntry<int> UiScalePercent { get; }
 
-        // —— 多人同步 —— //
-        /// <summary>"OnEnter"=自己进游戏一键同步全部；"Passive"=仅响应改动事件不主动批量同步。</summary>
         internal ConfigEntry<string> SyncMode { get; }
+        internal bool IsPassiveSyncMode => string.Equals(SyncMode.Value?.Trim(), "Passive", StringComparison.OrdinalIgnoreCase);
         internal ConfigEntry<bool> SyncAccessories { get; }
         internal ConfigEntry<bool> SyncTailDeform { get; }
 
-        // —— 实验性 —— //
         internal ConfigEntry<bool> EnableSkinPackSync { get; }
         internal ConfigEntry<bool> SkinPackPersistOnDisk { get; }
         internal ConfigEntry<bool> AllowPeersPersistMyPack { get; }
 
-        /// <summary>配件覆盖（按 skin + accId）。enabled 必有；offX/offY/rot/z 缺省时表示沿用 accessories.json 默认值。</summary>
         internal sealed class AccessoryOverride
         {
             public bool? Enabled;
@@ -60,7 +47,6 @@ namespace SkinSyncMod
             public int? ZOrder;
         }
 
-        /// <summary>尾巴形变 per-skin 覆盖。任意字段为 null 时用 TailDeformDefaults 默认。</summary>
         internal sealed class TailDeformOverride
         {
             public bool? FrontGuard;
@@ -82,19 +68,19 @@ namespace SkinSyncMod
             public float? SpeedDisturb;
         }
 
+        private readonly ConfigFile _config;
         private readonly ConfigEntry<string> _accessoryOverrides;
         private readonly ConfigEntry<string> _tailDeformOverrides;
 
-        // skin -> accId -> AccessoryOverride
         private readonly Dictionary<string, Dictionary<string, AccessoryOverride>> _accOverrides
             = new Dictionary<string, Dictionary<string, AccessoryOverride>>();
 
-        // skin -> TailDeformOverride
         private readonly Dictionary<string, TailDeformOverride> _tailOverrides
             = new Dictionary<string, TailDeformOverride>();
 
         internal SkinSyncSettings(ConfigFile config)
         {
+            _config = config;
             TogglePanelHotkey = config.Bind("Hotkeys", "TogglePanel",
                 new KeyboardShortcut(KeyCode.F10),
                 "打开 / 关闭 SkinSync 配置面板。");
@@ -118,70 +104,120 @@ namespace SkinSyncMod
                 "配件 accessories.json 中配了 requireWornSlot 时，玩家未穿戴对应装备 slot 则隐藏该配件。关闭此开关让配件无视依赖永远显示。");
 
             RenderCustomBlood = config.Bind("Visual", "RenderCustomBlood", false,
-                "是否按皮肤 blood.json 渲染自定义血液（受伤血色 / 流血 / 落地血迹 / 爆血 / 呕吐）。关闭时全部回退游戏默认并停止每帧扫描，避免性能开销。");
+                "是否按皮肤 blood.json 渲染自定义血液（受伤血色 / 流血 / 落地血迹 / 爆血 / 呕吐）。关闭时全部回退游戏默认并停止每帧扫描。");
 
             TailDeformEnabled = config.Bind("Visual", "TailDeformEnabled", true,
                 "是否启用尾巴物理形变。关闭时尾巴显示原始 sprite 不做摆动。");
 
-            NormalizeSpriteSize = config.Bind("Visual", "NormalizeSpriteSize", true,
-                "按目标肢体的原贴图尺寸等比缩放皮肤贴图。开启后皮肤会缩回游戏原生大小（现有皮肤普遍比原图大 1.5-2 倍），"
-                + "不同角色、不同部位都自动对齐；关闭则维持皮肤像素尺寸原样渲染。");
-
             VanillaSkinForSelf = config.Bind("Visual", "VanillaSkinForSelf", false,
-                "只自己使用游戏原版皮肤：本地玩家恢复成游戏原生外观，不再套自定义皮肤；其他玩家不受影响。"
-                + "两个开关都关闭时全部使用自定义皮肤，都开启时整场都是原版。");
+                "只自己使用游戏原版皮肤：本地玩家恢复成游戏原生外观，其他玩家不受影响。");
 
             VanillaSkinForOthers = config.Bind("Visual", "VanillaSkinForOthers", false,
-                "除自己外都用原版皮肤：远端玩家恢复成游戏原生外观，不再套自定义皮肤；自己的皮肤不受影响。");
+                "除自己外都用原版皮肤：远端玩家恢复成游戏原生外观，自己的皮肤不受影响。");
 
             ShowLogInConsole = config.Bind("Misc", "ShowInConsole", false,
                 "是否把模组日志同步打印到游戏内控制台（` 键打开）。关闭时仅写入 BepInEx 日志。");
             AcceptUpdateNotice = config.Bind("Misc", "AcceptUpdateNotice", true,
-                "是否在启动时检查 GitHub 新版本并在游戏内提示。关闭则不检测不提示。");
+                "是否在启动时检查 GitHub 新版本并在游戏内提示。");
             PreferredLanguage = config.Bind("I18n", "PreferredLanguage", "auto",
-                "界面语言：auto=跟随游戏；zh=强制中文；en=强制英文。该值会写入配置文件并在重启后保留。");
+                "界面语言：auto=跟随游戏；zh=强制中文；en=强制英文。");
+            UiScalePercent = config.Bind("UI", "UiScalePercent", 100,
+                new ConfigDescription(
+                    "界面缩放百分比（75-150）。检测到 CuSaveManager 时自动跟随主面板统一缩放。",
+                    new AcceptableValueRange<int>(75, 150)));
 
             SyncMode = config.Bind("Sync", "Mode", "OnEnter",
-                "多人同步策略。OnEnter=自己进入游戏时一键同步皮肤+配件+尾巴；Passive=仅在改动配件/尾巴时被动广播。");
+                "多人同步策略。OnEnter=进入游戏时同步皮肤与已保存的配件/尾巴覆盖；Passive=入局只报皮肤名，改动参数时再广播。");
+            string rawSyncMode = SyncMode.Value?.Trim();
+            if (!string.Equals(rawSyncMode, "OnEnter", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rawSyncMode, "Passive", StringComparison.OrdinalIgnoreCase))
+            {
+                ModLog.Warning($"未知的 Sync.Mode 配置值 \"{SyncMode.Value}\"，将按 OnEnter 处理（有效值：OnEnter / Passive）。");
+            }
             SyncAccessories = config.Bind("Sync", "Accessories", true,
-                "本机改动配件覆盖（toggle / 偏移 / 旋转 / Z 排序）时广播给所有玩家。");
+                "本机改动配件覆盖时广播给其他玩家。");
             SyncTailDeform = config.Bind("Sync", "TailDeform", true,
-                "本机改动尾巴形变参数时广播给所有玩家（尾巴形变是全局参数，会覆盖到所有客户端）。");
+                "本机改动尾巴形变参数时广播给其他玩家。");
 
-            EnableSkinPackSync = config.Bind("Experimental", "EnableSkinPackSync", false,
-                "实验性：缺少对方使用的皮肤时，自动从持有该皮肤的玩家拉取皮肤包到本机内存（并按本设置可选落盘）。");
+            EnableSkinPackSync = config.Bind("Experimental", "EnableSkinPackSync", true,
+                "缺少其他玩家使用的皮肤时，自动从持有方拉取皮肤包到临时会话缓存。");
             SkinPackPersistOnDisk = config.Bind("Experimental", "SkinPackPersistOnDisk", false,
-                "拉取到的皮肤包写入 plugins/CustomSprites/。关闭时仅内存缓存，下次进游戏需重新拉取。");
+                "接收到的皮肤包永久写入 plugins/CustomSprites/；关闭时仅写入 BepInEx/cache/SkinSync_SyncCache/ 临时会话缓存并在下次启动清理。");
             AllowPeersPersistMyPack = config.Bind("Experimental", "AllowPeersPersistMyPack", true,
-                "允许接收到本机皮肤包的玩家把它落盘永久保留。关闭则对方即使开了落盘也只能内存缓存（仅本会话有效）。");
+                "允许接收到本机皮肤包的玩家将其永久落盘到 CustomSprites。");
 
             _accessoryOverrides = config.Bind("Session", "AccessoryOverrides", "",
-                "配件覆盖。格式：每条 \"skin|accId=k1=v1,k2=v2,...\" 用分号分隔；可用 key：on/off, offX, offY, rot, z。");
+                "配件覆盖。格式：每条 \"skin|accId=k1=v1,k2=v2,...\" 用分号分隔。");
             ParseAccessoryOverrides(_accessoryOverrides.Value);
 
             _tailDeformOverrides = config.Bind("Session", "TailDeformOverrides", "",
-                "尾巴形变 per-skin 覆盖。格式：每条 \"skin|field=value,field=value\" 用分号分隔。缺字段沿用代码默认。");
+                "尾巴形变覆盖。格式：每条 \"skin|=field=value,field=value\" 用分号分隔。");
             ParseTailOverrides(_tailDeformOverrides.Value);
+        }
+
+        internal void SetUiScalePercent(int percent)
+        {
+            int clamped = Mathf.Clamp(percent, 75, 150);
+            if (UiScalePercent != null)
+            {
+                UiScalePercent.Value = clamped;
+            }
+            _config?.Save();
         }
 
         internal static bool IsBound(KeyboardShortcut sc) => sc.MainKey != KeyCode.None;
 
+        /// <summary>检测快捷键是否在本帧触发，仅核对 Shift/Ctrl/Alt 三组标准修饰键以避免移动键 WASD 吞掉热键。</summary>
         internal static bool TriggeredThisFrame(ConfigEntry<KeyboardShortcut> entry)
         {
+            if (entry == null) return false;
             var sc = entry.Value;
-            if (!IsBound(sc)) return false;
-            return sc.IsDown();
+            if (sc.MainKey == KeyCode.None || !Input.GetKeyDown(sc.MainKey)) return false;
+
+            bool wantShift = false, wantCtrl = false, wantAlt = false;
+            if (sc.Modifiers != null)
+            {
+                foreach (KeyCode mod in sc.Modifiers)
+                {
+                    if (mod == KeyCode.LeftShift || mod == KeyCode.RightShift) wantShift = true;
+                    else if (mod == KeyCode.LeftControl || mod == KeyCode.RightControl) wantCtrl = true;
+                    else if (mod == KeyCode.LeftAlt || mod == KeyCode.RightAlt) wantAlt = true;
+                }
+            }
+
+            if (sc.MainKey != KeyCode.LeftShift && sc.MainKey != KeyCode.RightShift)
+            {
+                bool hasShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+                if (wantShift != hasShift) return false;
+            }
+
+            if (sc.MainKey != KeyCode.LeftControl && sc.MainKey != KeyCode.RightControl)
+            {
+                bool hasCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+                if (wantCtrl != hasCtrl) return false;
+            }
+
+            if (sc.MainKey != KeyCode.LeftAlt && sc.MainKey != KeyCode.RightAlt)
+            {
+                bool hasAlt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+                if (wantAlt != hasAlt) return false;
+            }
+
+            return true;
         }
 
-        // —— 配件覆盖 —— //
-
-        /// <summary>查询配件覆盖；返回 null 表示完全没记录，按 entry 默认走。</summary>
         internal AccessoryOverride GetAccessoryOverride(string skinId, string accId)
         {
             if (string.IsNullOrEmpty(skinId) || string.IsNullOrEmpty(accId)) return null;
             if (_accOverrides.TryGetValue(skinId, out var inner)
                 && inner.TryGetValue(accId, out var ov)) return ov;
             return null;
+        }
+
+        internal IReadOnlyDictionary<string, AccessoryOverride> GetAllAccessoryOverridesForSkin(string skinId)
+        {
+            if (string.IsNullOrEmpty(skinId)) return null;
+            return _accOverrides.TryGetValue(skinId, out var inner) ? inner : null;
         }
 
         internal void SetAccessoryEnabled(string skinId, string accId, bool enabled)
@@ -223,27 +259,27 @@ namespace SkinSyncMod
             if (string.IsNullOrEmpty(raw)) return;
             foreach (string seg in raw.Split(';'))
             {
-                string s = seg.Trim();
-                if (s.Length == 0) continue;
-                int eq = s.IndexOf('=');
+                if (string.IsNullOrWhiteSpace(seg)) continue;
+                int eq = seg.IndexOf('=');
                 if (eq <= 0) continue;
-                string left = s.Substring(0, eq);
-                string right = s.Substring(eq + 1).Trim();
+                string left = seg.Substring(0, eq);
+                string right = seg.Substring(eq + 1).Trim();
                 int bar = left.IndexOf('|');
                 if (bar <= 0 || bar >= left.Length - 1) continue;
-                string skin = left.Substring(0, bar).Trim();
-                string acc = left.Substring(bar + 1).Trim();
+                string skin = UnescapeKey(left.Substring(0, bar));
+                string acc = UnescapeKey(left.Substring(bar + 1));
+                if (string.IsNullOrEmpty(skin) || string.IsNullOrEmpty(acc)) continue;
+
                 var ov = EnsureAcc(skin, acc);
-                // 兼容旧格式：右侧只是 on/off
-                if (right.Equals("on", System.StringComparison.OrdinalIgnoreCase)) { ov.Enabled = true; continue; }
-                if (right.Equals("off", System.StringComparison.OrdinalIgnoreCase)) { ov.Enabled = false; continue; }
-                // 新格式：逗号分隔 key=value 列表
+                if (right.Equals("on", StringComparison.OrdinalIgnoreCase)) { ov.Enabled = true; continue; }
+                if (right.Equals("off", StringComparison.OrdinalIgnoreCase)) { ov.Enabled = false; continue; }
+
                 foreach (string kv in right.Split(','))
                 {
                     string p = kv.Trim();
                     if (p.Length == 0) continue;
-                    if (p.Equals("on", System.StringComparison.OrdinalIgnoreCase)) { ov.Enabled = true; continue; }
-                    if (p.Equals("off", System.StringComparison.OrdinalIgnoreCase)) { ov.Enabled = false; continue; }
+                    if (p.Equals("on", StringComparison.OrdinalIgnoreCase)) { ov.Enabled = true; continue; }
+                    if (p.Equals("off", StringComparison.OrdinalIgnoreCase)) { ov.Enabled = false; continue; }
                     int e2 = p.IndexOf('=');
                     if (e2 <= 0 || e2 >= p.Length - 1) continue;
                     string k = p.Substring(0, e2).Trim();
@@ -291,23 +327,20 @@ namespace SkinSyncMod
                     if (parts.Count == 0) continue;
                     if (!first) sb.Append(';');
                     first = false;
-                    sb.Append(skinKv.Key).Append('|').Append(accKv.Key).Append('=');
+                    sb.Append(EscapeKey(skinKv.Key)).Append('|').Append(EscapeKey(accKv.Key)).Append('=');
                     sb.Append(string.Join(",", parts.ToArray()));
                 }
             }
             return sb.ToString();
         }
 
-        // —— 尾巴覆盖 —— //
-
-        /// <summary>查询尾巴覆盖；返回 null 表示沿用代码默认。</summary>
         internal TailDeformOverride GetTailOverride(string skinId)
         {
             if (string.IsNullOrEmpty(skinId)) return null;
             return _tailOverrides.TryGetValue(skinId, out var ov) ? ov : null;
         }
 
-        /// <summary>覆盖整体写入并落盘（用于"重置默认"也走这个清空路径）。</summary>
+        /// <summary>写入或清除（传 null）指定皮肤的尾巴形变覆盖并落盘。</summary>
         internal void SetTailOverride(string skinId, TailDeformOverride ov)
         {
             if (string.IsNullOrEmpty(skinId)) return;
@@ -322,18 +355,17 @@ namespace SkinSyncMod
             if (string.IsNullOrEmpty(raw)) return;
             foreach (string seg in raw.Split(';'))
             {
-                string s = seg.Trim();
-                if (s.Length == 0) continue;
-                int eq = s.IndexOf('=');
+                if (string.IsNullOrWhiteSpace(seg)) continue;
+                int eq = seg.IndexOf('=');
                 if (eq <= 0) continue;
-                string left = s.Substring(0, eq);
-                string right = s.Substring(eq + 1).Trim();
+                string left = seg.Substring(0, eq);
+                string right = seg.Substring(eq + 1).Trim();
                 int bar = left.IndexOf('|');
-                string skin = bar > 0 ? left.Substring(0, bar).Trim() : left.Trim();
+                string rawSkin = bar > 0 ? left.Substring(0, bar) : left;
+                string skin = UnescapeKey(rawSkin);
                 if (string.IsNullOrEmpty(skin)) continue;
+
                 var ov = new TailDeformOverride();
-                // right 已经是逗号分隔的 k=v 列表（"|" 后部分可能为空，向上取 left 的"="后内容）
-                // 实际"skin|=k=v,..."拼接时第一个 = 把 left 与 value 列表分隔，所以 right 直接用即可
                 foreach (string kv in right.Split(','))
                 {
                     string p = kv.Trim();
@@ -401,10 +433,40 @@ namespace SkinSyncMod
                 if (parts.Count == 0) continue;
                 if (!first) sb.Append(';');
                 first = false;
-                sb.Append(kv.Key).Append('|').Append('=');
+                sb.Append(EscapeKey(kv.Key)).Append('|').Append('=');
                 sb.Append(string.Join(",", parts.ToArray()));
             }
             return sb.ToString();
+        }
+
+        private static string EscapeKey(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+            var sb = new StringBuilder(s.Length);
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                bool edgeSpace = (i == 0 || i == s.Length - 1) && char.IsWhiteSpace(c);
+                if (c == '%' || c == ';' || c == '=' || c == '|' || c == ',' || edgeSpace)
+                {
+                    foreach (byte b in Encoding.UTF8.GetBytes(new[] { c }))
+                        sb.Append('%').Append(b.ToString("X2", CultureInfo.InvariantCulture));
+                }
+                else
+                {
+                    sb.Append(c);
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static string UnescapeKey(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return string.Empty;
+            string trimmed = raw.Trim();
+            if (trimmed.IndexOf('%') < 0) return trimmed;
+            try { return Uri.UnescapeDataString(trimmed); }
+            catch { return trimmed; }
         }
 
         private static void AddIntPart(List<string> parts, string key, int? v)
