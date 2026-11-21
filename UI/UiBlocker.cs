@@ -4,11 +4,7 @@ using UnityEngine.UI;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 把当前场景所有 GraphicRaycaster.enabled 暂存并设为 false，阻止下层 uGUI 穿透接收点击。
-    /// EnforceBlocked 每帧重设以抵消其他脚本对 GraphicRaycaster.enabled 的复位。
-    /// 与 SaveManager 同款实现，复制一份避免跨 mod 依赖。
-    /// </summary>
+    /// <summary>暂存并禁用场景中的 GraphicRaycaster 以阻止下层 uGUI 接收点击。</summary>
     internal static class UiBlocker
     {
         private static readonly List<(GraphicRaycaster gr, bool wasEnabled)> _disabled
@@ -20,6 +16,7 @@ namespace SkinSyncMod
 
         internal static void Block()
         {
+            if (_isBlocking) return;
             try
             {
                 _disabled.Clear();
@@ -60,12 +57,15 @@ namespace SkinSyncMod
                 {
                     if (gr != null) gr.enabled = was;
                 }
-                _disabled.Clear();
-                _isBlocking = false;
             }
             catch (System.Exception ex)
             {
                 ModLog.Warning($"UiBlocker.Unblock 失败：{ex.Message}");
+            }
+            finally
+            {
+                _disabled.Clear();
+                _isBlocking = false;
             }
         }
     }

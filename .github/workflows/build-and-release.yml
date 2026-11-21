@@ -1,0 +1,273 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - 'main'
+  pull_request:
+    branches:
+      - 'main'
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+    inputs:
+      release_mode:
+        description: 'Release mode (auto: publish v<Version> if tag missing; nightly: publish daily pre-release; build_only: compile & package only)'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - nightly
+          - build_only
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build & Package (Release + Debug)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build & package release assets (Release + Debug)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          pwsh -NoProfile -File .github/scripts/package-release.ps1 -OutputDir 'build/release-assets'
+
+      - name: Upload release assets artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: skinsync-release-assets
+          path: build/release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Auto Tag & GitHub Release
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download release assets artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: skinsync-release-assets
+          path: release-assets
+
+      - name: Decide release target, push tag & prepare assets
+        id: decide
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RELEASE_MODE: ${{ inputs.release_mode }}
+          CURRENT_SHA: ${{ github.sha }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+
+          MOD_VERSION="$(python3 -c "import xml.etree.ElementTree as ET; root = ET.parse('SkinSync.csproj').getroot(); print(next((el.text.strip() for el in root.iter() if (el.tag == 'Version' or el.tag.endswith('}Version')) and el.text and el.text.strip()), ''))")"
+          if [[ -z "${MOD_VERSION}" ]]; then
+            echo "::error::Failed to parse <Version> from SkinSync.csproj"
+            exit 1
+          fi
+          VERSION_TAG="v${MOD_VERSION}"
+          echo "Detected Version=${MOD_VERSION} (VERSION_TAG=${VERSION_TAG})"
+
+          git fetch origin --tags --force
+
+          case "${EVENT_NAME}" in
+            push)
+              MODE="auto"
+              ;;
+            schedule)
+              MODE="nightly"
+              ;;
+            workflow_dispatch)
+              MODE="${INPUT_RELEASE_MODE:-auto}"
+              ;;
+            *)
+              MODE="build_only"
+              ;;
+          esac
+
+          if [[ "${MODE}" == "build_only" ]]; then
+            echo "Release skipped because mode is build_only."
+            echo "### Release Skipped" >> "${GITHUB_STEP_SUMMARY}"
+            echo "- Mode: \`build_only\` (compile & artifact upload completed)." >> "${GITHUB_STEP_SUMMARY}"
+            echo "should_release=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # git ls-remote --exit-code：0=存在，2=不存在，其余退出码（如 128）为网络/鉴权故障需显式阻断
+          remote_exact_tag_exists() {
+            local tag_ref="refs/tags/$1"
+            local rc=0
+            git ls-remote --exit-code --tags origin "${tag_ref}" >/dev/null 2>&1 || rc=$?
+            if [[ "${rc}" -eq 0 ]]; then
+              return 0
+            elif [[ "${rc}" -eq 2 ]]; then
+              return 1
+            else
+              echo "::error::git ls-remote failed with exit code ${rc} while querying ${tag_ref}" >&2
+              exit "${rc}"
+            fi
+          }
+
+          # 同时检查小写 v 与历史大写 V 开头的同名 tag
+          remote_tag_exists() {
+            local tag="$1"
+            local alt_tag=""
+            if [[ "${tag}" == v* ]]; then
+              alt_tag="V${tag#v}"
+            elif [[ "${tag}" == V* ]]; then
+              alt_tag="v${tag#V}"
+            fi
+            if remote_exact_tag_exists "${tag}"; then
+              return 0
+            fi
+            if [[ -n "${alt_tag}" ]] && remote_exact_tag_exists "${alt_tag}"; then
+              return 0
+            fi
+            return 1
+          }
+
+          verify_nonempty_assets() {
+            local tag="$1"
+            local f
+            for f in \
+              "release-assets/SkinSync-${tag}.zip" \
+              "release-assets/SkinSync-${tag}+debug.zip" \
+              "release-assets/SkinSyncMod.dll" \
+              "release-assets/SkinSyncMod+debug.dll" \
+              "release-assets/SHA256SUMS.txt"; do
+              if [[ ! -s "${f}" ]]; then
+                echo "::error::Missing or empty release asset: ${f}" >&2
+                exit 1
+              fi
+            done
+          }
+
+          if [[ "${MODE}" == "auto" ]]; then
+            if remote_tag_exists "${VERSION_TAG}"; then
+              echo "Remote tag ${VERSION_TAG} (or V${MOD_VERSION}) already exists on origin; skipping formal release."
+              echo "### Formal Release Skipped" >> "${GITHUB_STEP_SUMMARY}"
+              echo "- Tag \`${VERSION_TAG}\` (or \`V${MOD_VERSION}\`) already exists on \`origin\`." >> "${GITHUB_STEP_SUMMARY}"
+              echo "should_release=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            TARGET_TAG="${VERSION_TAG}"
+            verify_nonempty_assets "${TARGET_TAG}"
+            (
+              cd release-assets
+              sha256sum -c SHA256SUMS.txt
+            )
+
+            git tag -a "${TARGET_TAG}" "${CURRENT_SHA}" -m "Release ${TARGET_TAG}"
+            git push origin "refs/tags/${TARGET_TAG}"
+
+            {
+              echo "should_release=true"
+              echo "target_tag=${TARGET_TAG}"
+              echo "release_name=SkinSync ${TARGET_TAG}"
+              echo "prerelease=false"
+              echo "make_latest=true"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ "${MODE}" == "nightly" ]]; then
+            # 同时检查本地已同步 tag 解引用与远端 ls-remote（覆盖 v*/V*、轻量 tag 与附注 tag ^{}）
+            EXISTING_LOCAL="$(git tag --points-at "${CURRENT_SHA}" 'v*' 'V*' || true)"
+            EXISTING_REMOTE="$(git ls-remote --tags origin 'refs/tags/v*' 'refs/tags/V*' | awk -v sha="${CURRENT_SHA}" '$1 == sha { sub("^refs/tags/", "", $2); sub("\\^\\{\\}$", "", $2); print $2 }' || true)"
+            EXISTING_TAGS="$(printf '%s\n%s\n' "${EXISTING_LOCAL}" "${EXISTING_REMOTE}" | sed '/^$/d' | sort -u || true)"
+
+            if [[ "${EVENT_NAME}" == "schedule" && -n "${EXISTING_TAGS}" ]]; then
+              echo "Commit ${CURRENT_SHA} already has release/nightly tag(s): ${EXISTING_TAGS//$'\n'/, }. Skipping scheduled nightly build."
+              echo "### Scheduled Nightly Skipped" >> "${GITHUB_STEP_SUMMARY}"
+              echo "- No new commits since existing tag(s) pointing at \`${CURRENT_SHA}\`: \`${EXISTING_TAGS//$'\n'/, }\`." >> "${GITHUB_STEP_SUMMARY}"
+              echo "should_release=false" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+
+            UTC_DATE="$(date -u +%Y%m%d)"
+            BASE_NIGHTLY_TAG="v${MOD_VERSION}-nightly.${UTC_DATE}"
+            if remote_tag_exists "${BASE_NIGHTLY_TAG}"; then
+              TARGET_TAG="${BASE_NIGHTLY_TAG}.${RUN_NUMBER}"
+            else
+              TARGET_TAG="${BASE_NIGHTLY_TAG}"
+            fi
+
+            verify_nonempty_assets "${VERSION_TAG}"
+            (
+              cd release-assets
+              if [[ "${TARGET_TAG}" != "${VERSION_TAG}" ]]; then
+                mv "SkinSync-${VERSION_TAG}.zip" "SkinSync-${TARGET_TAG}.zip"
+                mv "SkinSync-${VERSION_TAG}+debug.zip" "SkinSync-${TARGET_TAG}+debug.zip"
+              fi
+              sha256sum \
+                "SkinSync-${TARGET_TAG}.zip" \
+                "SkinSync-${TARGET_TAG}+debug.zip" \
+                "SkinSyncMod.dll" \
+                "SkinSyncMod+debug.dll" > SHA256SUMS.txt
+              sha256sum -c SHA256SUMS.txt
+            )
+            verify_nonempty_assets "${TARGET_TAG}"
+
+            git tag -a "${TARGET_TAG}" "${CURRENT_SHA}" -m "Nightly pre-release ${TARGET_TAG}"
+            git push origin "refs/tags/${TARGET_TAG}"
+
+            {
+              echo "should_release=true"
+              echo "target_tag=${TARGET_TAG}"
+              echo "release_name=SkinSync ${TARGET_TAG} (Nightly)"
+              echo "prerelease=true"
+              echo "make_latest=false"
+            } >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          echo "::error::Unsupported release mode '${MODE}'"
+          exit 1
+
+      - name: Publish GitHub Release
+        if: steps.decide.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.decide.outputs.target_tag }}
+          name: ${{ steps.decide.outputs.release_name }}
+          prerelease: ${{ steps.decide.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.decide.outputs.make_latest }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/SkinSync-${{ steps.decide.outputs.target_tag }}.zip
+            release-assets/SkinSync-${{ steps.decide.outputs.target_tag }}+debug.zip
+            release-assets/SkinSyncMod.dll
+            release-assets/SkinSyncMod+debug.dll
+            release-assets/SHA256SUMS.txt

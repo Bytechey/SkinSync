@@ -6,7 +6,7 @@
     <RootNamespace>SkinSyncMod</RootNamespace>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
-    <Version>1.2.3</Version>
+    <Version>1.2.4</Version>
     <Description>Casualties Unknown — 皮肤切换 + 翼装配 mod</Description>
 
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
@@ -84,5 +84,20 @@
       <Private>false</Private>
     </Reference>
   </ItemGroup>
+
+  <Target Name="GenerateBuildInfo" BeforeTargets="CoreCompile">
+    <PropertyGroup>
+      <GeneratedBuildInfoFile>$(IntermediateOutputPath)BuildInfo.g.cs</GeneratedBuildInfoFile>
+    </PropertyGroup>
+    <ItemGroup>
+      <_BuildInfoLines Include="namespace SkinSyncMod { internal static class BuildInfo { internal const string Version = &quot;$(Version)&quot;%3B } }" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(GeneratedBuildInfoFile)" Lines="@(_BuildInfoLines)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Compile Remove="$(GeneratedBuildInfoFile)" />
+      <Compile Include="$(GeneratedBuildInfoFile)" Visible="false" />
+      <FileWrites Include="$(GeneratedBuildInfoFile)" />
+    </ItemGroup>
+  </Target>
 
 </Project>

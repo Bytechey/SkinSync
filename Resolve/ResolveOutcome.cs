@@ -1,27 +1,35 @@
+using System.ComponentModel;
 using UnityEngine;
 
 namespace SkinSyncMod.Resolve
 {
-    /// <summary>一次部位解析的结果。</summary>
-    internal sealed class ResolveOutcome
+    /// <summary>封装单次部位贴图解析的结果与命中来源。</summary>
+    public readonly struct ResolveOutcome
     {
-        /// <summary>解析到的贴图；未命中时为 null。</summary>
-        internal Sprite Sprite;
+        public Sprite Sprite { get; init; }
+        public string SpriteName { get; init; }
+        internal ResolveOrigin Origin { get; init; }
+        public int OwnerCharType { get; init; }
 
-        /// <summary>解析到的贴图名，便于日志说明「借用了谁」。</summary>
-        internal string SpriteName;
+        public bool Hit => Sprite != null;
 
-        /// <summary>来源。</summary>
-        internal ResolveOrigin Origin;
-
-        /// <summary>跨角色命中时，这张贴图原本属于哪个 charType；其他情况为 -1。</summary>
-        internal int OwnerCharType = -1;
-
-        internal bool Hit => Sprite != null;
-
-        internal static ResolveOutcome Miss()
+        internal ResolveOutcome(Sprite sprite, string spriteName, ResolveOrigin origin, int ownerCharType = -1)
         {
-            return new ResolveOutcome { Origin = ResolveOrigin.None, OwnerCharType = -1 };
+            Sprite = sprite;
+            SpriteName = spriteName;
+            Origin = origin;
+            OwnerCharType = ownerCharType;
+        }
+
+        public static ResolveOutcome Miss()
+        {
+            return new ResolveOutcome(null, null, ResolveOrigin.None, -1);
         }
     }
+}
+
+namespace System.Runtime.CompilerServices
+{
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    internal static class IsExternalInit { }
 }

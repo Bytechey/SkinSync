@@ -1,6 +1,6 @@
 namespace SkinSyncMod
 {
-    /// <summary>子端向服务端请求拉取指定皮肤包；服务端再选一个持有该皮肤的子端单播请求。编解码见 SkinMessageCodec。</summary>
+    /// <summary>按皮肤名请求远端皮肤包的消息体。</summary>
     public struct SkinPackRequestMessage
     {
         public string skinID;

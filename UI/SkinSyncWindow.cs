@@ -1,28 +1,49 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using BepInEx.Configuration;
 using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// SkinSync 主面板：黑白线条风格 + 三 tab（设置 / 角色 / 当前角色设置）。
-    /// 业务回调由 Plugin 注入；本类只管渲染、本地状态（tab / 滚动 / 改键采集）。
-    /// </summary>
-    internal sealed class SkinSyncWindow
+    /// <summary>绘制并管理 SkinSync 配置主窗口与外部宿主嵌入面板。</summary>
+    internal sealed partial class SkinSyncWindow
     {
         private const int WindowId = 0x5E15E150;
-        private const float WindowWidth = 1440f;
-        private const float WindowHeight = 900f;
-        private const float TitleBarHeight = 64f;
-        private const float CloseBtnSize = 52f;
-        private const float LabelColW = 240f;
-        private const float RowMinHeight = 52f;
+        private const float BaseWinW = 1440f;
+        private const float BaseWinH = 900f;
+        private const float MinWinW = 1180f;
+        private const float MinWinH = 720f;
+        private const float TitleBarHeight = 68f;
+        private const float CloseBtnSize = 50f;
+        private const float StatusBarHeight = 56f;
 
-        /// <summary>当前角色配件视图行：id + 完整 transform + 装备依赖 slot。</summary>
+        private const float EmbeddedDefaultOuterW = 1140f;
+        private const float ScrollbarReserveW = 26f;
+        private const float LabelColW = 288f;
+        private const float TabBarHeight = 48f;
+        private const float ButtonHeight = 44f;
+        private const float RowMinHeight = 46f;
+        private const float ControlHeight = 40f;
+        private const float BadgeHeight = 36f;
+        private const float RowGap = 6f;
+        private const float SubIndentW = 16f;
+
+        private static readonly int[] ScalePresets = { 90, 100, 115, 130 };
+        private static readonly string[] ScalePresetLabels = { "90%", "100%", "115%", "130%" };
+
+        private static readonly string[] TabKeys =
+        {
+            "tab.settings",
+            "tab.skins",
+            "tab.current",
+            "tab.about",
+        };
+
+        private static readonly GUIContent MeasureContent = new GUIContent();
+
         internal struct AccessoryRow
         {
-#pragma warning disable CS0649
             public string Id;
             public bool Enabled;
             public int OffX;
@@ -30,15 +51,14 @@ namespace SkinSyncMod
             public float Rotation;
             public int ZOrder;
             public string RequireSlot;
-#pragma warning restore CS0649
         }
 
         private readonly SkinSyncSettings _cfg;
-        private readonly Func<List<string>> _getSkins;
+        private readonly Func<IReadOnlyList<string>> _getSkins;
         private readonly Func<string> _getCurrentSkin;
         private readonly Action<string> _onApplySkin;
         private readonly Action _onRescan;
-        private readonly Func<List<AccessoryRow>> _getAccessories;
+        private readonly Func<IReadOnlyList<AccessoryRow>> _getAccessories;
         private readonly Action<string, bool> _onToggleAccessory;
         private readonly Action<string, int, int, float, int> _onSetAccessoryTransform;
         private readonly Action _onSaveTail;
@@ -46,57 +66,77 @@ namespace SkinSyncMod
         private readonly Action _onOpened;
         private readonly Action _onClosed;
 
-        private Rect _rect = new Rect(120f, 60f, WindowWidth, WindowHeight);
+        private Rect _rect = new Rect(120f, 60f, BaseWinW, BaseWinH);
         private float _drawScale = 1f;
+        private float _winW = BaseWinW;
+        private float _winH = BaseWinH;
+        private float _lastDrawScale = 1f;
+        private float _lastWinW = BaseWinW;
+        private float _lastWinH = BaseWinH;
+        private bool _posInitialized;
+        private readonly float[] _scaleBtnWidths = new float[4];
+
         private int _tab;
         private Vector2 _settingsScroll;
         private Vector2 _skinsScroll;
         private Vector2 _accessoriesScroll;
         private Vector2 _aboutScroll;
 
+        // 仅在 Layout 阶段同步外层容器实测宽度与倒计时快照，确保同帧 Layout/Repaint 控件几何一致
+        private bool _drawingEmbedded;
+        private bool _lastSnapshotEmbedded;
+        private bool _hasLayoutSnapshot;
+        private float _measuredStandaloneOuterW;
+        private float _measuredEmbeddedOuterW;
+        private float _layoutGridWidth;
+        private float _measuredSkinsViewHeight;
+        private float _layoutSkinsViewHeight;
+        private float _tailResetConfirmUntil;
+        private bool _tailResetConfirmActive;
+        private bool _tailDirty;
+
         private bool _capturingPanel;
         private bool _capturingNext;
         private bool _capturingPrev;
         private bool _capturingRescan;
+        private int _capturedFrame = -1;
         private bool _loggedDrawForCurrentOpen;
 
         internal bool Open { get; set; }
-        internal Rect WindowRect => new Rect(_rect.x * _drawScale, _rect.y * _drawScale, _rect.width * _drawScale, _rect.height * _drawScale);
+        internal bool IsCapturingHotkey => _capturingPanel || _capturingNext || _capturingPrev || _capturingRescan;
+        internal bool WasHotkeyCapturedThisFrame => _capturedFrame == Time.frameCount;
 
         internal void OpenPanel()
         {
             if (Open) return;
             Open = true;
+            _hasLayoutSnapshot = false;
+            _tailResetConfirmUntil = 0f;
             _loggedDrawForCurrentOpen = false;
-            ModLog.Info("SkinSyncWindow.OpenPanel -> Open=true");
+            ModLog.Debug("SkinSyncWindow.OpenPanel -> Open=true");
             _onOpened?.Invoke();
         }
 
         internal void ClosePanel()
         {
             if (!Open) return;
+            FlushPendingTailSave();
             Open = false;
+            _hasLayoutSnapshot = false;
+            _tailResetConfirmUntil = 0f;
             _loggedDrawForCurrentOpen = false;
             CancelKeyCapture();
+            ClearTextFocus();
             _onClosed?.Invoke();
-        }
-
-        internal bool IsCursorOver()
-        {
-            if (!Open) return false;
-            var mouse = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-            var screenRect = new Rect(_rect.x * _drawScale, _rect.y * _drawScale,
-                _rect.width * _drawScale, _rect.height * _drawScale);
-            return screenRect.Contains(mouse);
         }
 
         internal SkinSyncWindow(
             SkinSyncSettings cfg,
-            Func<List<string>> getSkins,
+            Func<IReadOnlyList<string>> getSkins,
             Func<string> getCurrentSkin,
             Action<string> onApplySkin,
             Action onRescan,
-            Func<List<AccessoryRow>> getAccessories,
+            Func<IReadOnlyList<AccessoryRow>> getAccessories,
             Action<string, bool> onToggleAccessory,
             Action<string, int, int, float, int> onSetAccessoryTransform,
             Action onSaveTail,
@@ -121,24 +161,17 @@ namespace SkinSyncMod
         internal void Draw()
         {
             if (!Open) return;
-            _drawScale = ComputeScale();
+            ComputeWindowTransform();
             if (!_loggedDrawForCurrentOpen)
             {
                 _loggedDrawForCurrentOpen = true;
-                ModLog.Info($"SkinSyncWindow.Draw screen=({Screen.width}x{Screen.height}) scale={_drawScale:F3} rect=({_rect.x:0},{_rect.y:0},{_rect.width:0},{_rect.height:0})");
+                ModLog.Debug($"SkinSyncWindow.Draw screen=({Screen.width}x{Screen.height}) scale={_drawScale:F3} rect=({_rect.x:0},{_rect.y:0},{_rect.width:0},{_rect.height:0})");
             }
-            _rect.width = WindowWidth;
-            _rect.height = WindowHeight;
-            float maxX = Mathf.Max(0f, Screen.width / _drawScale - WindowWidth);
-            float maxY = Mathf.Max(0f, Screen.height / _drawScale - WindowHeight);
-            _rect.x = Mathf.Clamp(_rect.x, 0f, maxX);
-            _rect.y = Mathf.Clamp(_rect.y, 0f, maxY);
 
             BlackWhiteSkin.Push();
             Matrix4x4 prev = GUI.matrix;
             try
             {
-                // 顶层 GUI.matrix 缩放：IMGUI 用此 matrix 同时画窗口框与回调内容，整体等比缩
                 GUI.matrix = Matrix4x4.Scale(new Vector3(_drawScale, _drawScale, 1f));
                 _rect = GUI.ModalWindow(WindowId, _rect, DrawContent, "");
             }
@@ -158,11 +191,76 @@ namespace SkinSyncMod
             }
         }
 
-        /// <summary>按屏幕尺寸算缩放比，使窗口不超出屏幕；屏幕足够大时不放大（上限 1）。</summary>
-        private static float ComputeScale()
+        // 按高分屏 DPI 基准与用户缩放百分比计算矩阵缩放与窗口尺寸，并在缩放切换时保持屏幕中心不漂移
+        private void ComputeWindowTransform()
         {
-            float fit = Mathf.Min(Screen.width / WindowWidth, Screen.height / WindowHeight) * 0.92f;
-            return Mathf.Clamp(fit, 0.3f, 1f);
+            int effectiveScalePercent = Patches.SaveManagerTabBridge.GetEffectiveUiScalePercent(_cfg);
+            float dpiBase = Mathf.Min(Screen.width / 1706.67f, Screen.height / 1066.67f);
+            float desired = dpiBase * (effectiveScalePercent / 100f);
+            float maxScaleW = Mathf.Max(0.4f, (Screen.width - 24f) / MinWinW);
+            float maxScaleH = Mathf.Max(0.4f, (Screen.height - 24f) / MinWinH);
+            float drawScale = Mathf.Clamp(desired, 0.4f, Mathf.Min(maxScaleW, maxScaleH));
+            float winW = Mathf.Clamp(Mathf.Floor((Screen.width - 24f) / drawScale), MinWinW, BaseWinW);
+            float winH = Mathf.Clamp(Mathf.Floor((Screen.height - 24f) / drawScale), MinWinH, BaseWinH);
+
+            if (!_posInitialized)
+            {
+                _rect = new Rect(
+                    (Screen.width / drawScale - winW) * 0.5f,
+                    (Screen.height / drawScale - winH) * 0.5f,
+                    winW,
+                    winH);
+                _posInitialized = true;
+            }
+            else if (!Mathf.Approximately(drawScale, _lastDrawScale)
+                || !Mathf.Approximately(winW, _lastWinW)
+                || !Mathf.Approximately(winH, _lastWinH))
+            {
+                float oldScreenCx = (_rect.x + _lastWinW * 0.5f) * _lastDrawScale;
+                float oldScreenCy = (_rect.y + _lastWinH * 0.5f) * _lastDrawScale;
+                _rect.x = oldScreenCx / drawScale - winW * 0.5f;
+                _rect.y = oldScreenCy / drawScale - winH * 0.5f;
+                _measuredStandaloneOuterW = 0f;
+                _measuredSkinsViewHeight = 0f;
+                _hasLayoutSnapshot = false;
+            }
+
+            _drawScale = drawScale;
+            _winW = winW;
+            _winH = winH;
+            _lastDrawScale = drawScale;
+            _lastWinW = winW;
+            _lastWinH = winH;
+
+            _rect.width = winW;
+            _rect.height = winH;
+            float maxX = Mathf.Max(0f, Screen.width / drawScale - winW);
+            float maxY = Mathf.Max(0f, Screen.height / drawScale - winH);
+            _rect.x = Mathf.Clamp(_rect.x, 0f, maxX);
+            _rect.y = Mathf.Clamp(_rect.y, 0f, maxY);
+        }
+
+        private void SnapshotLayoutState(bool embedded)
+        {
+            if (_hasLayoutSnapshot && _lastSnapshotEmbedded == embedded
+                && Event.current != null && Event.current.type != EventType.Layout)
+            {
+                return;
+            }
+
+            _hasLayoutSnapshot = true;
+            _lastSnapshotEmbedded = embedded;
+            _tailResetConfirmActive = Time.unscaledTime < _tailResetConfirmUntil;
+
+            float measuredOuter = embedded ? _measuredEmbeddedOuterW : _measuredStandaloneOuterW;
+            float fallbackOuter = embedded ? EmbeddedDefaultOuterW : (_winW - 48f);
+            float outerW = measuredOuter > 200f ? measuredOuter : fallbackOuter;
+            _layoutGridWidth = Mathf.Max(200f, outerW - ScrollbarReserveW);
+
+            if (_measuredSkinsViewHeight > 100f)
+            {
+                _layoutSkinsViewHeight = _measuredSkinsViewHeight;
+            }
         }
 
         internal void CancelKeyCapture()
@@ -173,899 +271,465 @@ namespace SkinSyncMod
             _capturingRescan = false;
         }
 
+        private void FlushPendingTailSave()
+        {
+            if (!_tailDirty) return;
+            _tailDirty = false;
+            _onSaveTail?.Invoke();
+        }
+
         private void DrawContent(int id)
         {
-            BlackWhiteSkin.DrawBorder(new Rect(0f, 0f, WindowWidth, WindowHeight), 6f);
-
-            GUI.Label(new Rect(28f, 14f, WindowWidth - CloseBtnSize - 56f, 40f),
-                SkinSyncI18n.T("app.name"), BlackWhiteSkin.HeaderStyle);
-
-            var closeRect = new Rect(WindowWidth - CloseBtnSize - 12f, 8f, CloseBtnSize, CloseBtnSize);
-            if (GUI.Button(closeRect, GUIContent.none))
+            // GUI.ModalWindow 原生回调会静默吞掉普通异常，必须在内部捕获并关窗释放输入锁
+            try
             {
+                _drawingEmbedded = false;
+                SnapshotLayoutState(embedded: false);
+                BlackWhiteSkin.DrawBorder(new Rect(0f, 0f, _winW, _winH), 6f);
+
+                float closeY = (TitleBarHeight - CloseBtnSize) * 0.5f;
+                var closeRect = new Rect(_winW - CloseBtnSize - 14f, closeY, CloseBtnSize, CloseBtnSize);
+                float scaleGroupLeftX = DrawTitleScaleGroup(closeRect.x - 14f);
+
+                float titleY = (TitleBarHeight - 52f) * 0.5f;
+                float titleW = Mathf.Max(160f, scaleGroupLeftX - 28f - 16f);
+                DrawShadowedTitle(new Rect(28f, titleY, titleW, 52f),
+                    SkinSyncI18n.T("app.name"), BlackWhiteSkin.HeaderStyle);
+
+                if (GUI.Button(closeRect, GUIContent.none, BlackWhiteSkin.ButtonStyle))
+                {
+                    ClearTextFocus();
+                    ClosePanel();
+                    GUIUtility.ExitGUI();
+                }
+                BlackWhiteSkin.DrawBorder(closeRect, 4f);
+                BlackWhiteSkin.DrawCloseX(new Rect(closeRect.x + 13f, closeRect.y + 13f,
+                    closeRect.width - 26f, closeRect.height - 26f), 5f);
+
+                BlackWhiteSkin.DrawHLine(new Rect(0f, TitleBarHeight, _winW, 4f));
+
+                float bodyTop = TitleBarHeight + 14f;
+                var bodyRect = new Rect(24f, bodyTop, _winW - 48f, _winH - bodyTop - StatusBarHeight - 8f);
+                GUILayout.BeginArea(bodyRect);
+                try
+                {
+                    DrawTabbedView();
+                }
+                finally
+                {
+                    GUILayout.EndArea();
+                }
+
+                BlackWhiteSkin.DrawHLine(new Rect(0f, _winH - StatusBarHeight, _winW, 4f));
+                DrawStatusBar();
+
+                // 拖拽区必须在缩放控件左边缘之前截止，防止覆盖缩放按钮与关闭按钮抢走点击事件
+                GUI.DragWindow(new Rect(0f, 0f, Mathf.Max(80f, scaleGroupLeftX - 8f), TitleBarHeight));
+            }
+            catch (ExitGUIException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warning($"SkinSyncWindow.DrawContent 异常：{ex}");
                 ClosePanel();
             }
-            BlackWhiteSkin.DrawBorder(closeRect, 4f);
-            BlackWhiteSkin.DrawCloseX(new Rect(closeRect.x + 13f, closeRect.y + 13f,
-                closeRect.width - 26f, closeRect.height - 26f), 6f);
+        }
 
-            BlackWhiteSkin.DrawHLine(new Rect(0f, TitleBarHeight, WindowWidth, 4f));
-            DrawTabs();
-            BlackWhiteSkin.DrawHLine(new Rect(0f, TitleBarHeight + 84f, WindowWidth, 4f));
+        private float DrawTitleScaleGroup(float rightLimitX)
+        {
+            const float btnH = 40f;
+            const float gap = 6f;
+            const float labelGap = 8f;
+            float y = (TitleBarHeight - btnH) * 0.5f;
 
-            float bodyTop = TitleBarHeight + 96f;
-            float statusH = 60f;
-            var bodyRect = new Rect(24f, bodyTop, WindowWidth - 48f, WindowHeight - bodyTop - statusH);
-            GUILayout.BeginArea(bodyRect);
-            if (_tab == 1) DrawSkinsTab();
-            else if (_tab == 2) DrawCurrentTab();
-            else if (_tab == 3) DrawAboutTab();
-            else DrawSettingsTab();
-            GUILayout.EndArea();
+            int currentPct = Patches.SaveManagerTabBridge.GetEffectiveUiScalePercent(_cfg);
+            string scaleLabel = SkinSyncI18n.T("lbl.ui_scale");
+            MeasureContent.text = scaleLabel;
+            float labelW = Mathf.Ceil(BlackWhiteSkin.MutedLabelStyle.CalcSize(MeasureContent).x) + 6f;
 
-            BlackWhiteSkin.DrawHLine(new Rect(0f, WindowHeight - statusH, WindowWidth, 4f));
+            float totalBtnsW = 0f;
+            for (int i = 0; i < ScalePresets.Length; i++)
+            {
+                float w = CalcButtonWidth(BlackWhiteSkin.ControlBtnStyle, ScalePresetLabels[i], 66f, 12f);
+                _scaleBtnWidths[i] = w;
+                totalBtnsW += w;
+                if (i > 0) totalBtnsW += gap;
+            }
+
+            float leftX = rightLimitX - totalBtnsW - labelGap - labelW;
+            GUI.Label(new Rect(leftX, y, labelW, btnH), scaleLabel, BlackWhiteSkin.MutedLabelStyle);
+
+            float curX = leftX + labelW + labelGap;
+            for (int i = 0; i < ScalePresets.Length; i++)
+            {
+                int preset = ScalePresets[i];
+                bool active = Mathf.Abs(currentPct - preset) <= 2;
+                GUIStyle style = active ? BlackWhiteSkin.ControlBtnActiveStyle : BlackWhiteSkin.ControlBtnStyle;
+                if (GUI.Button(new Rect(curX, y, _scaleBtnWidths[i], btnH), ScalePresetLabels[i], style))
+                {
+                    ClearTextFocus();
+                    Patches.SaveManagerTabBridge.SetEffectiveUiScalePercent(_cfg, preset);
+                    GUIUtility.ExitGUI();
+                }
+                curX += _scaleBtnWidths[i] + gap;
+            }
+
+            return leftX;
+        }
+
+        private static void DrawShadowedTitle(Rect rect, string text, GUIStyle style)
+        {
+            Color prev = GUI.color;
+            GUI.color = new Color(0f, 0f, 0f, 0.72f);
+            GUI.Label(new Rect(rect.x + 1f, rect.y + 1f, rect.width, rect.height), text, style);
+            GUI.color = prev;
+            GUI.Label(rect, text, style);
+        }
+
+        private void DrawStatusBar()
+        {
+            const float labelH = 40f;
+            float y = _winH - StatusBarHeight + (StatusBarHeight - labelH) * 0.5f;
             string current = _getCurrentSkin?.Invoke();
             string status = string.IsNullOrEmpty(current)
                 ? SkinSyncI18n.T("status.no_skin")
                 : SkinSyncI18n.F("status.current_skin", current);
-            GUI.Label(new Rect(28f, WindowHeight - statusH + 16f, WindowWidth - 56f, 32f), status);
+            GUI.Label(new Rect(28f, y, _winW - 296f, labelH), status, BlackWhiteSkin.SingleLineLabelStyle);
 
             string version = SkinSync.Version;
             if (!string.IsNullOrEmpty(version))
             {
-                GUI.Label(new Rect(WindowWidth - 248f, WindowHeight - statusH + 16f, 224f, 32f),
-                    "v" + version, VersionLabelStyle);
+                GUI.Label(new Rect(_winW - 252f, y, 224f, labelH),
+                    "v" + version, BlackWhiteSkin.MutedRightStyle);
             }
-
-            GUI.DragWindow(new Rect(0f, 0f, WindowWidth - CloseBtnSize - 24f, TitleBarHeight));
         }
 
-        private static GUIStyle _versionLabelStyle;
-        private static GUIStyle VersionLabelStyle =>
-            _versionLabelStyle ??= new GUIStyle(GUI.skin.label) { alignment = TextAnchor.MiddleRight };
-
-        private void DrawTabs()
-        {
-            float tabW = 280f, tabH = 64f, top = TitleBarHeight + 14f;
-            DrawTabButton(new Rect(28f, top, tabW, tabH), SkinSyncI18n.T("tab.settings"), 0);
-            DrawTabButton(new Rect(28f + (tabW + 16f), top, tabW, tabH), SkinSyncI18n.T("tab.skins"), 1);
-            DrawTabButton(new Rect(28f + (tabW + 16f) * 2f, top, tabW, tabH), SkinSyncI18n.T("tab.current"), 2);
-            DrawTabButton(new Rect(28f + (tabW + 16f) * 3f, top, tabW, tabH), SkinSyncI18n.T("tab.about"), 3);
-        }
-
-        /// <summary>嵌入 saveManager 设置侧栏：Push 自身 BlackWhiteSkin + 用 GUILayout 流式画 tab 与当前 body 内容自适应主区。</summary>
+        /// <summary>在外部宿主容器（如 CuSaveManager 侧栏页签）中流式绘制面板内容。</summary>
         internal void DrawEmbedded()
         {
+            _drawingEmbedded = true;
+            SnapshotLayoutState(embedded: true);
             BlackWhiteSkin.Push();
             try
             {
-                DrawEmbeddedTabs();
-                if (_tab == 1) DrawSkinsTab();
-                else if (_tab == 2) DrawCurrentTab();
-                else if (_tab == 3) DrawAboutTab();
-                else DrawSettingsTab();
+                DrawTabbedView();
             }
-            finally { BlackWhiteSkin.Pop(); }
+            finally
+            {
+                _drawingEmbedded = false;
+                BlackWhiteSkin.Pop();
+            }
         }
 
-        private void DrawEmbeddedTabs()
+        private void DrawTabbedView()
+        {
+            DrawTabBar();
+            GUILayout.Space(8f);
+            DrawActiveTabBody();
+        }
+
+        private void DrawTabBar()
         {
             GUILayout.BeginHorizontal();
-            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.settings"), 0);
-            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.skins"), 1);
-            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.current"), 2);
-            DrawEmbeddedTabButton(SkinSyncI18n.T("tab.about"), 3);
-            GUILayout.EndHorizontal();
-            GUILayout.Space(8f);
-        }
-
-        private void DrawEmbeddedTabButton(string label, int idx)
-        {
-            var style = idx == _tab ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle;
-            if (GUILayout.Button(label, style, GUILayout.Height(64f), GUILayout.ExpandWidth(true)))
+            for (int i = 0; i < TabKeys.Length; i++)
             {
-                _tab = idx;
-                CancelKeyCapture();
-            }
-        }
-
-        private void DrawTabButton(Rect rect, string label, int idx)
-        {
-            var style = idx == _tab ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle;
-            if (GUI.Button(rect, label, style))
-            {
-                _tab = idx;
-                CancelKeyCapture();
-            }
-        }
-
-        private void DrawSettingsTab()
-        {
-            _settingsScroll = GUILayout.BeginScrollView(_settingsScroll,
-                GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
-
-            GUILayout.Space(8f);
-            GUILayout.Label(SkinSyncI18n.T("sec.visual"), BlackWhiteSkin.HeaderStyle);
-            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
-            bool tailDeform = DrawSwitch(SkinSyncI18n.T("sw.tail_deform"), _cfg.TailDeformEnabled.Value);
-            if (tailDeform != _cfg.TailDeformEnabled.Value)
-            {
-                _cfg.TailDeformEnabled.Value = tailDeform;
-                TailDeformConfig.Enabled = tailDeform;
-            }
-#if DEBUG
-            bool hideWear = DrawSwitch(SkinSyncI18n.T("sw.hide_game_wearables"), _cfg.HideGameWearables.Value);
-            if (hideWear != _cfg.HideGameWearables.Value)
-            {
-                _cfg.HideGameWearables.Value = hideWear;
-                EquipmentHider.Active = hideWear;
-            }
-            bool requireEq = DrawSwitch(SkinSyncI18n.T("sw.require_equipment"), _cfg.RequireEquipmentForAccessories.Value);
-            if (requireEq != _cfg.RequireEquipmentForAccessories.Value)
-            {
-                _cfg.RequireEquipmentForAccessories.Value = requireEq;
-                AccessoryEnforcer.Active = requireEq;
-            }
-#endif
-            bool renderBlood = DrawSwitch(SkinSyncI18n.T("sw.render_custom_blood"), _cfg.RenderCustomBlood.Value);
-            if (renderBlood != _cfg.RenderCustomBlood.Value)
-            {
-                _cfg.RenderCustomBlood.Value = renderBlood;
-                BloodRenderConfig.Enabled = renderBlood;
-            }
-
-            // 原版皮肤：只影响游戏内角色外观，不改预览图。两个开关互相独立。
-            bool vanillaSelf = DrawSwitch(SkinSyncI18n.T("sw.vanilla_self"), _cfg.VanillaSkinForSelf.Value);
-            if (vanillaSelf != _cfg.VanillaSkinForSelf.Value)
-            {
-                _cfg.VanillaSkinForSelf.Value = vanillaSelf;
-                SkinApplier.RefreshAll();
-            }
-            bool vanillaOthers = DrawSwitch(SkinSyncI18n.T("sw.vanilla_others"), _cfg.VanillaSkinForOthers.Value);
-            if (vanillaOthers != _cfg.VanillaSkinForOthers.Value)
-            {
-                _cfg.VanillaSkinForOthers.Value = vanillaOthers;
-                SkinApplier.RefreshAll();
-            }
-            GUILayout.EndVertical();
-
-            GUILayout.Space(12f);
-            GUILayout.Label(SkinSyncI18n.T("sec.sync"), BlackWhiteSkin.HeaderStyle);
-            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
-            bool mpAvailable = SkinSync.IsMultiplayerSession;
-            if (!mpAvailable)
-            {
-                GUILayout.Label(SkinSyncI18n.T("sync.no_together_hint"));
-                GUILayout.Space(4f);
-            }
-            else if (!SkinSyncMod.Interop.Consumers.SessionConsumer.IsRunning)
-            {
-                GUILayout.Label(SkinSyncI18n.T("sync.network_off_hint"));
-                GUILayout.Space(4f);
-            }
-            bool prevEnabled = GUI.enabled;
-            GUI.enabled = prevEnabled && mpAvailable;
-            // 同步模式：两按钮互斥单选。
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(SkinSyncI18n.T("lbl.sync_mode"),
-                GUILayout.MinWidth(LabelColW), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight));
-            GUILayout.Space(20f);
-            string mode = _cfg.SyncMode.Value;
-            bool isOnEnter = mode == "OnEnter";
-            if (GUILayout.Button(SkinSyncI18n.T("sync.mode_on_enter"),
-                isOnEnter ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle,
-                GUILayout.MinWidth(220f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
-            {
-                if (!isOnEnter) _cfg.SyncMode.Value = "OnEnter";
-            }
-            GUILayout.Space(8f);
-            if (GUILayout.Button(SkinSyncI18n.T("sync.mode_passive"),
-                !isOnEnter ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle,
-                GUILayout.MinWidth(220f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
-            {
-                if (isOnEnter) _cfg.SyncMode.Value = "Passive";
-            }
-            GUILayout.FlexibleSpace();
-            GUILayout.EndHorizontal();
-            GUILayout.Space(6f);
-
-#if DEBUG
-            bool syncAcc = DrawSwitch(SkinSyncI18n.T("sw.sync_accessories"), _cfg.SyncAccessories.Value);
-            if (syncAcc != _cfg.SyncAccessories.Value) _cfg.SyncAccessories.Value = syncAcc;
-#endif
-            bool syncTail = DrawSwitch(SkinSyncI18n.T("sw.sync_tail"), _cfg.SyncTailDeform.Value);
-            if (syncTail != _cfg.SyncTailDeform.Value) _cfg.SyncTailDeform.Value = syncTail;
-            GUI.enabled = prevEnabled;
-            GUILayout.EndVertical();
-
-            GUILayout.Space(12f);
-            GUILayout.Label(SkinSyncI18n.T("sec.experimental"), BlackWhiteSkin.HeaderStyle);
-            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
-            bool packSync = DrawSwitch(SkinSyncI18n.T("sw.skin_pack_sync"), _cfg.EnableSkinPackSync.Value);
-            if (packSync != _cfg.EnableSkinPackSync.Value) _cfg.EnableSkinPackSync.Value = packSync;
-            bool persistEnabled = _cfg.EnableSkinPackSync.Value;
-            bool prevEnabledExp = GUI.enabled;
-            GUI.enabled = persistEnabled;
-            bool persist = DrawSwitch(SkinSyncI18n.T("sw.skin_pack_persist"), _cfg.SkinPackPersistOnDisk.Value);
-            if (persist != _cfg.SkinPackPersistOnDisk.Value) _cfg.SkinPackPersistOnDisk.Value = persist;
-            bool allowPeers = DrawSwitch(SkinSyncI18n.T("sw.allow_peers_persist"), _cfg.AllowPeersPersistMyPack.Value);
-            if (allowPeers != _cfg.AllowPeersPersistMyPack.Value) _cfg.AllowPeersPersistMyPack.Value = allowPeers;
-            GUI.enabled = prevEnabledExp;
-            GUILayout.EndVertical();
-
-            GUILayout.Space(12f);
-            GUILayout.Label(SkinSyncI18n.T("sec.hotkeys"), BlackWhiteSkin.HeaderStyle);
-            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
-            DrawHotkeyRow(SkinSyncI18n.T("lbl.hotkey_toggle_panel"), _cfg.TogglePanelHotkey, ref _capturingPanel,
-                () => { _capturingNext = false; _capturingPrev = false; _capturingRescan = false; });
-            DrawHotkeyRow(SkinSyncI18n.T("lbl.hotkey_next_skin"), _cfg.NextSkinHotkey, ref _capturingNext,
-                () => { _capturingPanel = false; _capturingPrev = false; _capturingRescan = false; });
-            DrawHotkeyRow(SkinSyncI18n.T("lbl.hotkey_prev_skin"), _cfg.PrevSkinHotkey, ref _capturingPrev,
-                () => { _capturingPanel = false; _capturingNext = false; _capturingRescan = false; });
-            DrawHotkeyRow(SkinSyncI18n.T("lbl.hotkey_rescan"), _cfg.RescanSkinsHotkey, ref _capturingRescan,
-                () => { _capturingPanel = false; _capturingNext = false; _capturingPrev = false; });
-            CaptureKeyDownIfNeeded();
-            GUILayout.EndVertical();
-
-            GUILayout.Space(12f);
-            GUILayout.Label(SkinSyncI18n.T("sec.misc"), BlackWhiteSkin.HeaderStyle);
-            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
-            bool showLog = DrawSwitch(SkinSyncI18n.T("sw.show_log_in_console"), _cfg.ShowLogInConsole.Value);
-            if (showLog != _cfg.ShowLogInConsole.Value) _cfg.ShowLogInConsole.Value = showLog;
-            bool acceptUpdate = DrawSwitch(SkinSyncI18n.T("sw.accept_update_notice"), _cfg.AcceptUpdateNotice.Value);
-            if (acceptUpdate != _cfg.AcceptUpdateNotice.Value)
-            {
-                _cfg.AcceptUpdateNotice.Value = acceptUpdate;
-                SkinSyncMod.Patches.UpdateChecker.Enabled = acceptUpdate;
-            }
-            DrawLanguageModeRow(SkinSyncI18n.T("lbl.language"), _cfg.PreferredLanguage);
-            GUILayout.EndVertical();
-
-            GUILayout.Space(20f);
-            GUILayout.EndScrollView();
-        }
-
-        private void DrawSkinsTab()
-        {
-            var skins = _getSkins?.Invoke() ?? new List<string>();
-            string currentSkin = _getCurrentSkin?.Invoke() ?? "";
-
-            GUILayout.Space(4f);
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(SkinSyncI18n.F("fmt.skins_count", skins.Count),
-                GUILayout.MinWidth(220f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(36f));
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button(SkinSyncI18n.T("btn.rescan"),
-                GUILayout.MinWidth(180f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(36f)))
-            {
-                _onRescan?.Invoke();
-            }
-            GUILayout.EndHorizontal();
-            GUILayout.Space(8f);
-
-            _skinsScroll = GUILayout.BeginScrollView(_skinsScroll,
-                GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
-
-            if (skins.Count == 0)
-            {
-                GUILayout.Space(20f);
-                GUILayout.Label(SkinSyncI18n.T("msg.no_skins"));
-            }
-            else
-            {
-                DrawSkinGrid(skins, currentSkin);
-            }
-
-            GUILayout.Space(20f);
-            GUILayout.EndScrollView();
-        }
-
-        // 一行固定 3 个。cell 宽度改用 ScrollView 内部的实际可用宽度算，
-        // 不再用 WindowWidth 硬减：左侧还有 tab 栅占位，硬算会让第三列超出可视区被裁掉。
-        private const int CellsPerRow = 3;
-        // 卡片在预览区之外还要容纳：内边距 ×2 + 名字 + 间距 ×2 + 按钮。
-        // 写死成固定值，让 cellH 和卡片内部排版用同一套口径（之前两处各算一份，名字被挤出去了）。
-        private const float CellChromeH = 108f;
-        private const float GridGap = 14f;
-        private const float GridRightPad = 18f;
-        private const float CellInnerPad = 10f;
-
-        private void DrawSkinGrid(List<string> skins, string currentSkin)
-        {
-            // 向布局系统要一个宽度：ScrollView 内容区的真实可用宽度。
-            // 高度给 0，不占垂直空间。
-            float available = GUILayoutUtility.GetRect(0f, 0f, GUILayout.ExpandWidth(true)).width;
-            // 极端情况下布局还没算好（返回 0 或很小），回退到估算值，避免 cell 宽度变成负数。
-            if (available < 200f) available = WindowWidth - 48f - 280f - 48f;
-
-            float cellW = Mathf.Floor((available - GridGap * (CellsPerRow - 1) - GridRightPad) / CellsPerRow);
-            if (cellW < 80f) cellW = 80f;
-            // 预览区是正方形，边长 = cellW - 内边距，所以卡片高 = 内边距 + 正方形 + 下挂区。
-            float side = cellW - CellInnerPad * 2f;
-            float cellH = Mathf.Floor(CellInnerPad + side + CellChromeH);
-
-            int row = 0;
-            while (row * CellsPerRow < skins.Count)
-            {
-                GUILayout.BeginHorizontal();
-                for (int c = 0; c < CellsPerRow; c++)
+                if (i > 0) GUILayout.Space(8f);
+                GUIStyle style = _tab == i ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle;
+                string label = SkinSyncI18n.T(TabKeys[i]);
+                float tabW = CalcButtonWidth(style, label, 180f, 24f);
+                if (GUILayout.Button(label, style, GUILayout.Width(tabW), GUILayout.Height(TabBarHeight)) && _tab != i)
                 {
-                    int idx = row * CellsPerRow + c;
-                    if (idx >= skins.Count)
-                    {
-                        // 行末不足时占位，让前面 cell 仍按左对齐排列。
-                        GUILayoutUtility.GetRect(cellW, cellH, GUILayout.Width(cellW), GUILayout.Height(cellH));
-                    }
-                    else
-                    {
-                        DrawSkinCell(skins[idx], currentSkin, cellW, cellH, side);
-                    }
-                    if (c < CellsPerRow - 1) GUILayout.Space(GridGap);
-                }
-                GUILayout.Space(GridRightPad);
-                GUILayout.EndHorizontal();
-                GUILayout.Space(GridGap);
-                row++;
-            }
-        }
-
-        private void DrawSkinCell(string skin, string currentSkin, float cellW, float cellH, float imgSize)
-        {
-            bool isActive = string.Equals(skin, currentSkin, StringComparison.Ordinal);
-
-            // 用 GetRect 拿整个 cell 精确 rect——所有内部控件 absolute 定位，避开 CardStyle padding 与 GUILayout.Width 的不可预测交互。
-            Rect cellRect = GUILayoutUtility.GetRect(cellW, cellH,
-                GUILayout.Width(cellW), GUILayout.Height(cellH),
-                GUILayout.ExpandWidth(false), GUILayout.ExpandHeight(false));
-
-            // 背景（深灰）+ 白色矩形边框，与面板风格一致。外框加粗。
-            GUI.DrawTexture(cellRect, BlackWhiteSkin.LineTex, ScaleMode.StretchToFill, false, 0f,
-                new Color(0.06f, 0.06f, 0.06f, 0.42f), 0f, 0f);
-            BlackWhiteSkin.DrawBorder(cellRect, 4f);
-
-            float innerW = cellRect.width - CellInnerPad * 2f;
-            float innerX = cellRect.x + CellInnerPad;
-
-            // 从底往上排：按钮 → 名字 → 剩下的全给预览图。
-            // 之前是「预览图用固定边长、名字接在图片下、按钮贴底」，三者没有闭环，
-            // 图片一高就把名字挤出卡片外。
-            const float btnH = 46f;
-            const float nameH = 36f;
-            const float gap = 4f;
-
-            Rect btnRect = new Rect(innerX, cellRect.yMax - CellInnerPad - btnH, innerW, btnH);
-            Rect titleRect = new Rect(innerX, btnRect.y - gap - nameH, innerW, nameH);
-
-            float imgTop = cellRect.y + CellInnerPad;
-            float imgBottom = titleRect.y - gap;
-            float imgH = Mathf.Max(40f, imgBottom - imgTop);
-            // 预览区保持正方形：宽度不能超过可用宽度，也不能超过可用高度。
-            float side = Mathf.Min(innerW, imgH);
-            Rect imgRect = new Rect(cellRect.x + (cellRect.width - side) * 0.5f, imgTop, side, side);
-
-            GUI.DrawTexture(imgRect, BlackWhiteSkin.LineTex, ScaleMode.StretchToFill, false, 0f,
-                new Color(0f, 0f, 0f, 0.28f), 0f, 0f);
-            BlackWhiteSkin.DrawBorder(imgRect, 3f);
-
-            Texture2D tex = null;
-            try
-            {
-                string skinDir = SkinSyncMod.SkinPathResolver.GetSkinDir(skin);
-                tex = SkinPreviewRenderer.GetOrBuild(skin, skinDir, _cfg);
-            }
-            catch (System.Exception ex)
-            {
-                SkinSyncMod.ModLog.Warning("preview build failed for " + skin + ": " + ex.Message);
-            }
-            if (tex != null)
-            {
-                GUI.DrawTexture(imgRect, tex, ScaleMode.ScaleToFit, true);
-            }
-
-            // 正在使用的标记：预览图左上角的星。
-            if (isActive)
-            {
-                GUI.Label(new Rect(imgRect.x + 2f, imgRect.y - 4f, 56f, 56f), "★", StarStyle);
-            }
-
-            // 名字：角色脚边，居中。
-            GUI.Label(titleRect, skin, SkinNameStyle);
-
-            bool prevEnabled = GUI.enabled;
-            GUI.enabled = !isActive;
-            if (GUI.Button(btnRect, isActive ? SkinSyncI18n.T("btn.skin_in_use") : SkinSyncI18n.T("btn.apply_skin")))
-            {
-                _onApplySkin?.Invoke(skin);
-            }
-            GUI.enabled = prevEnabled;
-        }
-
-        private static GUIStyle _skinNameStyle;
-        private static GUIStyle SkinNameStyle =>
-            _skinNameStyle ??= new GUIStyle(BlackWhiteSkin.HeaderStyle)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 28,
-                fontStyle = FontStyle.Bold,
-            };
-
-        private static GUIStyle _starStyle;
-        private static GUIStyle StarStyle =>
-            _starStyle ??= new GUIStyle(BlackWhiteSkin.HeaderStyle)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 40,
-                fontStyle = FontStyle.Bold,
-            };
-
-        private const string UrlModRepo = "https://github.com/Bytechey/SkinSync";
-        private const string UrlModVideo = "https://www.bilibili.com/video/BV1p1GJ64EAG";
-
-        private static GUIStyle _centerTitleStyle;
-        private static GUIStyle CenterTitleStyle =>
-            _centerTitleStyle ??= new GUIStyle(BlackWhiteSkin.HeaderStyle)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 44,
-                fontStyle = FontStyle.Bold,
-            };
-        private static GUIStyle _centerLabelStyle;
-        private static GUIStyle CenterLabelStyle =>
-            _centerLabelStyle ??= new GUIStyle(BlackWhiteSkin.HeaderStyle)
-            {
-                alignment = TextAnchor.MiddleCenter,
-                fontSize = 30,
-                fontStyle = FontStyle.Bold,
-                wordWrap = true,
-            };
-        private static GUIStyle _nameButtonStyle;
-        private static GUIStyle NameButtonStyle
-        {
-            get
-            {
-                if (_nameButtonStyle != null) return _nameButtonStyle;
-                var s = new GUIStyle(BlackWhiteSkin.HeaderStyle)
-                {
-                    alignment = TextAnchor.MiddleCenter,
-                    fontSize = 32,
-                    fontStyle = FontStyle.Bold,
-                    border = new RectOffset(0, 0, 0, 0),
-                    margin = new RectOffset(0, 0, 0, 0),
-                    padding = new RectOffset(6, 6, 6, 6),
-                };
-                s.normal.background = null;
-                s.hover.background = null;
-                s.active.background = null;
-                s.focused.background = null;
-                s.onNormal.background = null;
-                s.onHover.background = null;
-                s.onActive.background = null;
-                s.normal.textColor = Color.white;
-                s.hover.textColor = new Color(0.6f, 0.85f, 1f);
-                s.active.textColor = new Color(0.4f, 0.7f, 1f);
-                s.focused.textColor = Color.white;
-                _nameButtonStyle = s;
-                return s;
-            }
-        }
-
-        private void DrawAboutTab()
-        {
-            _aboutScroll = GUILayout.BeginScrollView(_aboutScroll,
-                GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
-
-            GUILayout.Space(12f);
-            GUILayout.Label(SkinSyncI18n.T("about.title"), CenterTitleStyle, GUILayout.ExpandWidth(true));
-            GUILayout.Space(6f);
-            GUILayout.Label(SkinSyncI18n.T("about.desc"), CenterLabelStyle, GUILayout.ExpandWidth(true));
-            GUILayout.Label(SkinSyncI18n.F("about.version", SkinSync.Version), CenterLabelStyle, GUILayout.ExpandWidth(true));
-
-            GUILayout.Space(16f);
-            GUILayout.Label(SkinSyncI18n.T("about.sec_links"), CenterTitleStyle, GUILayout.ExpandWidth(true));
-            GUILayout.Space(6f);
-            DrawLinkButton(SkinSyncI18n.T("about.link_mod_repo"), UrlModRepo);
-            DrawLinkButton(SkinSyncI18n.T("about.link_mod_video"), UrlModVideo);
-
-            GUILayout.Space(16f);
-            GUILayout.Label(SkinSyncI18n.T("about.sec_credits"), CenterTitleStyle, GUILayout.ExpandWidth(true));
-            GUILayout.Space(6f);
-            DrawNameButton("Bytechey", "https://github.com/Bytechey");
-            DrawNameButton("huanxin886", "https://github.com/huanxin886");
-
-            GUILayout.Space(16f);
-            GUILayout.Label(SkinSyncI18n.T("about.testers"), CenterTitleStyle, GUILayout.ExpandWidth(true));
-            GUILayout.Space(6f);
-            DrawCreditLine(".....");
-
-            GUILayout.Space(16f);
-            GUILayout.Label(SkinSyncI18n.T("about.sec_deps"), CenterTitleStyle, GUILayout.ExpandWidth(true));
-            GUILayout.Space(6f);
-            DrawLinkButton("BepInEx", "https://github.com/BepInEx/BepInEx");
-
-            GUILayout.Space(20f);
-            GUILayout.EndScrollView();
-        }
-
-        private void DrawLinkButton(string label, string url)
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button(label, BlackWhiteSkin.TabStyle,
-                GUILayout.MinWidth(560f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
-            {
-                try { Application.OpenURL(url); } catch { }
-            }
-            GUILayout.FlexibleSpace();
-            GUILayout.EndHorizontal();
-            GUILayout.Space(6f);
-        }
-
-        private void DrawCreditLine(string text)
-        {
-            GUILayout.Label(text, CenterLabelStyle, GUILayout.ExpandWidth(true), GUILayout.MinHeight(36f));
-        }
-
-        private void DrawNameButton(string name, string url)
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.FlexibleSpace();
-            if (GUILayout.Button(name, NameButtonStyle, GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f)))
-            {
-                try { Application.OpenURL(url); } catch { }
-            }
-            GUILayout.FlexibleSpace();
-            GUILayout.EndHorizontal();
-            GUILayout.Space(4f);
-        }
-
-        // 当前角色 tab：折叠态字典（key = "tail" 或 "acc:<id>"），默认全部折叠。
-        private readonly Dictionary<string, bool> _currentExpanded = new Dictionary<string, bool>();
-
-        private void DrawCurrentTab()
-        {
-            string currentSkin = _getCurrentSkin?.Invoke() ?? "";
-            GUILayout.Space(4f);
-            GUILayout.Label(string.IsNullOrEmpty(currentSkin)
-                    ? SkinSyncI18n.T("status.no_skin")
-                    : SkinSyncI18n.F("status.current_skin", currentSkin),
-                BlackWhiteSkin.HeaderStyle);
-            GUILayout.Space(8f);
-
-            _accessoriesScroll = GUILayout.BeginScrollView(_accessoriesScroll,
-                GUILayout.ExpandWidth(true), GUILayout.ExpandHeight(true));
-
-            if (string.IsNullOrEmpty(currentSkin))
-            {
-                GUILayout.Space(20f);
-                GUILayout.Label(SkinSyncI18n.T("msg.no_skin_yet"));
-                GUILayout.EndScrollView();
-                return;
-            }
-
-            DrawTailGroup();
-            GUILayout.Space(12f);
-
-#if debug
-            GUILayout.Label(SkinSyncI18n.T("sec.accessories"), BlackWhiteSkin.HeaderStyle);
-            var rows = _getAccessories?.Invoke() ?? new List<AccessoryRow>();
-            if (rows.Count == 0)
-            {
-                GUILayout.Space(10f);
-                GUILayout.Label(SkinSyncI18n.T("msg.no_accessories"));
-            }
-            else
-            {
-                foreach (var row in rows)
-                {
-                    DrawAccessoryGroup(row);
-                    GUILayout.Space(6f);
+                    ClearTextFocus();
+                    FlushPendingTailSave();
+                    _tab = i;
+                    _tailResetConfirmUntil = 0f;
+                    _hasLayoutSnapshot = false;
+                    CancelKeyCapture();
+                    GUILayout.EndHorizontal();
+                    GUIUtility.ExitGUI();
                 }
             }
-#endif
-
-            GUILayout.Space(20f);
-            GUILayout.EndScrollView();
-        }
-
-        private void DrawTailGroup()
-        {
-            const string key = "tail";
-            if (!_currentExpanded.ContainsKey(key)) _currentExpanded[key] = false;
-            bool expanded = _currentExpanded[key];
-            string statusText = _cfg.TailDeformEnabled.Value
-                ? SkinSyncI18n.T("lbl.tail_on")
-                : SkinSyncI18n.T("lbl.tail_off");
-            string label = (expanded ? "▼  " : "▶  ") + SkinSyncI18n.T("sec.tail") + "    " + statusText;
-            if (GUILayout.Button(label, BlackWhiteSkin.HeaderButtonStyle,
-                GUILayout.ExpandWidth(true), GUILayout.MinHeight(56f)))
-            {
-                _currentExpanded[key] = !expanded;
-            }
-            if (!_currentExpanded[key]) return;
-
-            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
-            bool changed = false;
-
-            bool fg = DrawSwitch(SkinSyncI18n.T("tail.front_guard"), TailDeformConfig.FrontGuard);
-            if (fg != TailDeformConfig.FrontGuard) { TailDeformConfig.FrontGuard = fg; changed = true; }
-
-            int seg = (int)DrawSliderRow(SkinSyncI18n.T("tail.segments"), TailDeformConfig.Segments, 4f, 40f, 1f);
-            if (seg != TailDeformConfig.Segments) { TailDeformConfig.Segments = seg; changed = true; }
-            int it = (int)DrawSliderRow(SkinSyncI18n.T("tail.iters"), TailDeformConfig.ConstraintIters, 1f, 20f, 1f);
-            if (it != TailDeformConfig.ConstraintIters) { TailDeformConfig.ConstraintIters = it; changed = true; }
-
-            float dp = DrawSliderRow(SkinSyncI18n.T("tail.damping"), TailDeformConfig.Damping, 0f, 5f, 0.01f);
-            if (!Mathf.Approximately(dp, TailDeformConfig.Damping)) { TailDeformConfig.Damping = dp; changed = true; }
-            float sdp = DrawSliderRow(SkinSyncI18n.T("tail.speed_damping"), TailDeformConfig.SpeedDamping, 0f, 0.5f, 0.005f);
-            if (!Mathf.Approximately(sdp, TailDeformConfig.SpeedDamping)) { TailDeformConfig.SpeedDamping = sdp; changed = true; }
-            float st = DrawSliderRow(SkinSyncI18n.T("tail.stiffness"), TailDeformConfig.Stiffness, 0f, 5f, 0.01f);
-            if (!Mathf.Approximately(st, TailDeformConfig.Stiffness)) { TailDeformConfig.Stiffness = st; changed = true; }
-            float mb = DrawSliderRow(SkinSyncI18n.T("tail.max_bend"), TailDeformConfig.MaxBendDeg, 0f, 180f, 1f);
-            if (!Mathf.Approximately(mb, TailDeformConfig.MaxBendDeg)) { TailDeformConfig.MaxBendDeg = mb; changed = true; }
-            float af = DrawSliderRow(SkinSyncI18n.T("tail.anchor_follow"), TailDeformConfig.AnchorFollow, 0f, 5f, 0.01f);
-            if (!Mathf.Approximately(af, TailDeformConfig.AnchorFollow)) { TailDeformConfig.AnchorFollow = af; changed = true; }
-            float sm = DrawSliderRow(SkinSyncI18n.T("tail.smoothness"), TailDeformConfig.Smoothness, 0f, 0.99f, 0.01f);
-            if (!Mathf.Approximately(sm, TailDeformConfig.Smoothness)) { TailDeformConfig.Smoothness = sm; changed = true; }
-            float ms = DrawSliderRow(SkinSyncI18n.T("tail.max_step"), TailDeformConfig.MaxStep, 0.001f, 2f, 0.005f);
-            if (!Mathf.Approximately(ms, TailDeformConfig.MaxStep)) { TailDeformConfig.MaxStep = ms; changed = true; }
-            float mf = DrawSliderRow(SkinSyncI18n.T("tail.max_fixed_dt"), TailDeformConfig.MaxFixedDt, 0.005f, 0.1f, 0.001f);
-            if (!Mathf.Approximately(mf, TailDeformConfig.MaxFixedDt)) { TailDeformConfig.MaxFixedDt = mf; changed = true; }
-            float fm = DrawSliderRow(SkinSyncI18n.T("tail.front_guard_margin"), TailDeformConfig.FrontGuardMargin, 0f, 1f, 0.01f);
-            if (!Mathf.Approximately(fm, TailDeformConfig.FrontGuardMargin)) { TailDeformConfig.FrontGuardMargin = fm; changed = true; }
-
-            float gx = DrawSliderRow(SkinSyncI18n.T("tail.gravity_x"), TailDeformConfig.GravityX, -10f, 10f, 0.1f);
-            if (!Mathf.Approximately(gx, TailDeformConfig.GravityX)) { TailDeformConfig.GravityX = gx; changed = true; }
-            float gy = DrawSliderRow(SkinSyncI18n.T("tail.gravity_y"), TailDeformConfig.GravityY, -20f, 10f, 0.1f);
-            if (!Mathf.Approximately(gy, TailDeformConfig.GravityY)) { TailDeformConfig.GravityY = gy; changed = true; }
-
-            float wf = DrawSliderRow(SkinSyncI18n.T("tail.wind_freq"), TailDeformConfig.WindFreq, 0f, 20f, 0.05f);
-            if (!Mathf.Approximately(wf, TailDeformConfig.WindFreq)) { TailDeformConfig.WindFreq = wf; changed = true; }
-            float wa = DrawSliderRow(SkinSyncI18n.T("tail.wind_amp"), TailDeformConfig.WindAmp, 0f, 1f, 0.001f);
-            if (!Mathf.Approximately(wa, TailDeformConfig.WindAmp)) { TailDeformConfig.WindAmp = wa; changed = true; }
-            float sd = DrawSliderRow(SkinSyncI18n.T("tail.speed_disturb"), TailDeformConfig.SpeedDisturb, 0f, 0.5f, 0.001f);
-            if (!Mathf.Approximately(sd, TailDeformConfig.SpeedDisturb)) { TailDeformConfig.SpeedDisturb = sd; changed = true; }
-
-            GUILayout.Space(8f);
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button(SkinSyncI18n.T("tail.reset"),
-                GUILayout.MinWidth(180f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f)))
-            {
-                _onResetTail?.Invoke();
-            }
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
+
+            GUILayout.Space(6f);
+            Rect lineRect = GUILayoutUtility.GetRect(1f, 2f, GUILayout.ExpandWidth(true));
+            BlackWhiteSkin.DrawHLine(lineRect);
+        }
+
+        private void DrawActiveTabBody()
+        {
+            if (_tab == 1) DrawSkinsTab();
+            else if (_tab == 2) DrawCurrentTab();
+            else if (_tab == 3) DrawAboutTab();
+            else DrawSettingsTab();
+        }
+
+        // 显式禁用横向滚动条，防止子元素反向撑宽 ScrollView 虚拟横轴
+        private static Vector2 BeginVerticalScroll(Vector2 scroll)
+        {
+            return GUILayout.BeginScrollView(
+                scroll,
+                false,
+                false,
+                GUIStyle.none,
+                BlackWhiteSkin.VerticalScrollbarStyle,
+                BlackWhiteSkin.ScrollViewStyle,
+                GUILayout.ExpandWidth(true),
+                GUILayout.ExpandHeight(true));
+        }
+
+        // 点击按钮后清理 keyboardControl，避免残留焦点拦截模组全局热键
+        private static void ClearTextFocus()
+        {
+            GUIUtility.keyboardControl = 0;
+        }
+
+        // 用显式实测宽度传给 GUILayout.Width，避免 GUILayout.MinWidth 在窄容器中被压缩截断文字
+        private static float CalcButtonWidth(GUIStyle style, string text, float minWidth, float extraPad = 16f)
+        {
+            MeasureContent.text = text ?? string.Empty;
+            float w = Mathf.Ceil(style.CalcSize(MeasureContent).x) + extraPad;
+            return Mathf.Max(minWidth, w);
+        }
+
+        private static Rect ReserveVerticalCenterSlot(float width, float height)
+        {
+            Rect slot = GUILayoutUtility.GetRect(width, RowMinHeight, GUILayout.Width(width), GUILayout.ExpandHeight(true));
+            float y = slot.y + Mathf.Max(0f, Mathf.Floor((slot.height - height) * 0.5f));
+            return new Rect(slot.x, y, width, height);
+        }
+
+        private static void DrawSectionHeader(string title, bool first = false)
+        {
+            GUILayout.Space(first ? 2f : 12f);
+            GUILayout.Label(title, BlackWhiteSkin.SectionHeaderStyle, GUILayout.MinHeight(42f));
+            GUILayout.Space(4f);
+        }
+
+        private static void BeginSubBlock()
+        {
+            GUILayout.Space(4f);
+            GUILayout.BeginHorizontal();
+            GUILayout.Space(SubIndentW);
+            GUILayout.BeginVertical();
+        }
+
+        private static void EndSubBlock()
+        {
             GUILayout.EndVertical();
-
-            if (changed) _onSaveTail?.Invoke();
-        }
-
-        private void DrawAccessoryGroup(AccessoryRow row)
-        {
-            string key = "acc:" + row.Id;
-            if (!_currentExpanded.ContainsKey(key)) _currentExpanded[key] = false;
-            bool expanded = _currentExpanded[key];
-
-            GUILayout.BeginHorizontal();
-            string statusText = row.Enabled ? SkinSyncI18n.T("sw.on") : SkinSyncI18n.T("sw.off");
-            // 配件名走游戏自己的本地化（Locale.GetItem 找不到 key 时自然回落到 id 本身）。
-            string displayName;
-            try { displayName = Locale.GetItem(row.Id); }
-            catch { displayName = row.Id; }
-            if (string.IsNullOrEmpty(displayName)) displayName = row.Id;
-            string label = (expanded ? "▼  " : "▶  ") + displayName + "    " + statusText;
-            if (GUILayout.Button(label, BlackWhiteSkin.HeaderButtonStyle,
-                GUILayout.ExpandWidth(true), GUILayout.MinHeight(48f)))
-            {
-                _currentExpanded[key] = !expanded;
-            }
+            Rect subRect = GUILayoutUtility.GetLastRect();
             GUILayout.EndHorizontal();
-            if (!_currentExpanded[key]) return;
-
-            GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
-
-            if (!string.IsNullOrEmpty(row.RequireSlot))
+            if (Event.current != null && Event.current.type == EventType.Repaint)
             {
-                GUILayout.Label(SkinSyncI18n.F("acc.require_slot",
-                    SkinSyncI18n.LocalizeWearSlot(row.RequireSlot)));
-                GUILayout.Space(4f);
+                BlackWhiteSkin.DrawSoftVLine(new Rect(
+                    subRect.x - 10f,
+                    subRect.y + 2f,
+                    2f,
+                    Mathf.Max(0f, subRect.height - 4f)));
             }
-
-            bool nextEnabled = DrawSwitch(SkinSyncI18n.T("acc.enabled"), row.Enabled);
-            if (nextEnabled != row.Enabled)
-            {
-                _onToggleAccessory?.Invoke(row.Id, nextEnabled);
-            }
-
-            int offX = row.OffX;
-            int offY = row.OffY;
-            float rot = row.Rotation;
-            int z = row.ZOrder;
-            bool tChanged = false;
-
-            int newX = DrawIntStepperRow(SkinSyncI18n.T("acc.off_x"), offX, 1);
-            if (newX != offX) { offX = newX; tChanged = true; }
-            int newY = DrawIntStepperRow(SkinSyncI18n.T("acc.off_y"), offY, 1);
-            if (newY != offY) { offY = newY; tChanged = true; }
-            float newRot = DrawFloatStepperRow(SkinSyncI18n.T("acc.rotation"), rot, 5f);
-            if (!Mathf.Approximately(newRot, rot)) { rot = newRot; tChanged = true; }
-            int newZ = DrawIntStepperRow(SkinSyncI18n.T("acc.z_order"), z, 1);
-            if (newZ != z) { z = newZ; tChanged = true; }
-
-            if (tChanged)
-            {
-                _onSetAccessoryTransform?.Invoke(row.Id, offX, offY, rot, z);
-            }
-            GUILayout.EndVertical();
-        }
-
-        private static float DrawSliderRow(string label, float value, float min, float max, float step)
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.MinWidth(LabelColW), GUILayout.ExpandWidth(false),
-                GUILayout.MinHeight(36f));
-            float v = GUILayout.HorizontalSlider(value, min, max,
-                GUILayout.ExpandWidth(true), GUILayout.MinHeight(36f));
-            GUILayout.Space(8f);
-            GUILayout.Label(v.ToString("0.###"),
-                GUILayout.MinWidth(96f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(36f));
-            GUILayout.EndHorizontal();
-            GUILayout.Space(4f);
-            if (step > 0f) v = Mathf.Round(v / step) * step;
-            return Mathf.Clamp(v, min, max);
-        }
-
-        private static int DrawIntStepperRow(string label, int value, int step)
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.MinWidth(LabelColW), GUILayout.ExpandWidth(false),
-                GUILayout.MinHeight(44f));
-            if (GUILayout.Button("−", GUILayout.MinWidth(56f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f)))
-            {
-                value -= step;
-            }
-            GUILayout.Label(value.ToString(),
-                GUILayout.MinWidth(96f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f));
-            if (GUILayout.Button("+", GUILayout.MinWidth(56f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f)))
-            {
-                value += step;
-            }
-            GUILayout.FlexibleSpace();
-            GUILayout.EndHorizontal();
-            GUILayout.Space(4f);
-            return value;
-        }
-
-        private static float DrawFloatStepperRow(string label, float value, float step)
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.MinWidth(LabelColW), GUILayout.ExpandWidth(false),
-                GUILayout.MinHeight(44f));
-            if (GUILayout.Button("−", GUILayout.MinWidth(56f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f)))
-            {
-                value -= step;
-            }
-            GUILayout.Label(value.ToString("0.##"),
-                GUILayout.MinWidth(96f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f));
-            if (GUILayout.Button("+", GUILayout.MinWidth(56f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(44f)))
-            {
-                value += step;
-            }
-            GUILayout.FlexibleSpace();
-            GUILayout.EndHorizontal();
-            GUILayout.Space(4f);
-            return value;
+            GUILayout.Space(2f);
         }
 
         private static bool DrawSwitch(string label, bool value)
         {
+            string onText = SkinSyncI18n.T("sw.on");
+            string offText = SkinSyncI18n.T("sw.off");
+            float btnW = Mathf.Max(
+                CalcButtonWidth(BlackWhiteSkin.ControlBtnStyle, onText, 66f, 12f),
+                CalcButtonWidth(BlackWhiteSkin.ControlBtnStyle, offText, 66f, 12f));
+            const float gap = 6f;
+            float groupW = btnW * 2f + gap;
+
             GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.MinWidth(LabelColW), GUILayout.ExpandWidth(true),
-                GUILayout.MinHeight(RowMinHeight));
-            GUILayout.Space(20f);
+            GUILayout.Label(label, BlackWhiteSkin.RowLabelStyle,
+                GUILayout.ExpandWidth(true), GUILayout.MinHeight(RowMinHeight));
+            GUILayout.Space(12f);
 
+            Rect slot = ReserveVerticalCenterSlot(groupW, ControlHeight);
             bool result = value;
-            var onStyle = value ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle;
-            var offStyle = value ? BlackWhiteSkin.TabStyle : BlackWhiteSkin.TabActiveStyle;
+            GUIStyle onStyle = value ? BlackWhiteSkin.ControlBtnActiveStyle : BlackWhiteSkin.ControlBtnStyle;
+            GUIStyle offStyle = value ? BlackWhiteSkin.ControlBtnStyle : BlackWhiteSkin.ControlBtnActiveStyle;
 
-            if (GUILayout.Button(SkinSyncI18n.T("sw.on"), onStyle,
-                GUILayout.MinWidth(120f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            if (GUI.Button(new Rect(slot.x, slot.y, btnW, slot.height), onText, onStyle))
             {
+                ClearTextFocus();
                 result = true;
             }
-            GUILayout.Space(8f);
-            if (GUILayout.Button(SkinSyncI18n.T("sw.off"), offStyle,
-                GUILayout.MinWidth(120f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            if (GUI.Button(new Rect(slot.x + btnW + gap, slot.y, btnW, slot.height), offText, offStyle))
             {
+                ClearTextFocus();
                 result = false;
             }
             GUILayout.EndHorizontal();
             return result;
         }
 
-        private static void DrawLanguageModeRow(string label, ConfigEntry<string> entry)
+        private static float DrawSliderRow(string label, float value, float min, float max, float step)
         {
-            string mode = NormalizeLanguageMode(entry.Value);
+            bool prevChanged = GUI.changed;
+            GUI.changed = false;
+
+            string display = value.ToString("0.###", CultureInfo.InvariantCulture);
+            float valW = CalcButtonWidth(BlackWhiteSkin.ValueBoxStyle, display, 88f, 12f);
+
             GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.MinWidth(LabelColW), GUILayout.ExpandWidth(true),
-                GUILayout.MinHeight(RowMinHeight));
-            GUILayout.Space(20f);
-            if (GUILayout.Button(SkinSyncI18n.T("opt.language_auto"),
-                mode == "auto" ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle,
-                GUILayout.MinWidth(140f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            GUILayout.Label(label, BlackWhiteSkin.RowLabelStyle,
+                GUILayout.Width(LabelColW), GUILayout.MinHeight(RowMinHeight));
+            GUILayout.Space(12f);
+            float raw = GUILayout.HorizontalSlider(value, min, max,
+                BlackWhiteSkin.SliderTrackStyle, BlackWhiteSkin.SliderThumbStyle,
+                GUILayout.MinWidth(140f), GUILayout.ExpandWidth(true));
+            bool moved = GUI.changed;
+            GUILayout.Space(12f);
+            Rect valSlot = ReserveVerticalCenterSlot(valW, ControlHeight);
+            GUI.Label(valSlot, display, BlackWhiteSkin.ValueBoxStyle);
+            GUILayout.EndHorizontal();
+            GUILayout.Space(4f);
+
+            float result = value;
+            if (moved)
             {
-                entry.Value = "auto";
+                ClearTextFocus();
+                float snapped = step > 0f ? Mathf.Round(raw / step) * step : raw;
+                snapped = Mathf.Clamp(snapped, min, max);
+                snapped = (float)Math.Round(snapped, 4);
+                if (Mathf.Abs(snapped - value) > 0.0001f)
+                {
+                    result = snapped;
+                    prevChanged = true;
+                }
             }
-            GUILayout.Space(8f);
-            if (GUILayout.Button(SkinSyncI18n.T("opt.language_zh"),
-                mode == "zh" ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle,
-                GUILayout.MinWidth(120f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+
+            GUI.changed = prevChanged;
+            return result;
+        }
+
+        private static int DrawIntStepperRow(string label, int value, int step)
+        {
+            int delta = DrawStepperRow(label, value.ToString(CultureInfo.InvariantCulture));
+            return value + delta * step;
+        }
+
+        private static float DrawFloatStepperRow(string label, float value, float step)
+        {
+            int delta = DrawStepperRow(label, value.ToString("0.##", CultureInfo.InvariantCulture));
+            return value + delta * step;
+        }
+
+        private static int DrawStepperRow(string label, string display)
+        {
+            const float stepBtnW = 50f;
+            const float gap = 8f;
+            float valW = CalcButtonWidth(BlackWhiteSkin.ValueBoxStyle, display, 96f, 12f);
+            float totalW = stepBtnW * 2f + valW + gap * 2f;
+            int delta = 0;
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(label, BlackWhiteSkin.RowLabelStyle,
+                GUILayout.Width(LabelColW), GUILayout.MinHeight(RowMinHeight));
+            GUILayout.Space(12f);
+            Rect slot = ReserveVerticalCenterSlot(totalW, ControlHeight);
+            if (GUI.Button(new Rect(slot.x, slot.y, stepBtnW, slot.height), "−", BlackWhiteSkin.ControlBtnStyle))
             {
-                entry.Value = "zh";
+                ClearTextFocus();
+                delta = -1;
             }
-            GUILayout.Space(8f);
-            if (GUILayout.Button(SkinSyncI18n.T("opt.language_en"),
-                mode == "en" ? BlackWhiteSkin.TabActiveStyle : BlackWhiteSkin.TabStyle,
-                GUILayout.MinWidth(120f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            GUI.Label(new Rect(slot.x + stepBtnW + gap, slot.y, valW, slot.height), display, BlackWhiteSkin.ValueBoxStyle);
+            if (GUI.Button(new Rect(slot.x + stepBtnW + gap + valW + gap, slot.y, stepBtnW, slot.height), "+", BlackWhiteSkin.ControlBtnStyle))
             {
-                entry.Value = "en";
+                ClearTextFocus();
+                delta = 1;
             }
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
-            GUILayout.Space(6f);
-        }
-
-        private static string NormalizeLanguageMode(string mode)
-        {
-            if (string.IsNullOrWhiteSpace(mode)) return "auto";
-            mode = mode.Trim().ToLowerInvariant();
-            return mode == "zh" || mode == "en" ? mode : "auto";
+            GUILayout.Space(4f);
+            return delta;
         }
 
         private void DrawHotkeyRow(string label, ConfigEntry<KeyboardShortcut> entry,
             ref bool capturing, Action onStart)
         {
             GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.MinWidth(LabelColW), GUILayout.ExpandWidth(false),
-                GUILayout.MinHeight(RowMinHeight));
+            GUILayout.Label(label, BlackWhiteSkin.RowLabelStyle,
+                GUILayout.Width(LabelColW), GUILayout.MinHeight(RowMinHeight));
+            GUILayout.Space(12f);
+
             string text = capturing
                 ? SkinSyncI18n.T("btn.press_a_key")
                 : (SkinSyncSettings.IsBound(entry.Value) ? entry.Value.ToString() : SkinSyncI18n.T("btn.unbound"));
-            if (GUILayout.Button(text,
-                GUILayout.MinWidth(280f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            GUIStyle keyStyle = capturing ? BlackWhiteSkin.ControlBtnActiveStyle : BlackWhiteSkin.ControlBtnStyle;
+            float keyW = CalcButtonWidth(keyStyle, text, 232f, 18f);
+            string clearText = SkinSyncI18n.T("btn.clear");
+            float clearW = CalcButtonWidth(BlackWhiteSkin.ControlBtnStyle, clearText, 92f, 16f);
+
+            Rect slot = ReserveVerticalCenterSlot(keyW + 10f + clearW, ControlHeight);
+            if (GUI.Button(new Rect(slot.x, slot.y, keyW, slot.height), text, keyStyle))
             {
+                ClearTextFocus();
                 capturing = true;
                 onStart();
             }
-            GUILayout.Space(12f);
-            if (GUILayout.Button(SkinSyncI18n.T("btn.clear"),
-                GUILayout.MinWidth(96f), GUILayout.ExpandWidth(false), GUILayout.MinHeight(RowMinHeight)))
+            if (GUI.Button(new Rect(slot.x + keyW + 10f, slot.y, clearW, slot.height), clearText, BlackWhiteSkin.ControlBtnStyle))
             {
+                ClearTextFocus();
                 entry.Value = new KeyboardShortcut(KeyCode.None);
                 capturing = false;
             }
             GUILayout.FlexibleSpace();
             GUILayout.EndHorizontal();
-            GUILayout.Space(6f);
+            GUILayout.Space(RowGap);
         }
 
         private void CaptureKeyDownIfNeeded()
         {
-            if (!(_capturingPanel || _capturingNext || _capturingPrev || _capturingRescan)) return;
+            if (!IsCapturingHotkey) return;
             var ev = Event.current;
-            if (ev.type != EventType.KeyDown || ev.keyCode == KeyCode.None) return;
+            if (ev == null || ev.type != EventType.KeyDown || ev.keyCode == KeyCode.None) return;
             if (ev.keyCode == KeyCode.Escape)
             {
+                _capturedFrame = Time.frameCount;
                 CancelKeyCapture();
                 ev.Use();
                 return;
             }
-            var sc = new KeyboardShortcut(ev.keyCode);
+            if (IsModifierKey(ev.keyCode)) return;
+
+            var mods = new List<KeyCode>(4);
+            bool hasCtrl = false;
+            if (Input.GetKey(KeyCode.LeftControl)) { mods.Add(KeyCode.LeftControl); hasCtrl = true; }
+            if (Input.GetKey(KeyCode.RightControl)) { mods.Add(KeyCode.RightControl); hasCtrl = true; }
+            if (!hasCtrl && ev.control) mods.Add(KeyCode.LeftControl);
+
+            bool hasShift = false;
+            if (Input.GetKey(KeyCode.LeftShift)) { mods.Add(KeyCode.LeftShift); hasShift = true; }
+            if (Input.GetKey(KeyCode.RightShift)) { mods.Add(KeyCode.RightShift); hasShift = true; }
+            if (!hasShift && ev.shift) mods.Add(KeyCode.LeftShift);
+
+            bool hasAlt = false;
+            if (Input.GetKey(KeyCode.LeftAlt)) { mods.Add(KeyCode.LeftAlt); hasAlt = true; }
+            if (Input.GetKey(KeyCode.RightAlt)) { mods.Add(KeyCode.RightAlt); hasAlt = true; }
+            if (!hasAlt && ev.alt) mods.Add(KeyCode.LeftAlt);
+
+            var sc = mods.Count > 0
+                ? new KeyboardShortcut(ev.keyCode, mods.ToArray())
+                : new KeyboardShortcut(ev.keyCode);
             if (_capturingPanel) _cfg.TogglePanelHotkey.Value = sc;
             else if (_capturingNext) _cfg.NextSkinHotkey.Value = sc;
             else if (_capturingPrev) _cfg.PrevSkinHotkey.Value = sc;
             else if (_capturingRescan) _cfg.RescanSkinsHotkey.Value = sc;
+            _capturedFrame = Time.frameCount;
             CancelKeyCapture();
             ev.Use();
+        }
+
+        private static bool IsModifierKey(KeyCode key)
+        {
+            return key == KeyCode.LeftShift || key == KeyCode.RightShift
+                || key == KeyCode.LeftControl || key == KeyCode.RightControl
+                || key == KeyCode.LeftAlt || key == KeyCode.RightAlt;
         }
     }
 }

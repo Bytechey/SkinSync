@@ -1,13 +1,10 @@
 using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
-using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 解析皮肤目录下的 accessories.json 配件配置（JSON 数组）。
-    /// </summary>
+    /// <summary>解析皮肤目录下的 accessories.json 配件配置。</summary>
     public static class AccessoryConfigLoader
     {
         public class Entry
@@ -20,7 +17,6 @@ namespace SkinSyncMod
             public float Rotation;
             public int ZOrder;
             public bool Enabled;
-            /// <summary>非空时只在玩家穿戴该 wearSlotId 装备时才显示。</summary>
             public string RequireWornSlot;
             public List<SecondaryLimb> SecondaryLimbs;
         }
@@ -35,19 +31,19 @@ namespace SkinSyncMod
             public int ZOrder;
         }
 
-        /// <summary>读取 accessories.json，文件缺失或解析失败返回空列表。</summary>
+        /// <summary>从磁盘路径读取配件配置，缺失或失败返回空列表。</summary>
         public static List<Entry> Load(string path)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return new List<Entry>();
             try { return Parse(File.ReadAllText(path)); }
             catch (System.Exception ex)
             {
-                SkinSyncMod.ModLog.Warning("accessories.json parse failed: " + ex.Message);
+                SkinSyncMod.ModLog.Warning("accessories.json load failed: " + ex.Message);
                 return new List<Entry>();
             }
         }
 
-        /// <summary>从 JSON 文本解析 accessories.json；解析失败返回空列表。给内存包 fallback 用。</summary>
+        /// <summary>从 JSON 文本解析配件配置，失败返回空列表。</summary>
         public static List<Entry> Parse(string text)
         {
             var list = new List<Entry>();
@@ -63,7 +59,10 @@ namespace SkinSyncMod
                     list.Add(ToEntry(r));
                 }
             }
-            catch { }
+            catch (System.Exception ex)
+            {
+                SkinSyncMod.ModLog.Warning("accessories.json parse failed: " + ex.Message);
+            }
             return list;
         }
 

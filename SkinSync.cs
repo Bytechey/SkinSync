@@ -1,176 +1,215 @@
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using BepInEx;
 using HarmonyLib;
 using SkinSyncMod.Interop;
 using SkinSyncMod.Interop.Consumers;
 using SkinSyncMod.Network;
-using SkinSyncMod.Patches;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
 using UnityEngine;
 
 namespace SkinSyncMod
 {
-    [BepInPlugin("com.Bytechey.skinsync", "Skin Sync Mod", "1.2.3")]
+    /// <summary>BepInEx 插件主入口，协调皮肤目录扫描、热键切换、配置面板与多人网络同步。</summary>
+    [BepInPlugin(PluginGuid, "Skin Sync Mod", BuildInfo.Version)]
     [BepInDependency(SaveManagerGuid, BepInDependency.DependencyFlags.SoftDependency)]
-    [BepInDependency(TogetherGuid, BepInDependency.DependencyFlags.SoftDependency)]
+    [BepInDependency(TogetherPluginGuid, BepInDependency.DependencyFlags.SoftDependency)]
     public class SkinSync : BaseUnityPlugin
     {
+        internal const string PluginGuid = "com.Bytechey.skinsync";
+        internal const string TogetherPluginGuid = "CasualtiesMP";
         private const string SaveManagerGuid = "com.casualtiesUnknown.saveManager";
-        private const string TogetherGuid = "CasualtiesMP";
         private const int TogetherRegisterMaxAttempts = 60;
         private const float TogetherRegisterRetrySeconds = 1f;
+        private const float LocalPlayerSearchCooldown = 0.25f;
 
         internal static Harmony harmony;
+        internal static bool TogetherInstalled { get; private set; } = true;
 
-        private List<string> availableSkins = new List<string>();
-        private int currentSkinIndex = 0;
+        private readonly List<string> availableSkins = new List<string>();
+        private int currentSkinIndex;
 
         private GameObject localPlayerObject;
+        private Body _localBody;
+        private float _nextPlayerSearchTime;
         private object localNetBodyBox;
         private GameObject localChara;
+        private bool _embeddedInSaveManager;
+        private string _activeSceneName = "";
+
+        private List<AccessoryConfigLoader.Entry> _cachedAccEntries;
+        private string _cachedAccEntriesSkin;
+        private List<SkinSyncWindow.AccessoryRow> _cachedAccRows;
+        private string _cachedAccRowsSkin;
 
         internal static SkinSyncSettings Settings { get; private set; }
-        internal static bool IsMultiplayerSession => SessionConsumer.IsAvailable;
+        internal static bool IsMultiplayerSession => TogetherInstalled && SessionConsumer.IsAvailable;
 
-        /// <summary>从 BepInPlugin attribute 动态读取的 mod 版本号；读取失败返回空串。</summary>
         internal static string Version
         {
             get
             {
                 if (_version != null) return _version;
                 var attr = (BepInPlugin)System.Attribute.GetCustomAttribute(typeof(SkinSync), typeof(BepInPlugin));
-                _version = attr != null ? attr.Version.ToString() : "";
-                return _version;
+                return _version = attr != null ? attr.Version.ToString() : "";
             }
         }
         private static string _version;
-
         private static SkinSync _instance;
 
         private SkinSyncWindow _window;
         private InGameOverlay _overlay;
+        private System.Action _openWindowAction;
 
         private void Awake()
         {
             _instance = this;
             ModLog.Init(Logger);
             ModLog.Debug("[Build] Debug 构建，详细日志已启用");
-            gameObject.hideFlags = HideFlags.HideAndDontSave;
-            UnityEngine.Object.DontDestroyOnLoad(gameObject);
-            harmony = new Harmony("com.Bytechey.skinsync");
-            try { if (System.IO.Directory.Exists(SkinPathResolver.SyncCacheRoot)) System.IO.Directory.Delete(SkinPathResolver.SyncCacheRoot, true); }
-            catch (System.Exception ex) { ModLog.Warning("clear SyncCacheRoot failed: " + ex.Message); }
-            InteropBootstrap.Initialize();
-            RegisterPatches();
+            TogetherInstalled = BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey(TogetherPluginGuid);
+            _activeSceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+
+            DeleteDirectorySafely(SkinPathResolver.SyncCacheRoot);
+            DeleteDirectorySafely(SkinPathResolver.LegacySyncCacheRoot);
+
             Settings = new SkinSyncSettings(Config);
             ModLog.ShowInConsole = Settings.ShowLogInConsole.Value;
             Settings.ShowLogInConsole.SettingChanged += (_, __) => ModLog.ShowInConsole = Settings.ShowLogInConsole.Value;
-            SkinSyncMod.Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
-            Settings.AcceptUpdateNotice.SettingChanged += (_, __) => SkinSyncMod.Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
-            ScanAvailableSkins();
-            ModLog.Info($"SkinSync Mod loaded. Found {availableSkins.Count} skins. Together={(SessionConsumer.IsAvailable ? "yes" : "no")}.");
-            // Phase 1 验证：采集角色档案并在日志里展开，核对完改为 Debug
-            Character.CharacterCatalog.EnsureLoaded();
-            ModLog.Info(Character.CharacterCatalog.DescribeAll());
-            // 这两个组件承载主机皮肤表与延迟应用队列；Together 可能晚于本插件加载，因此无条件挂载，由组件自身判会话可用性。
-            gameObject.AddComponent<SkinSyncMod.Patches.SkinCacheBroadcaster>();
-            gameObject.AddComponent<SkinSyncMod.Patches.PendingSkinApplier>();
-            gameObject.AddComponent<SkinSyncMod.Patches.UpdateChecker>();
-            gameObject.AddComponent<EquipmentHider>();
+            Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
+            Settings.AcceptUpdateNotice.SettingChanged += (_, __) => Patches.UpdateChecker.Enabled = Settings.AcceptUpdateNotice.Value;
             EquipmentHider.Active = Settings.HideGameWearables.Value;
-            gameObject.AddComponent<AccessoryEnforcer>();
+            Settings.HideGameWearables.SettingChanged += (_, __) => EquipmentHider.Active = Settings.HideGameWearables.Value;
             AccessoryEnforcer.Active = Settings.RequireEquipmentForAccessories.Value;
+            Settings.RequireEquipmentForAccessories.SettingChanged += (_, __) => AccessoryEnforcer.Active = Settings.RequireEquipmentForAccessories.Value;
             BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value;
-            Settings.RenderCustomBlood.SettingChanged += (_, __) => BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value;
+            Settings.RenderCustomBlood.SettingChanged += (_, __) => { BloodRenderConfig.Enabled = Settings.RenderCustomBlood.Value; SkinApplier.RefreshAll(); };
             TailDeformConfig.Enabled = Settings.TailDeformEnabled.Value;
-            Settings.TailDeformEnabled.SettingChanged += (_, __) => TailDeformConfig.Enabled = Settings.TailDeformEnabled.Value;
+            Settings.TailDeformEnabled.SettingChanged += (_, __) =>
+            {
+                TailDeformConfig.Enabled = Settings.TailDeformEnabled.Value;
+                string cur = ResolveCurrentSkin();
+                if (!string.IsNullOrEmpty(cur)) BroadcastTailDelta(cur);
+            };
+            Settings.VanillaSkinForSelf.SettingChanged += (_, __) => SkinApplier.RefreshAll();
+            Settings.VanillaSkinForOthers.SettingChanged += (_, __) => SkinApplier.RefreshAll();
+            Settings.PreferredLanguage.SettingChanged += (_, __) => { SkinSyncI18n.InvalidateCache(); MenuButtonInjector.RefreshLabel(); };
 
             _overlay = new InGameOverlay();
             _window = new SkinSyncWindow(
-                cfg: Settings,
-                getSkins: () => new List<string>(availableSkins),
-                getCurrentSkin: () =>
-                {
-                    // 优先取 Settings.CurrentSkin（持久化主源），避免与"主机下发实际应用"的值脱节；
-                    // 退一步用 availableSkins[index] 做新装时的初始显示。
-                    string s = Settings != null ? Settings.CurrentSkin.Value : "";
-                    if (!string.IsNullOrEmpty(s)) return s;
-                    return availableSkins.Count > 0 && currentSkinIndex < availableSkins.Count
-                        ? availableSkins[currentSkinIndex] : "";
-                },
-                onApplySkin: ApplySkinByName,
-                onRescan: () =>
+                Settings, () => availableSkins, ResolveCurrentSkin, ApplySkinByName,
+                () =>
                 {
                     ScanAvailableSkins();
-                    if (availableSkins.Count > 0 && !availableSkins.Contains(Settings.CurrentSkin.Value))
-                    {
-                        currentSkinIndex = 0;
-                    }
+                    if (availableSkins.Count > 0 && !availableSkins.Contains(Settings.CurrentSkin.Value)) currentSkinIndex = 0;
                 },
-                getAccessories: GetCurrentAccessoryRows,
-                onToggleAccessory: ToggleAccessory,
-                onSetAccessoryTransform: SetAccessoryTransform,
-                onSaveTail: SaveCurrentTailToSettings,
-                onResetTail: ResetCurrentTailToDefaults,
-                onOpened: () => UiBlocker.Block(),
-                onClosed: () => UiBlocker.Unblock());
+                GetCurrentAccessoryRows, ToggleAccessory, SetAccessoryTransform,
+                SaveCurrentTailToSettings, ResetCurrentTailToDefaults,
+                () => UiBlocker.Block(), () => UiBlocker.Unblock());
+            _openWindowAction = () => _window?.OpenPanel();
 
             bool saveManagerInstalled = BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey(SaveManagerGuid);
-            if (!saveManagerInstalled)
+            _embeddedInSaveManager = saveManagerInstalled && Patches.SaveManagerTabBridge.Register(_window);
+            if (!_embeddedInSaveManager) MenuButtonInjector.Setup(_openWindowAction);
+
+            if (TogetherInstalled)
             {
-                MenuButtonInjector.Setup(() => _window.OpenPanel());
+                InteropBootstrap.Initialize();
+                gameObject.AddComponent<Patches.SkinCacheBroadcaster>();
+                gameObject.AddComponent<Patches.PendingSkinApplier>();
             }
-            else
-            {
-                Patches.SaveManagerTabBridge.Register(_window);
-            }
+            else ModLog.Info("未检测到 Together 联机模组，多人皮肤同步功能已停用。");
+
+            gameObject.AddComponent<Patches.UpdateChecker>();
+            gameObject.AddComponent<EquipmentHider>();
+            gameObject.AddComponent<AccessoryEnforcer>();
+
+            harmony = new Harmony(PluginGuid);
+            RegisterPatches();
+
+            ScanAvailableSkins();
+            if (!string.IsNullOrEmpty(Settings.CurrentSkin.Value))
+                ApplyTailOverrideToConfig(Settings.GetTailOverride(Settings.CurrentSkin.Value));
+            ModLog.Info($"SkinSync Mod loaded. Found {availableSkins.Count} skins. Together={(IsMultiplayerSession ? "yes" : "no")}.");
+            Character.CharacterCatalog.EnsureLoaded();
+            ModLog.Debug(Character.CharacterCatalog.DescribeAll());
 
             UnityEngine.SceneManagement.SceneManager.sceneLoaded += OnSceneLoaded;
             Application.quitting += OnApplicationQuitting;
         }
 
-        private void RegisterPatches()
+        private static void DeleteDirectorySafely(string path)
         {
-            harmony.CreateClassProcessor(typeof(SkinSyncAdaptiveButtonOverlayActiveGuard)).Patch();
-            harmony.CreateClassProcessor(typeof(SkinSyncAdaptiveButtonClickedGuard)).Patch();
-            harmony.CreateClassProcessor(typeof(SkinSyncPlayerCameraHandleInputGuard)).Patch();
-            harmony.CreateClassProcessor(typeof(SkinSyncPreRunScriptStartPatch)).Patch();
-            harmony.CreateClassProcessor(typeof(Patches.BleedSpawnTranspiler)).Patch();
-            harmony.CreateClassProcessor(typeof(Patches.LimbAwakeBleedColorPatch)).Patch();
-
-            StartCoroutine(InstallTogetherReceiverRoutine());
+            if (string.IsNullOrEmpty(path)) return;
+            try { if (Directory.Exists(path)) Directory.Delete(path, true); }
+            catch (System.Exception ex) { ModLog.Warning($"清理缓存目录失败 ({path})：{ex.Message}"); }
         }
 
-        /// <summary>每秒重试登记皮肤同步包接收器，最多 60 次；成功即停，失败只在首次与最终各记一条日志。</summary>
+        private void RegisterPatches()
+        {
+            if (TogetherInstalled) Patches.LegacyTogetherSkinSuppressor.TrySuppress(harmony);
+            PatchSafely(typeof(SkinSyncAdaptiveButtonOverlayActiveGuard));
+            PatchSafely(typeof(SkinSyncAdaptiveButtonClickedGuard));
+            PatchSafely(typeof(SkinSyncPlayerCameraHandleInputGuard));
+            PatchSafely(typeof(SkinSyncPlayerCameraMouseGuard));
+            PatchSafely(typeof(SkinSyncPreRunScriptStartPatch));
+            PatchSafely(typeof(Patches.BleedSpawnTranspiler));
+            PatchSafely(typeof(Patches.LimbAwakeBleedColorPatch));
+            PatchSafely(typeof(Patches.FacialExpressionStartSkinPatch));
+            PatchSafely(typeof(Patches.WoundViewStartSkinPatch));
+            PatchSafely(typeof(Patches.WoundViewUpdateSkinPatch));
+            PatchSafely(typeof(Patches.WoundViewAddImageSkinPatch));
+            if (TogetherInstalled) StartCoroutine(InstallTogetherReceiverRoutine());
+        }
+
+        private void PatchSafely(System.Type patchType)
+        {
+            try { harmony.CreateClassProcessor(patchType).Patch(); }
+            catch (System.Exception ex) { ModLog.Warning($"补丁 {patchType.Name} 安装失败：{ex.Message}"); }
+        }
+
         private System.Collections.IEnumerator InstallTogetherReceiverRoutine()
         {
-            if (Patches.TogetherReceiverRegistrar.Register())
-            {
-                yield break;
-            }
-
+            if (TryBindAndRegisterTogether()) yield break;
             for (int attempt = 0; attempt < TogetherRegisterMaxAttempts; attempt++)
             {
                 yield return new WaitForSecondsRealtime(TogetherRegisterRetrySeconds);
-                if (Patches.TogetherReceiverRegistrar.Register())
-                {
-                    yield break;
-                }
+                if (TryBindAndRegisterTogether()) yield break;
             }
-
             ModLog.Warning("皮肤同步包在 " + TogetherRegisterMaxAttempts + " 秒内未登记成功：Together 未加载或缺少 16 位原语，本次会话皮肤同步不可用。");
         }
 
-        /// <summary>场景切换时清掉"已应用"标记，让 ApplyPersistentSkinIfNeeded 在新场景重发一次（含多人广播）。
-        /// 主菜单（PreGen）也会触发清空，但 ApplyPersistentSkinIfNeeded 自身会等到本地玩家就绪——主菜单没本地 NetBody 时不会发出。</summary>
+        private bool TryBindAndRegisterTogether()
+        {
+            Patches.LegacyTogetherSkinSuppressor.TrySuppress(harmony);
+            Patches.TogetherHooksBridge.TryBind();
+            if (!Patches.TogetherReceiverRegistrar.Register()) return false;
+            Patches.LegacyTogetherSkinSuppressor.TrySuppress(harmony);
+            Patches.TogetherHooksBridge.TryBind();
+            return true;
+        }
+
         private void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
         {
+            _activeSceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+            _window?.ClosePanel();
             _persistentApplied = null;
+            _appliedTargetObject = null;
+            _appliedCharType = -1;
             _localSkinReportedNetId = 0;
+            _reportedLocalChara = null;
+            _reportedLocalCharType = -1;
             localPlayerObject = null;
+            _localBody = null;
+            _nextPlayerSearchTime = 0f;
             localNetBodyBox = null;
             localChara = null;
+            if (TogetherInstalled)
+            {
+                RosterConsumer.ResetLocalCache();
+                Network.MultiplayerSender.ClearOutboundQueue();
+                SkinMessageHandlers.OnSceneChanged();
+            }
+            SkinApplier.OnSceneChanged();
         }
 
         private static bool _quitting;
@@ -178,6 +217,8 @@ namespace SkinSyncMod
         {
             if (_quitting) return;
             _quitting = true;
+            try { Patches.LegacyTogetherSkinSuppressor.Dispose(harmony); } catch { }
+            try { Patches.TogetherHooksBridge.Dispose(); } catch { }
             try { MenuButtonInjector.Dispose(); } catch { }
             try { UiBlocker.Unblock(); } catch { }
             try { UnityEngine.SceneManagement.SceneManager.sceneLoaded -= OnSceneLoaded; } catch { }
@@ -187,30 +228,41 @@ namespace SkinSyncMod
         private void ScanAvailableSkins()
         {
             availableSkins.Clear();
+            InvalidateAccessoryRowsCache();
             SkinPathResolver.Invalidate();
+            BaseSizesLoader.Invalidate(null);
+            ZonesConfigLoader.Invalidate(null);
+            SkinPreviewRenderer.InvalidateAll();
+
             string customSpritesPath = Path.Combine(Paths.PluginPath, "CustomSprites");
             if (!Directory.Exists(customSpritesPath))
             {
                 ModLog.Warning($"CustomSprites folder not found at {customSpritesPath}");
+                SkinApplier.ReloadAllCachedSkins();
                 return;
             }
 
-            // 任意目录名都算有效皮肤目录，仅排除以 _ 开头的辅助目录（如 _Accessories）。
             var dirs = Directory.GetDirectories(customSpritesPath)
-                                .Select(Path.GetFileName)
-                                .Where(name => !string.IsNullOrEmpty(name) && name[0] != '_' && name[0] != '.')
-                                .ToList();
-            // 自然排序：把字符串里的数字段当整数比，让 st1 / st2 / st10 / st11 按数值顺序排列。
+                .Select(Path.GetFileName)
+                .Where(n => !string.IsNullOrEmpty(n) && n[0] != '_' && n[0] != '.'
+                    && !Patches.LegacyTogetherSkinSuppressor.IsLegacyContainerDir(customSpritesPath, n))
+                .ToList();
             dirs.Sort(NaturalCompare);
             availableSkins.AddRange(dirs);
 
-            if (availableSkins.Count == 0)
-                ModLog.Warning("No skin folders found in CustomSprites.");
-            else
-                ModLog.Info($"Available skins: {string.Join(", ", availableSkins)}");
+            if (availableSkins.Count == 0) ModLog.Warning("No skin folders found in CustomSprites.");
+            else ModLog.Info($"Available skins: {string.Join(", ", availableSkins)}");
+            SkinApplier.ReloadAllCachedSkins();
         }
 
-        /// <summary>把字符串里的数字段当整数比，剩下按字母（忽略大小写）比；让 st1/st2/st10 按数值顺序。</summary>
+        /// <summary>当远端皮肤包持久化落盘后将其增量纳入可用皮肤列表并保持自然排序。</summary>
+        internal static void NotifyDiskSkinsChanged(string skinID)
+        {
+            if (_instance == null || string.IsNullOrEmpty(skinID) || _instance.availableSkins.Contains(skinID)) return;
+            _instance.availableSkins.Add(skinID);
+            _instance.availableSkins.Sort(NaturalCompare);
+        }
+
         private static int NaturalCompare(string a, string b)
         {
             int ai = 0, bi = 0;
@@ -240,26 +292,30 @@ namespace SkinSyncMod
 
         private void Update()
         {
-            if (_quitting) return;
+            if (_quitting || Settings == null || _window == null) return;
+            if (TogetherInstalled) Network.MultiplayerSender.TickOutboundChunks();
             UiBlocker.EnforceBlocked();
 
-            if (SkinSyncSettings.TriggeredThisFrame(Settings.TogglePanelHotkey))
+            bool suppressHotkeys = _window.IsCapturingHotkey || _window.WasHotkeyCapturedThisFrame;
+            if (!suppressHotkeys && !_embeddedInSaveManager && SkinSyncSettings.TriggeredThisFrame(Settings.TogglePanelHotkey))
             {
                 if (_window.Open) _window.ClosePanel();
                 else _window.OpenPanel();
-            }
-            if (_window.Open && Input.GetKeyDown(KeyCode.Escape))
-            {
-                _window.ClosePanel();
+                suppressHotkeys = true;
             }
 
-            if (availableSkins.Count == 0) return;
+            bool allowActionHotkeys = !suppressHotkeys && !_window.Open;
+            if (allowActionHotkeys && SkinSyncSettings.TriggeredThisFrame(Settings.RescanSkinsHotkey))
+            {
+                ScanAvailableSkins();
+                ModLog.Info("Rescanned skins.");
+            }
+
+            if (availableSkins.Count == 0 || !TryGetLocalPlayer()) return;
 
             ApplyPersistentSkinIfNeeded();
 
-            if (!TryGetLocalPlayer())
-                return;
-
+            if (!allowActionHotkeys) return;
             if (SkinSyncSettings.TriggeredThisFrame(Settings.NextSkinHotkey))
             {
                 currentSkinIndex = (currentSkinIndex + 1) % availableSkins.Count;
@@ -270,43 +326,64 @@ namespace SkinSyncMod
                 currentSkinIndex = (currentSkinIndex - 1 + availableSkins.Count) % availableSkins.Count;
                 SwitchToSkin(availableSkins[currentSkinIndex]);
             }
-            else if (SkinSyncSettings.TriggeredThisFrame(Settings.RescanSkinsHotkey))
-            {
-                ScanAvailableSkins();
-                ModLog.Info("Rescanned skins.");
-            }
+        }
+
+        private void LateUpdate()
+        {
+            if (_quitting || _embeddedInSaveManager || _window == null) return;
+            // 在 LateUpdate 处理 Esc 关闭，避免同帧提前解除阻塞触发游戏原生暂停菜单。
+            if (_window.Open && !_window.IsCapturingHotkey && !_window.WasHotkeyCapturedThisFrame && Input.GetKeyDown(KeyCode.Escape))
+                _window.ClosePanel();
         }
 
         private void OnGUI()
         {
-            if (_quitting) return;
-            _overlay.Draw(() => _window.OpenPanel());
-            _window.Draw();
+            if (_quitting || _embeddedInSaveManager || _overlay == null || _window == null) return;
+            try
+            {
+                _overlay.Draw(_openWindowAction);
+                _window.Draw();
+            }
+            catch (ExitGUIException) { throw; }
+            catch (System.Exception ex) { ModLog.Warning($"SkinSync.OnGUI 异常：{ex.Message}"); }
         }
 
         private void OnDisable()
         {
+            try { _window?.ClosePanel(); } catch { }
             try { UiBlocker.Unblock(); } catch { }
         }
 
         private string _persistentApplied;
+        private GameObject _appliedTargetObject;
+        private int _appliedCharType = -1;
+
         private void ApplyPersistentSkinIfNeeded()
         {
             string cached = Settings.CurrentSkin.Value;
             if (string.IsNullOrEmpty(cached)) return;
-            if (_persistentApplied == cached) return;
-            if (!availableSkins.Contains(cached)) return;
+
+            GameObject activeTarget = localNetBodyBox != null ? localChara : localPlayerObject;
+            int curCharType = ReadLocalCharType(activeTarget);
+            if (_persistentApplied == cached && activeTarget != null && _appliedTargetObject == activeTarget && _appliedCharType == curCharType)
+                return;
+
             int idx = availableSkins.IndexOf(cached);
+            if (idx < 0) return;
             currentSkinIndex = idx;
             _switchAppliedToScene = false;
             SwitchToSkin(cached);
-            if (localNetBodyBox != null || localPlayerObject != null || _switchAppliedToScene)
-            {
-                _persistentApplied = cached;
-            }
         }
 
-        /// <summary>面板调用：按名字切皮肤（与 Next/Prev 按键走同一路径）。</summary>
+        private int ReadLocalCharType(GameObject chara)
+        {
+            if (chara == null) return 0;
+            if ((chara == localChara || chara == localPlayerObject) && _localBody != null) return _localBody.charType;
+            Body body = chara.GetComponentInChildren<Body>(true);
+            if (chara == localChara || chara == localPlayerObject) _localBody = body;
+            return body != null ? body.charType : 0;
+        }
+
         internal void ApplySkinByName(string skinId)
         {
             if (string.IsNullOrEmpty(skinId)) return;
@@ -316,92 +393,104 @@ namespace SkinSyncMod
             SwitchToSkin(skinId);
         }
 
-        /// <summary>面板用的"当前皮肤"统一来源——优先 Settings.CurrentSkin，否则 availableSkins[index]。</summary>
         private string ResolveCurrentSkin()
         {
             string s = Settings != null ? Settings.CurrentSkin.Value : null;
-            if (!string.IsNullOrEmpty(s) && availableSkins.Contains(s)) return s;
-            if (availableSkins.Count > 0 && currentSkinIndex < availableSkins.Count)
-                return availableSkins[currentSkinIndex];
-            return "";
+            if (string.IsNullOrEmpty(s)) return "";
+            if (availableSkins.Contains(s)) return s;
+            string dir = SkinPathResolver.GetSkinDir(s);
+            if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir)) return s;
+            return SkinPackCodec.HasInMemory(s) ? s : "";
         }
 
-        /// <summary>面板"当前角色设置"tab 用：构造当前皮肤的配件视图。</summary>
-        internal List<SkinSyncWindow.AccessoryRow> GetCurrentAccessoryRows()
+        /// <summary>使配件行缓存与配件基础定义缓存失效；skinID 为空时清除全部，否则仅清除匹配皮肤。</summary>
+        internal static void InvalidateAccessoryRowsCache(string skinID = null)
         {
-            var rows = new List<SkinSyncWindow.AccessoryRow>();
+            if (_instance == null) return;
+            if (skinID == null || _instance._cachedAccRowsSkin == skinID) { _instance._cachedAccRows = null; _instance._cachedAccRowsSkin = null; }
+            if (skinID == null || _instance._cachedAccEntriesSkin == skinID) { _instance._cachedAccEntries = null; _instance._cachedAccEntriesSkin = null; }
+        }
+
+        internal static List<AccessoryConfigLoader.Entry> LoadAccessoryEntriesForSkin(string skin)
+        {
+            if (_instance != null && _instance._cachedAccEntries != null && _instance._cachedAccEntriesSkin == skin)
+                return _instance._cachedAccEntries;
+            string skinDir = SkinPathResolver.GetSkinDir(skin);
+            List<AccessoryConfigLoader.Entry> loaded = null;
+            if (!string.IsNullOrEmpty(skinDir))
+            {
+                string path = Path.Combine(skinDir, "accessories.json");
+                if (File.Exists(path)) loaded = AccessoryConfigLoader.Load(path);
+            }
+            loaded ??= SkinApplier.LoadJsonFromMemoryPack(skin, "accessories.json", AccessoryConfigLoader.Parse)
+                ?? new List<AccessoryConfigLoader.Entry>();
+            if (_instance != null && !string.IsNullOrEmpty(skin)) { _instance._cachedAccEntries = loaded; _instance._cachedAccEntriesSkin = skin; }
+            return loaded;
+        }
+
+        internal IReadOnlyList<SkinSyncWindow.AccessoryRow> GetCurrentAccessoryRows()
+        {
             string skin = ResolveCurrentSkin();
-            if (string.IsNullOrEmpty(skin)) return rows;
-            string path = System.IO.Path.Combine(SkinPathResolver.GetSkinDir(skin), "accessories.json");
-            var entries = AccessoryConfigLoader.Load(path);
+            if (string.IsNullOrEmpty(skin)) return System.Array.Empty<SkinSyncWindow.AccessoryRow>();
+            if (_cachedAccRows != null && _cachedAccRowsSkin == skin) return _cachedAccRows;
+
+            var entries = LoadAccessoryEntriesForSkin(skin);
+            var rows = new List<SkinSyncWindow.AccessoryRow>(entries.Count);
             foreach (var e in entries)
             {
                 var ov = Settings.GetAccessoryOverride(skin, e.Id);
                 rows.Add(new SkinSyncWindow.AccessoryRow
                 {
-                    Id = e.Id,
-                    Enabled = ov?.Enabled ?? e.Enabled,
-                    OffX = ov?.OffX ?? e.OffX,
-                    OffY = ov?.OffY ?? e.OffY,
-                    Rotation = ov?.Rotation ?? e.Rotation,
-                    ZOrder = ov?.ZOrder ?? e.ZOrder,
+                    Id = e.Id, Enabled = ov?.Enabled ?? e.Enabled,
+                    OffX = ov?.OffX ?? e.OffX, OffY = ov?.OffY ?? e.OffY,
+                    Rotation = ov?.Rotation ?? e.Rotation, ZOrder = ov?.ZOrder ?? e.ZOrder,
                     RequireSlot = e.RequireWornSlot,
                 });
             }
+            _cachedAccRows = rows;
+            _cachedAccRowsSkin = skin;
             return rows;
         }
 
-        /// <summary>面板配件 toggle 回调：写覆盖 + 实时同步运行时挂载状态。</summary>
         internal void ToggleAccessory(string accId, bool enabled)
         {
             string skin = ResolveCurrentSkin();
             if (string.IsNullOrEmpty(skin)) return;
             Settings.SetAccessoryEnabled(skin, accId, enabled);
+            _cachedAccRows = null;
+            _cachedAccRowsSkin = null;
             AccessoryAttacher.SetEnabled(accId, enabled);
             SkinPreviewRenderer.Invalidate(skin);
             BroadcastAccessoryDelta(skin, accId);
         }
 
-        /// <summary>面板配件 transform 回调：写覆盖 + 实时调挂载 transform。</summary>
         internal void SetAccessoryTransform(string accId, int offX, int offY, float rot, int z)
         {
             string skin = ResolveCurrentSkin();
             if (string.IsNullOrEmpty(skin)) return;
             Settings.SetAccessoryTransform(skin, accId, offX, offY, rot, z);
+            _cachedAccRows = null;
+            _cachedAccRowsSkin = null;
             AccessoryAttacher.SetTransform(accId, offX, offY, rot, z);
             SkinPreviewRenderer.Invalidate(skin);
             BroadcastAccessoryDelta(skin, accId);
         }
 
-        /// <summary>把当前 acc 的 5 字段（含覆盖合并值）打包发给服务端转发，仅在多人 + 非 PreGen + 同步开关启用时执行。</summary>
         private void BroadcastAccessoryDelta(string skin, string accId)
         {
-            if (Settings == null || !Settings.SyncAccessories.Value) return;
-            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return;
-            if (localNetBodyBox == null) return;
-            // 取合并后值（用户只改一个字段时其他字段也要发完整快照）。
-            string accPath = System.IO.Path.Combine(SkinPathResolver.GetSkinDir(skin), "accessories.json");
-            var entries = AccessoryConfigLoader.Load(accPath);
+            if (Settings == null || !Settings.SyncAccessories.Value || _activeSceneName == "PreGen" || localNetBodyBox == null) return;
+            var entries = LoadAccessoryEntriesForSkin(skin);
             AccessoryConfigLoader.Entry baseEntry = null;
             foreach (var e in entries) { if (e.Id == accId) { baseEntry = e; break; } }
-            if (baseEntry == null) return;
-            if (!TryGetLocalNetId(out uint netId)) return;
+            if (baseEntry == null || !TryGetLocalNetId(out uint netId)) return;
             var ov = Settings.GetAccessoryOverride(skin, accId);
-            MultiplayerSender.SendAccessory(
-                netId: netId,
-                skinID: skin,
-                accId: accId,
-                enabled: ov?.Enabled ?? baseEntry.Enabled,
-                offX: ov?.OffX ?? baseEntry.OffX,
-                offY: ov?.OffY ?? baseEntry.OffY,
-                rotation: ov?.Rotation ?? baseEntry.Rotation,
-                zOrder: ov?.ZOrder ?? baseEntry.ZOrder);
+            MultiplayerSender.SendAccessory(netId, skin, accId, ov?.Enabled ?? baseEntry.Enabled,
+                ov?.OffX ?? baseEntry.OffX, ov?.OffY ?? baseEntry.OffY, ov?.Rotation ?? baseEntry.Rotation, ov?.ZOrder ?? baseEntry.ZOrder);
         }
 
-        /// <summary>把 settings 里 skin 的尾巴覆盖应用到全局 TailDeformConfig static 字段。null 时清空覆盖回默认。</summary>
+        /// <summary>将指定皮肤的尾巴覆盖参数写入全局 TailDeformConfig，传 null 时恢复默认值。</summary>
         internal static void ApplyTailOverrideToConfig(SkinSyncSettings.TailDeformOverride ov)
         {
-            // 默认值（与 TailDeformConfig 出厂相同）
             TailDeformConfig.FrontGuard = ov?.FrontGuard ?? true;
             TailDeformConfig.Segments = ov?.Segments ?? 10;
             TailDeformConfig.ConstraintIters = ov?.ConstraintIters ?? 6;
@@ -421,7 +510,6 @@ namespace SkinSyncMod
             TailDeformConfig.SpeedDisturb = ov?.SpeedDisturb ?? 0.005f;
         }
 
-        /// <summary>面板尾巴回调：从当前 TailDeformConfig 读出快照，写回 settings 并落盘。</summary>
         internal void SaveCurrentTailToSettings()
         {
             string skin = ResolveCurrentSkin();
@@ -450,7 +538,6 @@ namespace SkinSyncMod
             BroadcastTailDelta(skin);
         }
 
-        /// <summary>面板"重置默认"回调：删 settings 该 skin 的覆盖记录 + 把 TailDeformConfig 恢复为出厂默认。</summary>
         internal void ResetCurrentTailToDefaults()
         {
             string skin = ResolveCurrentSkin();
@@ -460,165 +547,232 @@ namespace SkinSyncMod
             BroadcastTailDelta(skin);
         }
 
-        /// <summary>把当前 TailDeformConfig 全字段打包发给服务端转发，仅在多人 + 非 PreGen + 同步开关启用时执行。</summary>
         private void BroadcastTailDelta(string skin)
         {
             if (Settings == null || !Settings.SyncTailDeform.Value) return;
-            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return;
-            if (localNetBodyBox == null) return;
-            if (!TryGetLocalNetId(out uint netId)) return;
-            MultiplayerSender.SendTailFromConfig(netId, skin);
+            if (_activeSceneName == "PreGen" || localNetBodyBox == null) return;
+            if (TryGetLocalNetId(out uint netId)) MultiplayerSender.SendTailFromConfig(netId, skin);
         }
 
         private bool TryGetLocalPlayer()
         {
-            if (localNetBodyBox == null && SessionConsumer.IsAvailable)
+            if (localNetBodyBox != null)
             {
-                if (RosterConsumer.TryGetLocalNetBody(out object box, out uint nid, out GameObject chara))
+                bool deadUnityObj = localNetBodyBox is UnityEngine.Object uo && uo == null;
+                if (deadUnityObj || localChara == null)
+                {
+                    localNetBodyBox = null;
+                    localChara = null;
+                    _localBody = null;
+                }
+            }
+
+            if (localNetBodyBox == null && IsMultiplayerSession)
+            {
+                if (RosterConsumer.TryGetLocalNetBody(out object box, out uint nid, out GameObject chara)
+                    && box != null && nid != 0 && chara != null)
                 {
                     localNetBodyBox = box;
                     localChara = chara;
+                    _localBody = chara.GetComponentInChildren<Body>(true);
                     ModLog.Info($"多人模式：找到本地 NetBody (netId {nid})");
                 }
             }
 
             if (localNetBodyBox != null)
             {
-                // netId 要等实体被放进世界后才有值（进图瞬间为 0），这里每帧尝试补报一次；
-                // ReportLocalSkinIfNeeded 内部按 netId 去重，重复调用只会在 netId 变化时再报。
+                localPlayerObject = null;
                 ReportLocalSkinIfNeeded();
                 return true;
             }
 
-            if (localPlayerObject == null)
+            if (TogetherInstalled && SessionConsumer.IsRunning)
             {
-                Body playerBody = FindObjectOfType<Body>();
-                if (playerBody != null)
-                {
-                    localPlayerObject = playerBody.transform.parent?.gameObject ?? playerBody.gameObject;
-                    ModLog.Info($"单机模式：通过 Body 找到本地玩家：{localPlayerObject.name}");
-                }
-                else
-                {
-                    localPlayerObject = GameObject.FindGameObjectWithTag("Player");
-                    if (localPlayerObject != null)
-                        ModLog.Info($"单机模式：通过 Tag 找到本地玩家：{localPlayerObject.name}");
-                }
+                localPlayerObject = null;
+                _localBody = null;
+                return false;
             }
 
-            return localPlayerObject != null;
-        }
-
-        /// <summary>
-        /// 实时取本机 netId；未分配时返回 false。
-        /// </summary>
-        /// <remarks>
-        /// 刻意不做字段缓存：进图瞬间 NetBody 对象已存在但 netId 仍是 0，
-        /// 旧实现把那个 0 存进 <c>localNetId</c> 字段后，因外层以「句柄是否为空」为前置条件而再不刷新，
-        /// 结果之后每次上报都带 netId 0，服务端的 callerNetId 校验一律判为「冒充他人」并丢弃。
-        /// netId 在重连、同场景内角色重建/重生后还会变化，因此每次用到时都重新求值。
-        /// </remarks>
-        private static bool TryGetLocalNetId(out uint netId)
-        {
-            if (RosterConsumer.TryGetLocalNetBody(out _, out netId, out _) && netId != 0)
+            if (localPlayerObject != null)
             {
+                if (_localBody == null) _localBody = localPlayerObject.GetComponentInChildren<Body>(true);
                 return true;
             }
 
+            if (Time.unscaledTime < _nextPlayerSearchTime) return false;
+            _nextPlayerSearchTime = Time.unscaledTime + LocalPlayerSearchCooldown;
+
+            var cam = PlayerCamera.main;
+            Body playerBody = cam != null && cam.body != null ? cam.body : FindObjectOfType<Body>();
+            if (playerBody != null)
+            {
+                _localBody = playerBody;
+                localPlayerObject = playerBody.transform.parent?.gameObject ?? playerBody.gameObject;
+                ModLog.Info($"单机模式：通过 Body 找到本地玩家：{localPlayerObject.name}");
+            }
+            else
+            {
+                localPlayerObject = GameObject.FindGameObjectWithTag("Player");
+                if (localPlayerObject != null)
+                {
+                    _localBody = localPlayerObject.GetComponentInChildren<Body>(true);
+                    ModLog.Info($"单机模式：通过 Tag 找到本地玩家：{localPlayerObject.name}");
+                }
+            }
+            return localPlayerObject != null;
+        }
+
+        private static bool TryGetLocalNetId(out uint netId)
+        {
+            if (TogetherInstalled && RosterConsumer.TryGetLocalNetBody(out _, out netId, out _) && netId != 0) return true;
             netId = 0;
             return false;
         }
 
         private void SwitchToSkin(string skinID)
         {
-            // 记忆当前皮肤——下次进游戏直接套上
             if (Settings != null)
             {
                 Settings.CurrentSkin.Value = skinID;
                 ApplyTailOverrideToConfig(Settings.GetTailOverride(skinID));
             }
+            InvalidateAccessoryRowsCache();
+            bool mpRunning = TogetherInstalled && SessionConsumer.IsRunning;
 
-            // 同步写入按 SteamID 的缓存（跨主机 / 重连恢复用）。
-            try
-            {
-                ulong steamId = RosterConsumer.TryGetLocalSteamId();
-                if (steamId != 0UL) SkinCacheStore.Set(steamId, skinID);
-            }
-            catch (System.Exception ex)
-            {
-                ModLog.Warning("write SkinCacheStore failed: " + ex.Message);
-            }
-
-            // 预览缓存失效——切皮肤后再展开角色 tab 立即看新缩略图。
-            SkinPreviewRenderer.Invalidate(skinID);
-
-            // 多人模式逻辑——但主菜单（PreGen）场景不发广播
             if (localNetBodyBox != null)
             {
-                // 本地应用皮肤
                 SkinApplier.ApplySkinToPlayer(localChara, skinID);
-                if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "PreGen")
+                _appliedTargetObject = localChara;
+                _appliedCharType = ReadLocalCharType(localChara);
+                if (_activeSceneName != "PreGen")
                 {
                     if (TryGetLocalNetId(out uint netId))
                     {
                         MultiplayerSender.SendSkinChange(netId, skinID);
+                        SyncSavedOverridesOnEnter(skinID);
                         _localSkinReportedNetId = netId;
-                        ModLog.Info($"角色加载模式：多人 — 切到 {skinID} 并已广播 (netId {netId})");
+                        _reportedLocalChara = localChara;
+                        _reportedLocalCharType = _appliedCharType;
+                        ModLog.Info($"角色加载模式：多人 - 切到 {skinID} 并已广播 (netId {netId})");
                     }
                     else
                     {
-                        // netId 还没分配：本地已应用，上报交给 TryGetLocalPlayer 每帧的补报。
-                        ModLog.Info($"角色加载模式：多人 — 切到 {skinID}，但本地 netId 尚未分配，等分配后补报");
+                        _localSkinReportedNetId = 0;
+                        _reportedLocalChara = null;
+                        ModLog.Info($"角色加载模式：多人 - 切到 {skinID}，等本地 netId 分配后补报");
                     }
                 }
                 else
                 {
-                    ModLog.Info($"角色加载模式：多人主菜单 — 仅本地应用 {skinID}，不广播");
+                    ModLog.Info($"角色加载模式：多人主菜单 - 仅本地应用 {skinID}，不广播");
                 }
             }
-            else if (localPlayerObject != null)
+            else if (localPlayerObject != null && !mpRunning)
             {
                 SkinApplier.ApplySkinToPlayer(localPlayerObject, skinID);
-                ModLog.Info($"角色加载模式：单机 — 切到 {skinID}（基于本地玩家）");
+                _appliedTargetObject = localPlayerObject;
+                _appliedCharType = ReadLocalCharType(localPlayerObject);
+                ModLog.Info($"角色加载模式：单机 - 切到 {skinID}（基于本地玩家）");
+            }
+            else if (!mpRunning)
+            {
+                int n = SkinApplier.ApplyToScene(skinID);
+                _switchAppliedToScene = n > 0;
+                if (n > 0) ModLog.Info($"角色加载模式：单机兜底 - 切到 {skinID}（场景扫到 {n} 个 Body）");
             }
             else
             {
-                int n = SkinApplier.ApplyToScene(skinID);
-                if (n > 0)
-                {
-                    ModLog.Info($"角色加载模式：单机兜底 — 切到 {skinID}（场景扫到 {n} 个 Body）");
-                    _switchAppliedToScene = true;
-                }
-                else
-                {
-                    _switchAppliedToScene = false;
-                }
+                _switchAppliedToScene = false;
             }
 
-            // 面板/热键路径与每帧的 ApplyPersistentSkinIfNeeded 都会调到这里。
-            // 在此同步「已应用」标记：否则下一帧 ApplyPersistentSkinIfNeeded 会判定尚未应用，
-            // 把同一次切换再应用、再广播一遍（日志里表现为每次切换发两条 SkinChange）。
-            if (localNetBodyBox != null || localPlayerObject != null || _switchAppliedToScene)
-            {
+            if (localNetBodyBox != null || (localPlayerObject != null && !mpRunning) || _switchAppliedToScene)
                 _persistentApplied = skinID;
-            }
         }
 
         private bool _switchAppliedToScene;
         private uint _localSkinReportedNetId;
+        private GameObject _reportedLocalChara;
+        private int _reportedLocalCharType = -1;
 
-        /// <summary>子端拿到本地 NetBody 且 netId 已分配后，把当前皮肤上报一次给服务端建表；只对相同 netId 报一次。</summary>
         private void ReportLocalSkinIfNeeded()
         {
-            if (localNetBodyBox == null) return;
-            if (!TryGetLocalNetId(out uint netId)) return;
-            if (_localSkinReportedNetId == netId) return;
+            if (localNetBodyBox == null || localChara == null || _activeSceneName == "PreGen") return;
+            int curCharType = ReadLocalCharType(localChara);
+            if (_reportedLocalChara == localChara && _reportedLocalCharType == curCharType && _localSkinReportedNetId != 0) return;
             string cached = Settings != null ? Settings.CurrentSkin.Value : null;
-            if (string.IsNullOrEmpty(cached)) return;
-            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return;
+            if (string.IsNullOrEmpty(cached) || !TryGetLocalNetId(out uint netId)) return;
+            if (_localSkinReportedNetId == netId && _reportedLocalCharType == curCharType && _reportedLocalChara == localChara) return;
+
             MultiplayerSender.SendSkinChange(netId, cached);
+            SyncSavedOverridesOnEnter(cached);
             _localSkinReportedNetId = netId;
-            ModLog.Info($"多人模式：本地皮肤已上报 (netId {netId} → {cached})");
+            _reportedLocalChara = localChara;
+            _reportedLocalCharType = curCharType;
+            ModLog.Info($"多人模式：本地皮肤已上报 (netId {netId}, charType {curCharType} -> {cached})");
+        }
+
+        /// <summary>响应联机角色生成或同 netId 换物种重建网格通知，为新躯体恢复对应皮肤与覆盖参数。</summary>
+        internal static void OnExternalBodyReadyOrRebuilt(Body body, uint netId, int charType, bool isRebuild)
+        {
+            if (body == null) return;
+
+            GameObject chara = null;
+            bool isLocal = false;
+            if (netId != 0) RosterConsumer.TryGetNetBodyFromId(netId, out _, out chara, out isLocal);
+            else RosterConsumer.TryResolveBodyIdentity(body, out netId, out chara, out isLocal);
+
+            GameObject targetGo = chara != null ? chara : body.gameObject;
+            int resolvedCharType = charType >= 0 ? charType : body.charType;
+
+            if (isLocal)
+            {
+                if (_instance == null) return;
+                if (RosterConsumer.TryGetLocalNetBody(out object freshBox, out _, out _) && freshBox != null)
+                    _instance.localNetBodyBox = freshBox;
+                _instance.localChara = targetGo;
+                _instance._localBody = body;
+
+                string localSkin = _instance.ResolveCurrentSkin();
+                if (string.IsNullOrEmpty(localSkin)) return;
+
+                if (!isRebuild && _instance._appliedTargetObject == targetGo && _instance._appliedCharType == resolvedCharType
+                    && _instance._persistentApplied == localSkin && SkinApplier.GetAssignedSkin(targetGo) == localSkin)
+                {
+                    _instance.ReportLocalSkinIfNeeded();
+                    return;
+                }
+
+                _instance._appliedTargetObject = targetGo;
+                _instance._appliedCharType = resolvedCharType;
+                _instance._persistentApplied = localSkin;
+                SkinApplier.ApplySkinToPlayer(targetGo, localSkin, resolvedCharType);
+                _instance.ReportLocalSkinIfNeeded();
+                return;
+            }
+
+            if (netId == 0 || !SkinMessageHandlers.TryGetRecordedRemoteSkin(netId, out string remoteSkin))
+            {
+                SkinApplier.EnsureUnassignedRemoteVanilla(targetGo, resolvedCharType);
+                return;
+            }
+            if (!isRebuild && SkinApplier.GetAssignedSkin(targetGo) == remoteSkin) return;
+
+            AccessoryAttacher.BindPendingOverrides(netId, targetGo);
+            TailDeformConfig.BindPendingOverrides(netId, targetGo);
+            SkinApplier.ApplySkinToPlayer(targetGo, remoteSkin, resolvedCharType);
+            ModLog.Info($"同 netId 躯体重建恢复：netId {netId} (charType {resolvedCharType}) -> {remoteSkin}");
+        }
+
+        private void SyncSavedOverridesOnEnter(string skin)
+        {
+            if (Settings == null || Settings.IsPassiveSyncMode) return;
+            var accOverrides = Settings.GetAllAccessoryOverridesForSkin(skin);
+            if (Settings.SyncAccessories.Value && accOverrides != null && accOverrides.Count > 0)
+            {
+                foreach (var kv in accOverrides) BroadcastAccessoryDelta(skin, kv.Key);
+            }
+            if (Settings.SyncTailDeform.Value && (Settings.GetTailOverride(skin) != null || !Settings.TailDeformEnabled.Value))
+                BroadcastTailDelta(skin);
         }
     }
 }

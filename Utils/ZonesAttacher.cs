@@ -1,21 +1,21 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
-using BepInEx;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 
 namespace SkinSyncMod
 {
-    /// <summary>
-    /// 按部件 zones.png + zones.json 在每个 limb 的 sprite 上挂区块效果（Light2D / ParticleSystem / 帧动画）。
-    /// 区块几何用 mask 包围盒中心 + 包围盒对角线一半作为半径——简化方案，避免 mesh 转换。
-    /// </summary>
+    /// <summary>按部件 zones 配置在角色肢体上挂载 Light2D、ParticleSystem 与序列帧动画。</summary>
     public static class ZonesAttacher
     {
         private const string ContainerPrefix = "HwZones_";
-        private const float PIXELS_PER_UNIT = 8f;
+        private const float DEFAULT_PPU = 8f;
+        private const int MaxZonesPerCharacter = 32;
+        private static Material _defaultParticleMat;
 
-        /// <summary>清掉旧挂载，按 sprite 名扫 zones 文件并挂载。</summary>
+        /// <summary>清理目标角色的旧区块容器并按当前肢体贴图重新挂载区块特效（单角色最多挂载 32 个区块）。</summary>
         public static void Apply(GameObject playerObj, string characterName)
         {
             if (playerObj == null) return;
@@ -23,71 +23,151 @@ namespace SkinSyncMod
             if (body == null) return;
 
             ClearExisting(body);
+            if (string.IsNullOrEmpty(characterName)) return;
 
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
-            if (!Directory.Exists(skinDir)) return;
+            IReadOnlyList<string> diskFiles = !string.IsNullOrEmpty(skinDir) && Directory.Exists(skinDir)
+                ? SkinPathResolver.GetSkinFiles(skinDir)
+                : null;
+            bool useDisk = diskFiles != null && diskFiles.Count > 0;
+            Dictionary<string, byte[]> memPack = !useDisk ? SkinPackCodec.GetInMemory(characterName) : null;
+            if (!HasAnyZonesConfig(diskFiles, memPack)) return;
 
+            int attachedCount = 0;
             foreach (var limb in body.GetComponentsInChildren<Limb>(true))
             {
+                if (attachedCount >= MaxZonesPerCharacter) break;
                 var sr = limb.GetComponent<SpriteRenderer>();
                 if (sr == null || sr.sprite == null) continue;
-                AttachForRenderer(limb.transform, sr, skinDir);
+                AttachForRenderer(limb.transform, sr, diskFiles, memPack, characterName, ref attachedCount);
             }
         }
 
-        private static void AttachForRenderer(Transform host, SpriteRenderer sr, string skinDir)
+        private static bool HasAnyZonesConfig(IReadOnlyList<string> diskFiles, Dictionary<string, byte[]> memPack)
+        {
+            if (diskFiles != null)
+            {
+                for (int i = 0; i < diskFiles.Count; i++)
+                {
+                    if (diskFiles[i].EndsWith(".zones.json", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            if (memPack != null)
+            {
+                foreach (var kv in memPack)
+                {
+                    if (kv.Key.EndsWith(".zones.json", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static void AttachForRenderer(
+            Transform host,
+            SpriteRenderer sr,
+            IReadOnlyList<string> diskFiles,
+            Dictionary<string, byte[]> memPack,
+            string characterName,
+            ref int attachedCount)
         {
             string spriteName = sr.sprite.name;
-            string maskPath = FindZonesFile(skinDir, spriteName, ".zones.png");
-            string configPath = FindZonesFile(skinDir, spriteName, ".zones.json");
-            if (maskPath == null || configPath == null) return;
-
             int spriteW = (int)sr.sprite.rect.width;
             int spriteH = (int)sr.sprite.rect.height;
-            var (entries, geom) = ZonesConfigLoader.Load(maskPath, configPath, spriteW, spriteH);
-            if (entries == null || geom == null) return;
 
-            var geomById = new Dictionary<byte, ZonesConfigLoader.ZoneGeometry>();
+            List<ZonesConfigLoader.Entry> entries = null;
+            List<ZonesConfigLoader.ZoneGeometry> geom = null;
+
+            if (diskFiles != null && diskFiles.Count > 0)
+            {
+                string maskPath = FindZonesFileInList(diskFiles, spriteName, ".zones.png");
+                string configPath = FindZonesFileInList(diskFiles, spriteName, ".zones.json");
+                if (maskPath == null || configPath == null) return;
+                (entries, geom) = ZonesConfigLoader.Load(maskPath, configPath, spriteW, spriteH);
+            }
+            else if (memPack != null && TryFindZonesInMemory(memPack, spriteName, out string maskRel, out byte[] maskBytes, out string cfgJson))
+            {
+                (entries, geom) = ZonesConfigLoader.LoadFromBytes(characterName + "/" + maskRel, maskBytes, cfgJson, spriteW, spriteH);
+            }
+
+            if (entries == null || geom == null || geom.Count == 0) return;
+
+            var geomById = new Dictionary<byte, ZonesConfigLoader.ZoneGeometry>(geom.Count);
             foreach (var g in geom) geomById[g.Id] = g;
 
             foreach (var entry in entries)
             {
+                if (attachedCount >= MaxZonesPerCharacter) break;
                 if (!geomById.TryGetValue(entry.Id, out var g)) continue;
-                AttachZone(host, sr, entry, g, spriteW, spriteH);
+                AttachZone(host, sr, entry, g, spriteW, spriteH, characterName);
+                attachedCount++;
             }
         }
 
-        /// <summary>在皮肤目录递归找 `<sprite><suffix>` 文件；用于 Body / Head / Wings / Accessories 任意子目录。</summary>
-        private static string FindZonesFile(string skinDir, string spriteName, string suffix)
+        private static string FindZonesFileInList(IReadOnlyList<string> files, string spriteName, string suffix)
         {
-            string fileName = spriteName + suffix;
-            try
+            string targetName = spriteName + suffix;
+            for (int i = 0; i < files.Count; i++)
             {
-                foreach (var f in Directory.GetFiles(skinDir, fileName, SearchOption.AllDirectories))
+                string f = files[i];
+                if (!string.IsNullOrEmpty(f) && string.Equals(Path.GetFileName(f), targetName, StringComparison.OrdinalIgnoreCase))
                 {
                     return f;
                 }
             }
-            catch { }
             return null;
         }
 
-        private static void AttachZone(Transform host, SpriteRenderer hostSr, ZonesConfigLoader.Entry entry,
-            ZonesConfigLoader.ZoneGeometry geom, int spriteW, int spriteH)
+        private static bool TryFindZonesInMemory(
+            Dictionary<string, byte[]> memPack,
+            string spriteName,
+            out string maskRelPath,
+            out byte[] maskBytes,
+            out string configJson)
         {
+            maskRelPath = null;
+            maskBytes = null;
+            configJson = null;
+            string maskTarget = spriteName + ".zones.png";
+            string cfgTarget = spriteName + ".zones.json";
+            byte[] cfgBytes = null;
+            foreach (var kv in memPack)
+            {
+                string fileName = Path.GetFileName(kv.Key);
+                if (maskBytes == null && string.Equals(fileName, maskTarget, StringComparison.OrdinalIgnoreCase))
+                {
+                    maskRelPath = kv.Key;
+                    maskBytes = kv.Value;
+                }
+                else if (cfgBytes == null && string.Equals(fileName, cfgTarget, StringComparison.OrdinalIgnoreCase))
+                {
+                    cfgBytes = kv.Value;
+                }
+                if (maskBytes != null && cfgBytes != null) break;
+            }
+            if (maskBytes == null || cfgBytes == null) return false;
+            configJson = Encoding.UTF8.GetString(cfgBytes);
+            return true;
+        }
+
+        private static void AttachZone(Transform host, SpriteRenderer hostSr, ZonesConfigLoader.Entry entry,
+            ZonesConfigLoader.ZoneGeometry geom, int spriteW, int spriteH, string characterName)
+        {
+            float ppu = hostSr != null && hostSr.sprite != null && hostSr.sprite.pixelsPerUnit > 0f
+                ? hostSr.sprite.pixelsPerUnit
+                : DEFAULT_PPU;
+
             var go = new GameObject(ContainerPrefix + entry.Id);
             go.transform.SetParent(host, worldPositionStays: false);
-            // mask 像素坐标系：原点在左下；sprite pivot 中心。把 (cx, cy) 转 limb 局部空间。
-            float lx = (geom.CenterX - spriteW * 0.5f) / PIXELS_PER_UNIT;
-            float ly = (geom.CenterY - spriteH * 0.5f) / PIXELS_PER_UNIT;
+            float lx = (geom.CenterX - spriteW * 0.5f) / ppu;
+            float ly = (geom.CenterY - spriteH * 0.5f) / ppu;
             go.transform.localPosition = new Vector3(lx, ly, 0f);
             go.transform.localRotation = Quaternion.identity;
             go.transform.localScale = Vector3.one;
-            float radiusUnits = geom.Radius / PIXELS_PER_UNIT;
+            float radiusUnits = geom.Radius / ppu;
 
             if (entry.Light != null) AttachLight(go, entry.Light);
             if (entry.Particle != null) AttachParticle(go, entry.Particle, hostSr, radiusUnits);
-            if (entry.Animation != null) AttachAnimator(go, entry.Animation, hostSr);
+            if (entry.Animation != null) AttachAnimator(go, entry.Animation, hostSr, characterName);
         }
 
         private static void AttachLight(GameObject host, ZonesConfigLoader.LightConfig cfg)
@@ -98,7 +178,6 @@ namespace SkinSyncMod
             light.intensity = cfg.Intensity;
             light.pointLightOuterRadius = cfg.OuterRadius;
             light.pointLightInnerRadius = cfg.InnerRadius;
-            // directional / scatter 模式：把 inner 拉小近似聚光（Light2D Point 没有 cone 概念，只能近似）。
             if (cfg.Mode == "directional" || cfg.Mode == "scatter")
             {
                 light.pointLightInnerRadius = cfg.InnerRadius * 0.3f;
@@ -135,21 +214,21 @@ namespace SkinSyncMod
             var emission = ps.emission;
             emission.rateOverTime = cfg.Rate > 0f ? cfg.Rate : 5f;
 
+            float dirDeg = cfg.Direction;
+            if (cfg.Direction == 0f)
+            {
+                if (cfg.Mode == "fire") dirDeg = 90f;
+                else if (cfg.Mode == "water") dirDeg = -90f;
+            }
+
             var shape = ps.shape;
-            shape.shapeType = string.Equals(cfg.Shape, "sphere", System.StringComparison.OrdinalIgnoreCase)
-                ? ParticleSystemShapeType.Sphere
-                : ParticleSystemShapeType.Circle;
-            shape.radius = cfg.ShapeRadius > 0f ? cfg.ShapeRadius : Mathf.Max(0.05f, fallbackRadius);
-            // 发射方向：Direction 度（0=右，90=上）+ Spread 散射角。
-            float dirRad = cfg.Direction * Mathf.Deg2Rad;
-            // shape.rotation = Vector3.zero（默认）；用 startSpeed + velocity over lifetime 不够，
-            // 直接用 cone 形把发射限制到 direction±halfSpread。
             shape.shapeType = ParticleSystemShapeType.Cone;
             shape.angle = Mathf.Clamp(cfg.Spread * 0.5f, 0f, 90f);
-            shape.rotation = new Vector3(0f, 0f, cfg.Direction - 90f);
+            float rad = dirDeg * Mathf.Deg2Rad;
+            // Cone 默认沿局部 +Z 轴发射，将其转向 2D XY 平面目标角。
+            shape.rotation = Quaternion.FromToRotation(Vector3.forward, new Vector3(Mathf.Cos(rad), Mathf.Sin(rad), 0f)).eulerAngles;
             shape.radius = Mathf.Max(0.01f, cfg.ShapeRadius > 0f ? cfg.ShapeRadius : fallbackRadius * 0.5f);
 
-            // 大小渐变：startSize → startSize * EndSizeScale。
             if (cfg.EndSizeScale > 0f && Mathf.Abs(cfg.EndSizeScale - 1f) > 0.01f)
             {
                 var sol = ps.sizeOverLifetime;
@@ -160,7 +239,6 @@ namespace SkinSyncMod
                 sol.size = new ParticleSystem.MinMaxCurve(1f, curve);
             }
 
-            // 颜色 / alpha 渐变。
             var col = ps.colorOverLifetime;
             col.enabled = true;
             var grad = new Gradient();
@@ -171,21 +249,18 @@ namespace SkinSyncMod
                 BuildAlphaKeys(cfg.FadeCurve, startC.a, endC.a));
             col.color = new ParticleSystem.MinMaxGradient(grad);
 
-            // 模式专项：fire 向上加速（负重力）+ 起始速度向上；water 向下；orbit 用 velocityOverLifetime 旋转。
             switch (cfg.Mode)
             {
                 case "fire":
                     main.gravityModifier = -0.4f;
-                    if (cfg.Direction == 0f) shape.rotation = new Vector3(0f, 0f, 0f);
                     break;
                 case "water":
                     main.gravityModifier = cfg.Gravity > 0f ? cfg.Gravity : 1.2f;
-                    if (cfg.Direction == 0f) shape.rotation = new Vector3(0f, 0f, 180f);
                     break;
                 case "orbit":
                     var vol = ps.velocityOverLifetime;
                     vol.enabled = true;
-                    vol.orbitalZ = new ParticleSystem.MinMaxCurve(baseSpeed);
+                    vol.orbitalZ = new ParticleSystem.MinMaxCurve(baseSpeed * Mathf.Deg2Rad);
                     main.startSpeed = 0f;
                     break;
                 case "star":
@@ -194,11 +269,26 @@ namespace SkinSyncMod
             }
 
             var renderer = ps.GetComponent<ParticleSystemRenderer>();
-            if (renderer != null && hostSr != null)
+            if (renderer != null)
             {
-                renderer.sortingLayerID = hostSr.sortingLayerID;
-                renderer.sortingOrder = hostSr.sortingOrder + 1;
+                renderer.sharedMaterial = EnsureDefaultParticleMaterial();
+                if (hostSr != null)
+                {
+                    renderer.sortingLayerID = hostSr.sortingLayerID;
+                    renderer.sortingOrder = hostSr.sortingOrder + 1;
+                }
             }
+        }
+
+        private static Material EnsureDefaultParticleMaterial()
+        {
+            if (_defaultParticleMat != null) return _defaultParticleMat;
+            Shader shader = Shader.Find("Sprites/Default") ?? Shader.Find("Particles/Standard Unlit");
+            if (shader != null)
+            {
+                _defaultParticleMat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+            }
+            return _defaultParticleMat;
         }
 
         private static float ModeDefaultSpeed(string mode)
@@ -241,18 +331,17 @@ namespace SkinSyncMod
             }
         }
 
-        private static void AttachAnimator(GameObject host, ZonesConfigLoader.AnimationConfig cfg, SpriteRenderer hostSr)
+        private static void AttachAnimator(GameObject host, ZonesConfigLoader.AnimationConfig cfg, SpriteRenderer hostSr, string characterName)
         {
-            // 帧动画在区块上需要一个 SpriteRenderer 作目标——临时叠加一层覆盖区块位置。
-            // 当前实现复用区块容器自身：加 SpriteRenderer，按 fps 切 frames（与原 AccessoryAnimator 同语义）。
             var sr = host.AddComponent<SpriteRenderer>();
             if (hostSr != null)
             {
                 sr.sortingLayerID = hostSr.sortingLayerID;
                 sr.sortingOrder = hostSr.sortingOrder + 2;
-                sr.sharedMaterial = hostSr.sharedMaterial;
+                sr.sharedMaterial = SkinApplier.GetSharedCleanLitMaterial(hostSr);
             }
             var anim = host.AddComponent<ZoneFrameAnimator>();
+            anim.CharacterName = characterName;
             anim.FrameNames = cfg.Frames.ToArray();
             anim.Fps = cfg.Fps;
             anim.Loop = cfg.Loop;
@@ -263,15 +352,16 @@ namespace SkinSyncMod
             foreach (var tf in body.GetComponentsInChildren<Transform>(true))
             {
                 if (tf == null || tf.gameObject == null) continue;
-                if (tf.name.StartsWith(ContainerPrefix))
-                    Object.Destroy(tf.gameObject);
+                if (tf.name.StartsWith(ContainerPrefix, StringComparison.Ordinal))
+                    UnityEngine.Object.Destroy(tf.gameObject);
             }
         }
     }
 
-    /// <summary>逐帧切换 SpriteRenderer.sprite；frame 名按 SkinApplier spriteDict 解析，缺失帧跳过。</summary>
+    /// <summary>按固定帧率轮播区块覆盖层的序列帧贴图。</summary>
     public class ZoneFrameAnimator : MonoBehaviour
     {
+        public string CharacterName;
         public string[] FrameNames;
         public float Fps;
         public bool Loop;
@@ -292,7 +382,7 @@ namespace SkinSyncMod
         private void ResolveFrames()
         {
             if (FrameNames == null) return;
-            var dict = SkinApplier.GetSpriteDict();
+            var dict = SkinApplier.GetSpriteDict(CharacterName);
             if (dict == null) return;
             var list = new List<Sprite>();
             foreach (var n in FrameNames)
@@ -311,17 +401,23 @@ namespace SkinSyncMod
             {
                 _accum -= frameLen;
                 _index++;
-                if (_index >= _frames.Length)
+                if (Loop)
                 {
-                    if (Loop) _index = 0;
-                    else { _index = _frames.Length - 1; enabled = false; break; }
+                    if (_index >= _frames.Length) _index = 0;
+                }
+                else if (_index >= _frames.Length)
+                {
+                    _index = _frames.Length - 1;
+                    _sr.sprite = _frames[_index];
+                    enabled = false;
+                    break;
                 }
                 _sr.sprite = _frames[_index];
             }
         }
     }
 
-    /// <summary>呼吸光强度 + 渐变发光（base ↔ second 颜色按时间脉冲）。无渐变 + 无呼吸时不挂。</summary>
+    /// <summary>驱动区块点光源的强度呼吸与双色渐变动画。</summary>
     public class ZoneLightAnimator : MonoBehaviour
     {
         public Light2D Light;
