@@ -26,6 +26,7 @@ namespace SkinSyncMod
 
             ["sec.hotkeys"] = "快捷键",
             ["sec.misc"] = "其他",
+            ["lbl.ui_scale"] = "缩放:",
             ["lbl.language"] = "界面语言：",
             ["opt.language_auto"] = "跟随游戏",
             ["opt.language_zh"] = "中文",
@@ -49,9 +50,8 @@ namespace SkinSyncMod
             ["sw.sync_accessories"] = "同步配件配置（toggle / 偏移 / Z）",
             ["sw.sync_tail"] = "同步尾巴形变参数",
 
-            ["sec.experimental"] = "实验性功能",
-            ["sw.skin_pack_sync"] = "缺少他人皮肤时自动从其他玩家拉取（会话缓存）",
-            ["sw.skin_pack_persist"] = "拉取到的皮肤包写入 plugins/CustomSprites/（关闭仅存临时缓存）",
+            ["sw.skin_pack_sync"] = "自动同步缺失的他人皮肤包（默认仅存临时会话缓存）",
+            ["sw.skin_pack_persist"] = "将接收到的皮肤包永久写入 plugins/CustomSprites/（关闭仅存临时缓存）",
             ["sw.allow_peers_persist"] = "允许对方永久保存我发送的皮肤包（关闭则对方仅存临时缓存）",
             ["lbl.hotkey_toggle_panel"] = "打开 / 关闭面板：",
             ["lbl.hotkey_next_skin"] = "切下一个皮肤：",
@@ -60,18 +60,19 @@ namespace SkinSyncMod
             ["btn.unbound"] = "未绑定",
             ["btn.press_a_key"] = "请按下新按键…",
             ["btn.clear"] = "清除",
+            ["btn.cancel"] = "取消",
 
             ["btn.skin_in_use"] = "正在使用",
             ["btn.rescan"] = "重新扫描",
             ["fmt.skins_count"] = "共 {0} 个皮肤",
-            ["msg.no_skins"] = "  在 plugins/CustomSprites/ 下未找到任何皮肤目录。",
+            ["msg.no_skins"] = "在 plugins/CustomSprites/ 下未找到任何皮肤目录。",
             ["btn.apply_skin"] = "切换到此皮肤",
 
             ["sec.accessories"] = "配件",
-            ["msg.no_accessories"] = "  当前皮肤没有配件配置（accessories.json 缺失或为空）。",
-            ["msg.no_skin_yet"] = "  尚未选择皮肤。请先在角色 tab 切换到一个皮肤。",
-            ["sw.on"] = "◀ 开",
-            ["sw.off"] = "关 ▶",
+            ["msg.no_accessories"] = "当前皮肤没有配件配置（accessories.json 缺失或为空）。",
+            ["msg.no_skin_yet"] = "尚未选择皮肤。请先在角色页切换到一个皮肤。",
+            ["sw.on"] = "开",
+            ["sw.off"] = "关",
 
             ["sec.tail"] = "尾巴形变",
             ["lbl.tail_on"] = "[已启用]",
@@ -94,6 +95,7 @@ namespace SkinSyncMod
             ["tail.wind_amp"] = "风幅度",
             ["tail.speed_disturb"] = "速度扰动",
             ["tail.reset"] = "重置默认",
+            ["tail.confirm_reset"] = "确认重置",
 
             ["acc.enabled"] = "启用配件",
             ["acc.off_x"] = "X 偏移（像素）",
@@ -148,6 +150,7 @@ namespace SkinSyncMod
 
             ["sec.hotkeys"] = "Hotkeys",
             ["sec.misc"] = "Misc",
+            ["lbl.ui_scale"] = "Scale:",
             ["lbl.language"] = "UI language:",
             ["opt.language_auto"] = "Follow game",
             ["opt.language_zh"] = "Chinese",
@@ -171,10 +174,9 @@ namespace SkinSyncMod
             ["sw.sync_accessories"] = "Sync accessory overrides (toggle / offsets / Z)",
             ["sw.sync_tail"] = "Sync tail deform parameters",
 
-            ["sec.experimental"] = "Experimental",
-            ["sw.skin_pack_sync"] = "Pull missing skin from other players on demand (session cache)",
-            ["sw.skin_pack_persist"] = "Persist received skin packs to plugins/CustomSprites/ (off = session cache)",
-            ["sw.allow_peers_persist"] = "Allow peers to persist my skin packs to disk (off = session cache only)",
+            ["sw.skin_pack_sync"] = "Auto-sync missing player skin packs (session cache by default)",
+            ["sw.skin_pack_persist"] = "Save received skin packs permanently to plugins/CustomSprites/ (off = session cache)",
+            ["sw.allow_peers_persist"] = "Allow peers to permanently save my skin packs to disk (off = session cache only)",
             ["lbl.hotkey_toggle_panel"] = "Open / close panel:",
             ["lbl.hotkey_next_skin"] = "Next skin:",
             ["lbl.hotkey_prev_skin"] = "Previous skin:",
@@ -182,18 +184,19 @@ namespace SkinSyncMod
             ["btn.unbound"] = "Unbound",
             ["btn.press_a_key"] = "Press a new key...",
             ["btn.clear"] = "Clear",
+            ["btn.cancel"] = "Cancel",
 
             ["btn.skin_in_use"] = "In use",
             ["btn.rescan"] = "Rescan",
             ["fmt.skins_count"] = "{0} skins",
-            ["msg.no_skins"] = "  No skin folders found under plugins/CustomSprites/.",
+            ["msg.no_skins"] = "No skin folders found under plugins/CustomSprites/.",
             ["btn.apply_skin"] = "Apply this skin",
 
             ["sec.accessories"] = "Accessories",
-            ["msg.no_accessories"] = "  No accessories.json for current skin (or empty).",
-            ["msg.no_skin_yet"] = "  No skin selected yet. Pick one in the Skins tab.",
-            ["sw.on"] = "◀ ON",
-            ["sw.off"] = "OFF ▶",
+            ["msg.no_accessories"] = "No accessories.json for current skin (or empty).",
+            ["msg.no_skin_yet"] = "No skin selected yet. Pick one in the Skins tab.",
+            ["sw.on"] = "ON",
+            ["sw.off"] = "OFF",
 
             ["sec.tail"] = "Tail Deform",
             ["lbl.tail_on"] = "[Enabled]",
@@ -216,6 +219,7 @@ namespace SkinSyncMod
             ["tail.wind_amp"] = "Wind amp",
             ["tail.speed_disturb"] = "Speed disturb",
             ["tail.reset"] = "Reset to defaults",
+            ["tail.confirm_reset"] = "Confirm reset",
 
             ["acc.enabled"] = "Enable accessory",
             ["acc.off_x"] = "Offset X (px)",
@@ -255,7 +259,30 @@ namespace SkinSyncMod
             ["about.sec_deps"] = "Dependencies & thanks",
         };
 
-        private static Dictionary<string, string> Current => UseChinese() ? _zh : _en;
+        private static Dictionary<string, string> _cachedDict;
+        private static int _cachedFrame = -1;
+
+        private static Dictionary<string, string> Current
+        {
+            get
+            {
+                int frame = Time.frameCount;
+                if (_cachedDict != null && _cachedFrame == frame)
+                {
+                    return _cachedDict;
+                }
+                _cachedDict = UseChinese() ? _zh : _en;
+                _cachedFrame = frame;
+                return _cachedDict;
+            }
+        }
+
+        /// <summary>使当前帧缓存的激活语言字典立即失效。</summary>
+        internal static void InvalidateCache()
+        {
+            _cachedDict = null;
+            _cachedFrame = -1;
+        }
 
         private static bool UseChinese()
         {
@@ -281,7 +308,7 @@ namespace SkinSyncMod
             return name;
         }
 
-        private static string NormalizeLanguageMode(string mode)
+        internal static string NormalizeLanguageMode(string mode)
         {
             if (string.IsNullOrWhiteSpace(mode)) return "auto";
             mode = mode.Trim().ToLowerInvariant();
@@ -296,6 +323,7 @@ namespace SkinSyncMod
                 return false;
             }
 
+            // "WC" 为创意工坊中文汉化模组常见的语言包名前缀
             if (normalized.StartsWith("zh", System.StringComparison.OrdinalIgnoreCase)
                 || normalized.StartsWith("WC", System.StringComparison.OrdinalIgnoreCase))
             {

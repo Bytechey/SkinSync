@@ -31,11 +31,13 @@ namespace SkinSyncMod
         {
             public int BodyId;
             public int CharType;
+            public int SkinVersion;
             public string SkinName;
 
             public bool Equals(ViewAppliedKey other)
                 => BodyId == other.BodyId
                 && CharType == other.CharType
+                && SkinVersion == other.SkinVersion
                 && string.Equals(SkinName, other.SkinName, StringComparison.Ordinal);
         }
 
@@ -66,6 +68,11 @@ namespace SkinSyncMod
 
         private const int ImagePruneThreshold = 256;
 
+        private static readonly HashSet<WoundView> _activeViews = new HashSet<WoundView>();
+        private static readonly List<WoundView> _viewSnapshot = new List<WoundView>(8);
+        private static readonly List<WoundView> _deadViews = new List<WoundView>(4);
+        private static readonly Dictionary<int, Image[]> _muscleImagesByView = new Dictionary<int, Image[]>();
+
         private static readonly Dictionary<int, Image> _trackedImages = new Dictionary<int, Image>();
         private static readonly List<int> _deadImageIds = new List<int>();
         private static readonly Dictionary<int, Sprite> _origImageSprites = new Dictionary<int, Sprite>();
@@ -75,6 +82,10 @@ namespace SkinSyncMod
 
         internal static void OnSceneChanged()
         {
+            _activeViews.Clear();
+            _viewSnapshot.Clear();
+            _deadViews.Clear();
+            _muscleImagesByView.Clear();
             _trackedImages.Clear();
             _deadImageIds.Clear();
             _origImageSprites.Clear();
@@ -83,10 +94,83 @@ namespace SkinSyncMod
             _lastAppliedByView.Clear();
         }
 
+        private static void RegisterActiveView(WoundView view)
+        {
+            if (view != null && view.gameObject.scene.IsValid())
+            {
+                _activeViews.Add(view);
+            }
+        }
+
+        private static List<WoundView> CollectActiveViews()
+        {
+            _viewSnapshot.Clear();
+            if (_activeViews.Count > 0)
+            {
+                _deadViews.Clear();
+                foreach (WoundView v in _activeViews)
+                {
+                    if (v == null || !v.gameObject.scene.IsValid())
+                    {
+                        _deadViews.Add(v);
+                        continue;
+                    }
+                    _viewSnapshot.Add(v);
+                }
+                for (int i = 0; i < _deadViews.Count; i++)
+                {
+                    WoundView dead = _deadViews[i];
+                    _activeViews.Remove(dead);
+                    if (!ReferenceEquals(dead, null))
+                    {
+                        int deadId = dead.GetInstanceID();
+                        _muscleImagesByView.Remove(deadId);
+                        _lastAppliedByView.Remove(deadId);
+                    }
+                }
+                _deadViews.Clear();
+            }
+
+            if (_viewSnapshot.Count == 0)
+            {
+                foreach (WoundView v in Resources.FindObjectsOfTypeAll<WoundView>())
+                {
+                    if (v == null || !v.gameObject.scene.IsValid()) continue;
+                    _activeViews.Add(v);
+                    _viewSnapshot.Add(v);
+                }
+            }
+            return _viewSnapshot;
+        }
+
+        private static Image[] GetMuscleImages(WoundView view)
+        {
+            if (view == null || view.limbImages == null) return null;
+            int viewId = view.GetInstanceID();
+            int count = view.limbImages.Length;
+            if (_muscleImagesByView.TryGetValue(viewId, out Image[] cached) && cached != null && cached.Length == count)
+            {
+                return cached;
+            }
+
+            var arr = new Image[count];
+            for (int i = 0; i < count; i++)
+            {
+                Image outer = view.limbImages[i];
+                if (outer != null && outer.transform.childCount > 0)
+                {
+                    arr[i] = outer.transform.GetChild(0).GetComponent<Image>();
+                }
+            }
+            _muscleImagesByView[viewId] = arr;
+            return arr;
+        }
+
         /// <summary>伤势面板切换目标或重置物种头图后强制重涂自定义贴图并维持彩色肌肉层显示。</summary>
         internal static void OnTargetApplied(WoundView view, Body body)
         {
             if (view == null) return;
+            RegisterActiveView(view);
             _lastAppliedByView.Remove(view.GetInstanceID());
             Apply(view, body != null ? body : view.body);
             ApplyCustomMuscleColors(view);
@@ -96,10 +180,11 @@ namespace SkinSyncMod
         internal static void RefreshAll()
         {
             _lastAppliedByView.Clear();
-            foreach (WoundView view in Resources.FindObjectsOfTypeAll<WoundView>())
+            List<WoundView> views = CollectActiveViews();
+            for (int i = 0; i < views.Count; i++)
             {
-                if (view == null || !view.gameObject.scene.IsValid()) continue;
-                Apply(view, view.body);
+                WoundView view = views[i];
+                if (view != null) Apply(view, view.body);
             }
         }
 
@@ -107,9 +192,11 @@ namespace SkinSyncMod
         internal static void RefreshForBody(Body body)
         {
             if (body == null) return;
-            foreach (WoundView view in Resources.FindObjectsOfTypeAll<WoundView>())
+            List<WoundView> views = CollectActiveViews();
+            for (int i = 0; i < views.Count; i++)
             {
-                if (view == null || view.body != body || !view.gameObject.scene.IsValid()) continue;
+                WoundView view = views[i];
+                if (view == null || view.body != body) continue;
                 _lastAppliedByView.Remove(view.GetInstanceID());
                 Apply(view, body);
             }
@@ -131,10 +218,11 @@ namespace SkinSyncMod
         /// <summary>清空全部伤势面板贴图缓存并先将面板还原至原版基线。</summary>
         internal static void ClearCaches()
         {
-            foreach (WoundView view in Resources.FindObjectsOfTypeAll<WoundView>())
+            List<WoundView> views = CollectActiveViews();
+            for (int i = 0; i < views.Count; i++)
             {
-                if (view == null || !view.gameObject.scene.IsValid()) continue;
-                ApplyWithData(view, view.body, null);
+                WoundView view = views[i];
+                if (view != null) ApplyWithData(view, view.body, null);
             }
 
             foreach (var kv in _skinCache)
@@ -151,7 +239,9 @@ namespace SkinSyncMod
         internal static void Apply(WoundView view, Body bodyOverride = null)
         {
             if (view == null) return;
+            RegisterActiveView(view);
             Body body = bodyOverride != null ? bodyOverride : view.body;
+            int skinVersion = SkinApplier.SkinStateVersion;
             string skinName = SkinApplier.GetActiveSkinForBody(body);
             WoundSkinData data = string.IsNullOrEmpty(skinName) ? null : GetOrLoad(skinName);
             ApplyWithData(view, body, data);
@@ -160,27 +250,43 @@ namespace SkinSyncMod
             {
                 BodyId = body != null ? body.GetInstanceID() : 0,
                 CharType = body != null ? body.charType : 0,
+                SkinVersion = skinVersion,
                 SkinName = skinName ?? string.Empty,
             };
         }
 
-        /// <summary>在 WoundView.UpdateView 后检查目标变更并保持彩色肌肉层不被原版底色染黑。</summary>
+        /// <summary>在 WoundView.UpdateView 后检查目标与全局皮肤版本变化，维持彩色肌肉层不被原版底色染黑。</summary>
         internal static void OnUpdateView(WoundView view)
         {
             if (view == null) return;
+            RegisterActiveView(view);
             Body body = view.body;
-            string skinName = SkinApplier.GetActiveSkinForBody(body);
-            var currentKey = new ViewAppliedKey
-            {
-                BodyId = body != null ? body.GetInstanceID() : 0,
-                CharType = body != null ? body.charType : 0,
-                SkinName = skinName ?? string.Empty,
-            };
-
+            int bodyId = body != null ? body.GetInstanceID() : 0;
+            int charType = body != null ? body.charType : 0;
+            int skinVersion = SkinApplier.SkinStateVersion;
             int viewId = view.GetInstanceID();
-            if (!_lastAppliedByView.TryGetValue(viewId, out ViewAppliedKey prevKey) || !prevKey.Equals(currentKey))
+
+            if (_lastAppliedByView.TryGetValue(viewId, out ViewAppliedKey prevKey)
+                && prevKey.BodyId == bodyId
+                && prevKey.CharType == charType
+                && prevKey.SkinVersion == skinVersion)
+            {
+                ApplyCustomMuscleColors(view);
+                return;
+            }
+
+            string skinName = SkinApplier.GetActiveSkinForBody(body);
+            if (!_lastAppliedByView.TryGetValue(viewId, out prevKey)
+                || prevKey.BodyId != bodyId
+                || prevKey.CharType != charType
+                || !string.Equals(prevKey.SkinName, skinName ?? string.Empty, StringComparison.Ordinal))
             {
                 Apply(view, body);
+            }
+            else
+            {
+                prevKey.SkinVersion = skinVersion;
+                _lastAppliedByView[viewId] = prevKey;
             }
 
             ApplyCustomMuscleColors(view);
@@ -197,12 +303,23 @@ namespace SkinSyncMod
             WoundSkinData data = GetOrLoad(skinName);
             if (data == null || data.ColoredSprites.Count == 0) return;
 
-            for (int i = 0; i < view.limbImages.Length; i++)
+            Image[] muscles = GetMuscleImages(view);
+            if (muscles == null) return;
+
+            for (int i = 0; i < muscles.Length; i++)
             {
-                Image outer = view.limbImages[i];
-                if (outer == null || outer.transform.childCount == 0) continue;
-                Image middle = outer.transform.GetChild(0).GetComponent<Image>();
-                if (middle == null || middle.sprite == null || !data.ColoredSprites.Contains(middle.sprite)) continue;
+                Image middle = muscles[i];
+                if (middle == null)
+                {
+                    Image outer = view.limbImages[i];
+                    if (outer != null && outer.transform.childCount > 0)
+                    {
+                        middle = outer.transform.GetChild(0).GetComponent<Image>();
+                        muscles[i] = middle;
+                    }
+                    if (middle == null) continue;
+                }
+                if (middle.sprite == null || !data.ColoredSprites.Contains(middle.sprite)) continue;
                 Color c = middle.color;
                 middle.color = new Color(1f, 1f, 1f, c.a);
             }
@@ -212,6 +329,7 @@ namespace SkinSyncMod
         internal static void ApplyDynamicLimbImage(WoundView view, Image added, Body limbBody = null)
         {
             if (view == null || added == null || added.sprite == null) return;
+            RegisterActiveView(view);
             PruneDeadImagesIfNeeded();
             Body body = limbBody != null ? limbBody : view.body;
             string skinName = SkinApplier.GetActiveSkinForBody(body);
@@ -447,23 +565,53 @@ namespace SkinSyncMod
 
         private static void LoadFromDisk(string skinDir, WoundSkinData data)
         {
-            foreach (string file in Directory.GetFiles(skinDir, "*.png", SearchOption.AllDirectories))
+            IReadOnlyList<string> files = SkinPathResolver.GetSkinFiles(skinDir);
+            if (files == null || files.Count == 0) return;
+
+            for (int i = 0; i < files.Count; i++)
             {
-                if (file.EndsWith(".zones.png", StringComparison.OrdinalIgnoreCase)) continue;
-                string rel = file.Substring(skinDir.Length).TrimStart('/', '\\').Replace('\\', '/');
+                string file = files[i];
+                if (!IsPngSpriteCandidate(file)) continue;
+                string rel = MakeRelativePath(skinDir, file);
                 if (!IsWoundViewRelPath(rel)) continue;
                 TryBuildSprite(rel, file, null, data);
             }
 
-            foreach (string file in Directory.GetFiles(skinDir, "*.png", SearchOption.AllDirectories))
+            for (int i = 0; i < files.Count; i++)
             {
-                if (file.EndsWith(".zones.png", StringComparison.OrdinalIgnoreCase)) continue;
-                string rel = file.Substring(skinDir.Length).TrimStart('/', '\\').Replace('\\', '/');
+                string file = files[i];
+                if (!IsPngSpriteCandidate(file)) continue;
+                string rel = MakeRelativePath(skinDir, file);
                 if (IsWoundViewRelPath(rel)) continue;
                 string name = Path.GetFileNameWithoutExtension(file);
                 if (!KnownWoundSpriteNames.Contains(name)) continue;
                 TryBuildSprite(rel, file, null, data);
             }
+        }
+
+        private static bool IsPngSpriteCandidate(string path)
+            => !string.IsNullOrEmpty(path)
+            && path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+            && !path.EndsWith(".zones.png", StringComparison.OrdinalIgnoreCase);
+
+        private static string MakeRelativePath(string baseDir, string fullPath)
+        {
+            if (string.IsNullOrEmpty(baseDir) || string.IsNullOrEmpty(fullPath)) return string.Empty;
+            if (fullPath.StartsWith(baseDir, StringComparison.OrdinalIgnoreCase) && fullPath.Length > baseDir.Length)
+            {
+                return fullPath.Substring(baseDir.Length).TrimStart('/', '\\').Replace('\\', '/');
+            }
+            try
+            {
+                string normBase = Path.GetFullPath(baseDir).TrimEnd('/', '\\');
+                string normFull = Path.GetFullPath(fullPath);
+                if (normFull.StartsWith(normBase, StringComparison.OrdinalIgnoreCase) && normFull.Length > normBase.Length)
+                {
+                    return normFull.Substring(normBase.Length).TrimStart('/', '\\').Replace('\\', '/');
+                }
+            }
+            catch { }
+            return string.Empty;
         }
 
         private static void LoadFromMemoryPack(string skinID, WoundSkinData data)
@@ -481,17 +629,13 @@ namespace SkinSyncMod
 
             foreach (var kv in pack)
             {
-                if (!kv.Key.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) continue;
-                if (kv.Key.EndsWith(".zones.png", StringComparison.OrdinalIgnoreCase)) continue;
-                if (!IsWoundViewRelPath(kv.Key)) continue;
+                if (!IsPngSpriteCandidate(kv.Key) || !IsWoundViewRelPath(kv.Key)) continue;
                 TryBuildSprite(kv.Key, null, kv.Value, data);
             }
 
             foreach (var kv in pack)
             {
-                if (!kv.Key.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) continue;
-                if (kv.Key.EndsWith(".zones.png", StringComparison.OrdinalIgnoreCase)) continue;
-                if (IsWoundViewRelPath(kv.Key)) continue;
+                if (!IsPngSpriteCandidate(kv.Key) || IsWoundViewRelPath(kv.Key)) continue;
                 string name = Path.GetFileNameWithoutExtension(kv.Key);
                 if (!KnownWoundSpriteNames.Contains(name)) continue;
                 TryBuildSprite(kv.Key, null, kv.Value, data);
@@ -500,9 +644,7 @@ namespace SkinSyncMod
 
         internal static bool IsInsideWoundViewSubdir(string baseDir, string fullPath)
         {
-            if (string.IsNullOrEmpty(baseDir) || string.IsNullOrEmpty(fullPath) || fullPath.Length <= baseDir.Length)
-                return false;
-            string rel = fullPath.Substring(baseDir.Length).TrimStart('/', '\\').Replace('\\', '/');
+            string rel = MakeRelativePath(baseDir, fullPath);
             return IsWoundViewRelPath(rel);
         }
 
@@ -547,6 +689,7 @@ namespace SkinSyncMod
                 catch { return; }
             }
             if (bytes == null || bytes.Length == 0) return;
+            if (!SkinPackCodec.IsPngDimensionsSafe(bytes, spriteName)) return;
 
             var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false)
             {
@@ -578,6 +721,8 @@ namespace SkinSyncMod
             {
                 data.ColoredSprites.Add(sprite);
             }
+            // 必须在完成彩色像素扫描后再释放 CPU 可读副本，否则 GetPixels32 会因不可读失败。
+            tex.Apply(false, makeNoLongerReadable: true);
         }
 
         private static bool HasColorPixels(Texture2D tex)
@@ -596,9 +741,11 @@ namespace SkinSyncMod
         {
             if (retired == null || retired.OwnedSprites.Count == 0) return;
             var set = new HashSet<Sprite>(retired.OwnedSprites);
-            foreach (WoundView view in Resources.FindObjectsOfTypeAll<WoundView>())
+            List<WoundView> views = CollectActiveViews();
+            for (int i = 0; i < views.Count; i++)
             {
-                if (view == null || !view.gameObject.scene.IsValid()) continue;
+                WoundView view = views[i];
+                if (view == null) continue;
                 bool touched = false;
                 foreach (Image img in view.GetComponentsInChildren<Image>(true))
                 {

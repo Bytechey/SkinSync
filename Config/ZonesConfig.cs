@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
@@ -5,9 +6,14 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    /// <summary>解析部件区块遮罩图（.zones.png）与特效配置（.zones.json）。</summary>
+    /// <summary>解析、校验并缓存部件区块遮罩图（.zones.png）与特效配置（.zones.json）。</summary>
     public static class ZonesConfigLoader
     {
+        private const int MaxZonesPerFile = 16;
+
+        private static readonly Dictionary<string, (List<Entry> entries, List<ZoneGeometry> geom)> _loadCache
+            = new Dictionary<string, (List<Entry> entries, List<ZoneGeometry> geom)>(StringComparer.OrdinalIgnoreCase);
+
         public class Entry
         {
             public byte Id;
@@ -66,37 +72,131 @@ namespace SkinSyncMod
             public float Radius;
         }
 
-        /// <summary>读取部件区块配置与遮罩几何数据，任一缺失或解析失败返回空元组。</summary>
+        /// <summary>失效单个皮肤（skinID 非空时移除路径含该皮肤目录的条目）或全部区块解析缓存。</summary>
+        internal static void Invalidate(string skinID = null)
+        {
+            if (skinID == null)
+            {
+                _loadCache.Clear();
+                return;
+            }
+            if (skinID.Length == 0 || _loadCache.Count == 0) return;
+
+            string skinDir = SkinPathResolver.GetSkinDir(skinID);
+            string normDirPrefix = string.IsNullOrEmpty(skinDir)
+                ? null
+                : skinDir.Replace('\\', '/').TrimEnd('/') + "/";
+
+            List<string> toRemove = null;
+            foreach (string key in _loadCache.Keys)
+            {
+                if (MatchesSkinCacheKey(key, skinID, normDirPrefix))
+                {
+                    (toRemove ?? (toRemove = new List<string>())).Add(key);
+                }
+            }
+            if (toRemove != null)
+            {
+                for (int i = 0; i < toRemove.Count; i++)
+                {
+                    _loadCache.Remove(toRemove[i]);
+                }
+            }
+        }
+
+        private static bool MatchesSkinCacheKey(string fullKey, string skinID, string normDirPrefix)
+        {
+            if (string.IsNullOrEmpty(fullKey)) return false;
+            int sep = fullKey.IndexOf('|');
+            string pathPart = (sep >= 0 ? fullKey.Substring(0, sep) : fullKey).Replace('\\', '/');
+
+            if (!string.IsNullOrEmpty(normDirPrefix)
+                && pathPart.StartsWith(normDirPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string[] segs = pathPart.Split('/');
+            for (int i = 0; i < segs.Length; i++)
+            {
+                if (string.Equals(segs[i], skinID, StringComparison.OrdinalIgnoreCase)) return true;
+            }
+            return false;
+        }
+
+        /// <summary>从磁盘读取部件区块配置与遮罩几何数据并缓存结果，任一缺失或解析失败返回空元组。</summary>
         public static (List<Entry> entries, List<ZoneGeometry> geom) Load(string maskPath, string configPath, int spriteW, int spriteH)
         {
+            if (string.IsNullOrEmpty(maskPath) || string.IsNullOrEmpty(configPath)) return (null, null);
+            string cacheKey = maskPath + "|" + configPath;
+            string fullKey = BuildFullKey(cacheKey, spriteW, spriteH);
+            if (_loadCache.TryGetValue(fullKey, out var cached)) return cached;
+
             if (!File.Exists(maskPath) || !File.Exists(configPath)) return (null, null);
+
+            string text;
+            byte[] maskBytes;
+            try
+            {
+                text = File.ReadAllText(configPath);
+                maskBytes = File.ReadAllBytes(maskPath);
+            }
+            catch (Exception ex)
+            {
+                ModLog.Warning("zones file read failed: " + ex.Message);
+                _loadCache[fullKey] = (null, null);
+                return (null, null);
+            }
+
+            return LoadFromBytes(cacheKey, maskBytes, text, spriteW, spriteH);
+        }
+
+        /// <summary>从内存字节解析并钳制部件区块配置与遮罩几何数据，按 cacheKey 与基准尺寸写入缓存。</summary>
+        internal static (List<Entry> entries, List<ZoneGeometry> geom) LoadFromBytes(
+            string cacheKey,
+            byte[] maskBytes,
+            string configJson,
+            int spriteW,
+            int spriteH)
+        {
+            string fullKey = !string.IsNullOrEmpty(cacheKey) ? BuildFullKey(cacheKey, spriteW, spriteH) : null;
+            if (fullKey != null && _loadCache.TryGetValue(fullKey, out var cached)) return cached;
+
+            if (maskBytes == null || maskBytes.Length == 0 || string.IsNullOrEmpty(configJson))
+            {
+                return (null, null);
+            }
+
             List<Entry> entries;
             try
             {
-                string text = File.ReadAllText(configPath);
-                var raw = JsonConvert.DeserializeObject<RawConfig>(text);
+                var raw = JsonConvert.DeserializeObject<RawConfig>(configJson);
                 entries = ToEntries(raw);
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
-                SkinSyncMod.ModLog.Warning("zones.json parse failed: " + ex.Message);
+                ModLog.Warning("zones.json parse failed: " + ex.Message);
+                if (fullKey != null) _loadCache[fullKey] = (null, null);
                 return (null, null);
             }
-            var geom = ComputeGeometry(maskPath, spriteW, spriteH);
-            if (geom == null) return (null, null);
-            return (entries, geom);
+
+            var geom = ComputeGeometry(maskBytes, cacheKey, spriteW, spriteH);
+            var result = geom == null ? (null, null) : (entries, geom);
+            if (fullKey != null) _loadCache[fullKey] = result;
+            return result;
         }
 
-        private static List<ZoneGeometry> ComputeGeometry(string maskPath, int expectedW, int expectedH)
+        private static string BuildFullKey(string cacheKey, int spriteW, int spriteH)
+            => $"{cacheKey}|{spriteW}x{spriteH}";
+
+        private static List<ZoneGeometry> ComputeGeometry(byte[] data, string cacheKey, int expectedW, int expectedH)
         {
-            byte[] data;
-            try { data = File.ReadAllBytes(maskPath); }
-            catch (System.Exception ex)
+            if (!SkinPackCodec.IsPngDimensionsSafe(data, cacheKey)) return null;
+
+            var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false)
             {
-                SkinSyncMod.ModLog.Warning("zones.png read failed: " + ex.Message);
-                return null;
-            }
-            var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+                hideFlags = HideFlags.HideAndDontSave,
+            };
             try
             {
                 if (!ImageConversion.LoadImage(tex, data)) return null;
@@ -105,19 +205,28 @@ namespace SkinSyncMod
                 if (w <= 0 || h <= 0) return null;
                 var pixels = tex.GetPixels32();
 
-                var minX = new Dictionary<byte, int>();
-                var maxX = new Dictionary<byte, int>();
-                var minY = new Dictionary<byte, int>();
-                var maxY = new Dictionary<byte, int>();
+                var seen = new bool[256];
+                var minX = new int[256];
+                var maxX = new int[256];
+                var minY = new int[256];
+                var maxY = new int[256];
                 for (int y = 0; y < h; y++)
                 {
+                    int row = y * w;
                     for (int x = 0; x < w; x++)
                     {
-                        var p = pixels[y * w + x];
+                        var p = pixels[row + x];
                         if (p.a == 0) continue;
                         byte id = p.r;
                         if (id == 0) continue;
-                        if (!minX.ContainsKey(id)) { minX[id] = x; maxX[id] = x; minY[id] = y; maxY[id] = y; }
+                        if (!seen[id])
+                        {
+                            seen[id] = true;
+                            minX[id] = x;
+                            maxX[id] = x;
+                            minY[id] = y;
+                            maxY[id] = y;
+                        }
                         else
                         {
                             if (x < minX[id]) minX[id] = x;
@@ -131,21 +240,21 @@ namespace SkinSyncMod
                 float scaleX = expectedW > 0 && expectedW != w ? (float)expectedW / w : 1f;
                 float scaleY = expectedH > 0 && expectedH != h ? (float)expectedH / h : 1f;
                 var geom = new List<ZoneGeometry>();
-                foreach (var kv in minX)
+                for (int id = 1; id < 256; id++)
                 {
-                    byte id = kv.Key;
-                    float cx = (kv.Value + maxX[id]) * 0.5f * scaleX;
+                    if (!seen[id]) continue;
+                    float cx = (minX[id] + maxX[id]) * 0.5f * scaleX;
                     float cy = (minY[id] + maxY[id]) * 0.5f * scaleY;
-                    float dx = (maxX[id] - kv.Value) * 0.5f * scaleX;
+                    float dx = (maxX[id] - minX[id]) * 0.5f * scaleX;
                     float dy = (maxY[id] - minY[id]) * 0.5f * scaleY;
                     float radius = Mathf.Sqrt(dx * dx + dy * dy);
-                    geom.Add(new ZoneGeometry { Id = id, CenterX = cx, CenterY = cy, Radius = radius });
+                    geom.Add(new ZoneGeometry { Id = (byte)id, CenterX = cx, CenterY = cy, Radius = radius });
                 }
                 return geom;
             }
             finally
             {
-                Object.Destroy(tex);
+                UnityEngine.Object.Destroy(tex);
             }
         }
 
@@ -155,43 +264,48 @@ namespace SkinSyncMod
             if (raw == null || raw.zones == null) return list;
             foreach (var z in raw.zones)
             {
+                if (list.Count >= MaxZonesPerFile) break;
                 if (z == null || z.id < 1 || z.id > 255) continue;
                 var e = new Entry { Id = (byte)z.id, Name = z.name };
                 if (z.light != null)
                 {
+                    float outerRadius = ClampFinite(z.light.outerRadius, 0.05f, 0.05f, 25f);
                     e.Light = new LightConfig
                     {
                         Color = ParseColor(z.light.color, new Color32(255, 255, 255, 255)),
-                        Intensity = z.light.intensity,
-                        OuterRadius = z.light.outerRadius,
-                        InnerRadius = z.light.innerRadius,
+                        Intensity = ClampFinite(z.light.intensity, 0f, 0f, 10f),
+                        OuterRadius = outerRadius,
+                        InnerRadius = ClampFinite(z.light.innerRadius, 0f, 0f, outerRadius),
                         Color2 = z.light.color2 != null ? ParseColor(z.light.color2, new Color32(255, 255, 255, 255)) : (Color32?)null,
                         Mode = string.IsNullOrEmpty(z.light.mode) ? "radial" : z.light.mode,
-                        Direction = z.light.direction,
-                        Spread = z.light.spread > 0f ? z.light.spread : 60f,
-                        FalloffPower = z.light.falloffPower > 0f ? z.light.falloffPower : 2f,
+                        Direction = SanitizeAngle(z.light.direction),
+                        Spread = ClampPositiveOrDefault(z.light.spread, 60f, 1f, 360f),
+                        FalloffPower = ClampPositiveOrDefault(z.light.falloffPower, 2f, 0.1f, 10f),
                         Breathing = z.light.breathing,
-                        BreathSpeed = z.light.breathSpeed > 0f ? z.light.breathSpeed : 1f,
-                        BreathAmplitude = z.light.breathAmplitude >= 0f ? z.light.breathAmplitude : 0.5f,
+                        BreathSpeed = ClampPositiveOrDefault(z.light.breathSpeed, 1f, 0.05f, 20f),
+                        BreathAmplitude = ClampNonNegativeOrDefault(z.light.breathAmplitude, 0.5f, 0f, 2f),
                     };
                 }
                 if (z.particle != null)
                 {
+                    float rawSpread = z.particle.spread.HasValue && IsFinite(z.particle.spread.Value)
+                        ? z.particle.spread.Value
+                        : 360f;
                     e.Particle = new ParticleConfig
                     {
-                        Rate = z.particle.rate,
-                        Lifetime = z.particle.lifetime,
-                        StartSize = z.particle.startSize,
+                        Rate = ClampFinite(z.particle.rate, 0f, 0f, 80f),
+                        Lifetime = ClampPositiveOrDefault(z.particle.lifetime, 1f, 0.05f, 15f),
+                        StartSize = ClampPositiveOrDefault(z.particle.startSize, 0.05f, 0.01f, 3f),
                         StartColor = ParseColor(z.particle.startColor, new Color32(255, 255, 255, 255)),
-                        Gravity = z.particle.gravity,
+                        Gravity = ClampFinite(z.particle.gravity, 0f, -10f, 10f),
                         Shape = string.IsNullOrEmpty(z.particle.shape) ? "circle" : z.particle.shape,
-                        ShapeRadius = z.particle.shapeRadius,
+                        ShapeRadius = ClampFinite(z.particle.shapeRadius, 0.01f, 0.01f, 15f),
                         EndColor = z.particle.endColor != null ? ParseColor(z.particle.endColor, new Color32(255, 255, 255, 0)) : (Color32?)null,
                         Mode = string.IsNullOrEmpty(z.particle.mode) ? "gravity" : z.particle.mode,
-                        Speed = z.particle.speed,
-                        Direction = z.particle.direction,
-                        Spread = z.particle.spread > 0f ? z.particle.spread : 360f,
-                        EndSizeScale = z.particle.endSizeScale > 0f ? z.particle.endSizeScale : 1f,
+                        Speed = ClampFinite(z.particle.speed, 0f, 0f, 30f),
+                        Direction = SanitizeAngle(z.particle.direction),
+                        Spread = Mathf.Clamp(rawSpread, 0f, 360f),
+                        EndSizeScale = ClampPositiveOrDefault(z.particle.endSizeScale, 1f, 0.05f, 5f),
                         FadeCurve = string.IsNullOrEmpty(z.particle.fadeCurve) ? "linear" : z.particle.fadeCurve,
                     };
                 }
@@ -200,13 +314,30 @@ namespace SkinSyncMod
                     e.Animation = new AnimationConfig
                     {
                         Frames = z.animation.frames,
-                        Fps = z.animation.fps > 0f ? z.animation.fps : 6f,
+                        Fps = ClampPositiveOrDefault(z.animation.fps, 6f, 0.5f, 60f),
                         Loop = z.animation.loop,
                     };
                 }
                 list.Add(e);
             }
             return list;
+        }
+
+        private static bool IsFinite(float v) => !float.IsNaN(v) && !float.IsInfinity(v);
+
+        private static float ClampFinite(float v, float fallback, float min, float max)
+            => Mathf.Clamp(IsFinite(v) ? v : fallback, min, max);
+
+        private static float ClampPositiveOrDefault(float v, float defaultVal, float min, float max)
+            => Mathf.Clamp(IsFinite(v) && v > 0f ? v : defaultVal, min, max);
+
+        private static float ClampNonNegativeOrDefault(float v, float defaultVal, float min, float max)
+            => Mathf.Clamp(IsFinite(v) && v >= 0f ? v : defaultVal, min, max);
+
+        private static float SanitizeAngle(float deg)
+        {
+            if (!IsFinite(deg)) return 0f;
+            return deg > 360f || deg < -360f ? deg % 360f : deg;
         }
 
         private static Color32 ParseColor(int[] arr, Color32 fb)
@@ -269,7 +400,7 @@ namespace SkinSyncMod
             public string mode;
             public float speed;
             public float direction;
-            public float spread;
+            public float? spread;
             public float endSizeScale;
             public string fadeCurve;
 #pragma warning restore CS0649

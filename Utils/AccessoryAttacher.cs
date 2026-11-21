@@ -8,12 +8,13 @@ namespace SkinSyncMod
     public static class AccessoryAttacher
     {
         private const float PIXELS_PER_UNIT = 8f;
-        private const string ContainerName = "HwAccessories";
-
-        public static readonly Dictionary<string, GameObject> Mounted = new Dictionary<string, GameObject>();
+        private const string ContainerName = SkinApplier.AccessoriesContainerPrefix;
+        private const int MaxRemoteOverridesPerCharacter = 64;
 
         internal sealed class MountMeta
         {
+            public GameObject Owner;
+            public string SkinId;
             public string RequireSlot;
             public bool DesiredEnabled;
             public Body Body;
@@ -30,8 +31,6 @@ namespace SkinSyncMod
             public GameObject Go;
         }
 
-        internal static readonly Dictionary<string, MountMeta> Meta = new Dictionary<string, MountMeta>();
-
         private static readonly Dictionary<Body, Dictionary<string, MountMeta>> _byBody
             = new Dictionary<Body, Dictionary<string, MountMeta>>();
 
@@ -40,6 +39,9 @@ namespace SkinSyncMod
 
         private static readonly Dictionary<uint, Dictionary<string, SkinSyncSettings.AccessoryOverride>> _pendingRemoteOverrides
             = new Dictionary<uint, Dictionary<string, SkinSyncSettings.AccessoryOverride>>();
+
+        private static readonly HashSet<string> _warnedMissing
+            = new HashSet<string>(StringComparer.Ordinal);
 
         internal static void SetRemoteOverride(GameObject playerObj, string skinId, string accId,
             bool enabled, int offX, int offY, float rotation, int zOrder)
@@ -50,7 +52,9 @@ namespace SkinSyncMod
                 map = new Dictionary<string, SkinSyncSettings.AccessoryOverride>(StringComparer.Ordinal);
                 _remoteOverrides[playerObj] = map;
             }
-            map[skinId + "|" + accId] = new SkinSyncSettings.AccessoryOverride
+            string key = skinId + "|" + accId;
+            if (!map.ContainsKey(key) && map.Count >= MaxRemoteOverridesPerCharacter) return;
+            map[key] = new SkinSyncSettings.AccessoryOverride
             {
                 Enabled = enabled,
                 OffX = offX,
@@ -69,7 +73,9 @@ namespace SkinSyncMod
                 map = new Dictionary<string, SkinSyncSettings.AccessoryOverride>(StringComparer.Ordinal);
                 _pendingRemoteOverrides[netId] = map;
             }
-            map[skinId + "|" + accId] = new SkinSyncSettings.AccessoryOverride
+            string key = skinId + "|" + accId;
+            if (!map.ContainsKey(key) && map.Count >= MaxRemoteOverridesPerCharacter) return;
+            map[key] = new SkinSyncSettings.AccessoryOverride
             {
                 Enabled = enabled,
                 OffX = offX,
@@ -91,6 +97,7 @@ namespace SkinSyncMod
             }
             foreach (var kv in pending)
             {
+                if (!target.ContainsKey(kv.Key) && target.Count >= MaxRemoteOverridesPerCharacter) continue;
                 target[kv.Key] = kv.Value;
             }
         }
@@ -119,11 +126,6 @@ namespace SkinSyncMod
             PruneDeadBodies();
             ClearExisting(body);
             _byBody.Remove(body);
-            if (isLocal)
-            {
-                Mounted.Clear();
-                Meta.Clear();
-            }
 
             if (entries == null || entries.Count == 0) return;
 
@@ -138,13 +140,13 @@ namespace SkinSyncMod
                 Limb limb = body.LimbByName(entry.Limb);
                 if (limb == null)
                 {
-                    SkinSyncMod.ModLog.Warning($"accessory {entry.Id} target limb {entry.Limb} not found");
+                    WarnMissingOnce(skinId, entry.Id, $"accessory {entry.Id} target limb {entry.Limb} not found");
                     continue;
                 }
                 Sprite sprite = ResolveAccessorySprite(sprites, entry.Sprite, entry.Limb, isRight);
                 if (sprite == null)
                 {
-                    SkinSyncMod.ModLog.Warning($"accessory {entry.Id} sprite {entry.Sprite} not loaded");
+                    WarnMissingOnce(skinId, entry.Id, $"accessory {entry.Id} sprite {entry.Sprite} not loaded");
                     continue;
                 }
 
@@ -164,6 +166,7 @@ namespace SkinSyncMod
                     if (ov.ZOrder.HasValue) effZ = ov.ZOrder.Value;
                 }
 
+                bool initialActive = ComputeEffectiveActive(body, effEnabled, entry.RequireWornSlot);
                 var go = AttachOne(
                     parent: limb.transform,
                     name: ContainerName + "_" + entry.Id,
@@ -172,10 +175,12 @@ namespace SkinSyncMod
                     limbSr: limb.GetComponent<SpriteRenderer>(),
                     zOffset: effZ,
                     litMat: litMat);
-                go.SetActive(effEnabled);
+                go.SetActive(initialActive);
 
                 var meta = new MountMeta
                 {
+                    Owner = playerObj,
+                    SkinId = skinId,
                     RequireSlot = entry.RequireWornSlot,
                     DesiredEnabled = effEnabled,
                     Body = body,
@@ -184,11 +189,6 @@ namespace SkinSyncMod
                     PrimaryGo = go,
                 };
                 bodyMounts[entry.Id] = meta;
-                if (isLocal)
-                {
-                    Mounted[entry.Id] = go;
-                    Meta[entry.Id] = meta;
-                }
 
                 if (entry.SecondaryLimbs != null)
                 {
@@ -198,13 +198,13 @@ namespace SkinSyncMod
                         Limb secLimb = body.LimbByName(sec.Limb);
                         if (secLimb == null)
                         {
-                            SkinSyncMod.ModLog.Warning($"accessory {entry.Id} secondary limb {sec.Limb} not found");
+                            WarnMissingOnce(skinId, entry.Id, $"accessory {entry.Id} secondary limb {sec.Limb} not found");
                             continue;
                         }
                         Sprite secSprite = ResolveAccessorySprite(sprites, sec.Sprite, sec.Limb, isRight);
                         if (secSprite == null)
                         {
-                            SkinSyncMod.ModLog.Warning($"accessory {entry.Id} secondary sprite {sec.Sprite} not loaded");
+                            WarnMissingOnce(skinId, entry.Id, $"accessory {entry.Id} secondary sprite {sec.Sprite} not loaded");
                             continue;
                         }
                         // 副件保留在目标副肢体节点下跟随动作旋转，显隐与主件同步。
@@ -216,7 +216,7 @@ namespace SkinSyncMod
                             limbSr: secLimb.GetComponent<SpriteRenderer>(),
                             zOffset: sec.ZOrder,
                             litMat: litMat);
-                        secGo.SetActive(effEnabled);
+                        secGo.SetActive(initialActive);
                         if (meta.Secondaries == null) meta.Secondaries = new List<SecondaryRef>();
                         meta.Secondaries.Add(new SecondaryRef
                         {
@@ -226,6 +226,15 @@ namespace SkinSyncMod
                         });
                     }
                 }
+            }
+        }
+
+        private static void WarnMissingOnce(string skinId, string accId, string message)
+        {
+            string key = (skinId ?? string.Empty) + "|" + (accId ?? string.Empty);
+            if (_warnedMissing.Add(key))
+            {
+                ModLog.Warning(message);
             }
         }
 
@@ -320,6 +329,16 @@ namespace SkinSyncMod
             }
         }
 
+        private static bool ComputeEffectiveActive(Body body, bool desiredEnabled, string requireSlot)
+        {
+            if (!desiredEnabled) return false;
+            if (AccessoryEnforcer.Active && !string.IsNullOrEmpty(requireSlot) && body != null)
+            {
+                return body.GetWearableBySlotID(requireSlot) != null;
+            }
+            return true;
+        }
+
         private static void SetMountActive(MountMeta meta, bool active)
         {
             if (meta.PrimaryGo != null && meta.PrimaryGo.activeSelf != active)
@@ -345,29 +364,76 @@ namespace SkinSyncMod
             return SkinApplier.ResolveSidedSprite(sprites, baseName, side, isRight);
         }
 
-        public static void SetEnabled(string id, bool enabled)
+        private static bool TryFindLocalMountMeta(string id, out MountMeta meta)
         {
-            if (Meta.TryGetValue(id, out var m) && m != null)
+            meta = null;
+            if (string.IsNullOrEmpty(id)) return false;
+
+            var cam = PlayerCamera.main;
+            if (cam != null && cam.body != null
+                && _byBody.TryGetValue(cam.body, out var camMounts)
+                && camMounts != null
+                && camMounts.TryGetValue(id, out meta) && meta != null)
             {
-                m.DesiredEnabled = enabled;
-                SetMountActive(m, enabled);
+                return true;
             }
-            else if (Mounted.TryGetValue(id, out var go) && go != null)
+
+            foreach (var kv in _byBody)
             {
-                go.SetActive(enabled);
+                if (kv.Key == null || kv.Value == null) continue;
+                if (!kv.Value.TryGetValue(id, out var candidate) || candidate == null) continue;
+                GameObject host = candidate.Owner != null ? candidate.Owner : kv.Key.gameObject;
+                if (SkinApplier.IsLocalCharacter(host))
+                {
+                    meta = candidate;
+                    return true;
+                }
             }
+            return false;
         }
 
-        public static void SetTransform(string id, int offX, int offY, float rot, int z)
+        private static void ApplyPrimaryTransform(GameObject go, int offX, int offY, float rot, int zOrder)
         {
-            if (!Mounted.TryGetValue(id, out var go) || go == null) return;
+            if (go == null) return;
             go.transform.localPosition = new Vector3(offX / PIXELS_PER_UNIT, -offY / PIXELS_PER_UNIT, 0f);
             go.transform.localRotation = Quaternion.Euler(0f, 0f, rot);
             var sr = go.GetComponent<SpriteRenderer>();
             if (sr == null) return;
             var limbSr = go.transform.parent != null ? go.transform.parent.GetComponent<SpriteRenderer>() : null;
             int baseOrder = limbSr != null ? limbSr.sortingOrder : 0;
-            sr.sortingOrder = baseOrder + z;
+            sr.sortingOrder = baseOrder + zOrder;
+        }
+
+        public static void SetEnabled(string id, bool enabled)
+        {
+            if (!TryFindLocalMountMeta(id, out var meta)) return;
+            meta.DesiredEnabled = enabled;
+            SetMountActive(meta, ComputeEffectiveActive(meta.Body, enabled, meta.RequireSlot));
+        }
+
+        public static void SetTransform(string id, int offX, int offY, float rot, int z)
+        {
+            if (!TryFindLocalMountMeta(id, out var meta) || meta.PrimaryGo == null) return;
+            ApplyPrimaryTransform(meta.PrimaryGo, offX, offY, rot, z);
+        }
+
+        /// <summary>对已挂载对应皮肤的远端角色原地更新单个配件的显隐与变换；未就绪或皮肤不匹配时返回 false。</summary>
+        internal static bool TryApplySingleRemoteOverride(GameObject playerObj, string skinId, string accId,
+            bool enabled, int offX, int offY, float rot, int zOrder)
+        {
+            if (playerObj == null || string.IsNullOrEmpty(skinId) || string.IsNullOrEmpty(accId)) return false;
+            string activeSkin = SkinApplier.GetCharacterByChara(playerObj);
+            if (!string.Equals(activeSkin, skinId, StringComparison.Ordinal)) return false;
+
+            Body body = playerObj.GetComponentInChildren<Body>(true);
+            if (body == null || !_byBody.TryGetValue(body, out var bodyMounts) || bodyMounts == null) return false;
+            if (!bodyMounts.TryGetValue(accId, out var meta) || meta == null || meta.PrimaryGo == null) return false;
+            if (!string.Equals(meta.SkinId, skinId, StringComparison.Ordinal)) return false;
+
+            meta.DesiredEnabled = enabled;
+            SetMountActive(meta, ComputeEffectiveActive(body, enabled, meta.RequireSlot));
+            ApplyPrimaryTransform(meta.PrimaryGo, offX, offY, rot, zOrder);
+            return true;
         }
 
         private static void PruneDeadBodies()

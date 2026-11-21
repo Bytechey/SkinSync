@@ -25,19 +25,22 @@ namespace SkinSyncMod.Patches
 
         private static bool _suppressed;
         private static bool _noLegacyDetected;
+        private static bool _suppressAttempted;
         private static readonly List<PatchedEntry> _shortCircuitedMethods = new List<PatchedEntry>();
         private static readonly MethodInfo _skipPrefixMethod = typeof(LegacyTogetherSkinSuppressor)
             .GetMethod(nameof(SkipPrefix), BindingFlags.NonPublic | BindingFlags.Static);
 
+        internal static bool NoLegacyDetected => _noLegacyDetected;
+
         /// <summary>检测宿主是否包含原版内置 SpriteReplacerPlugin 并执行一次性压制；未加载 Together 时返回 false 供后续重试。</summary>
         internal static bool TrySuppress(Harmony harmony)
         {
-            if (_suppressed || _noLegacyDetected) return true;
+            if (_suppressed || _noLegacyDetected || _suppressAttempted) return true;
 
             Assembly togetherAsm = FindTogetherAssembly();
             if (togetherAsm == null) return false;
 
-            // 原版 v5.5.3.0 内置皮肤类全部位于全局根命名空间；普通版 main 与 Feature 版已移除该子系统。
+            // 原版 v5.5.3 / v5.5.4 内置皮肤类位于全局根命名空间；普通版 main 与 Feature 版已移除该子系统。
             Type pluginType = togetherAsm.GetType("SpriteReplacerPlugin", throwOnError: false)
                 ?? togetherAsm.GetType("Together.Skins.SpriteReplacerPlugin", throwOnError: false);
             if (pluginType == null)
@@ -46,6 +49,7 @@ namespace SkinSyncMod.Patches
                 return true;
             }
 
+            _suppressAttempted = true;
             try
             {
                 int restoredReplacers = RestoreAndDestroyExistingReplacers(togetherAsm, pluginType);
@@ -54,7 +58,7 @@ namespace SkinSyncMod.Patches
 
                 int stoppedListeners = DisablePluginAndInputListeners(pluginType);
                 DetachSceneCallbacks(pluginType);
-                HideLegacySkinMenuUi(togetherAsm);
+                HideLegacySkinMenuUi(togetherAsm, pluginType);
 
                 int patchedCount = InstallShortCircuitPatches(harmony, togetherAsm, pluginType);
 
@@ -69,7 +73,7 @@ namespace SkinSyncMod.Patches
             return true;
         }
 
-        /// <summary>退出时卸载挂载在原版内置皮肤类上的短路补丁。</summary>
+        /// <summary>退出时卸载挂载在原版内置皮肤类上的短路补丁并重置压制状态。</summary>
         internal static void Dispose(Harmony harmony)
         {
             if (harmony != null)
@@ -84,6 +88,7 @@ namespace SkinSyncMod.Patches
             _shortCircuitedMethods.Clear();
             _suppressed = false;
             _noLegacyDetected = false;
+            _suppressAttempted = false;
         }
 
         /// <summary>识别原版 SpriteReplacerPlugin 在 CustomSprites 根下自动创建的 Exp/Milky/Dune 空壳物种容器目录。</summary>
@@ -155,10 +160,17 @@ namespace SkinSyncMod.Patches
             return null;
         }
 
+        private static Type FindLegacyType(Assembly togetherAsm, Type pluginType, string simpleName)
+        {
+            return togetherAsm.GetType(simpleName, throwOnError: false)
+                ?? togetherAsm.GetType("Together.Skins." + simpleName, throwOnError: false)
+                ?? pluginType?.GetNestedType(simpleName, BindingFlags.Public | BindingFlags.NonPublic);
+        }
+
         private static int RestoreAndDestroyExistingReplacers(Assembly togetherAsm, Type pluginType)
         {
             int count = 0;
-            Type replacerType = togetherAsm.GetType("SkinSpriteReplacer", throwOnError: false);
+            Type replacerType = FindLegacyType(togetherAsm, pluginType, "SkinSpriteReplacer");
             if (replacerType != null)
             {
                 MethodInfo restoreMethod = replacerType.GetMethod("Restore", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null);
@@ -176,13 +188,30 @@ namespace SkinSyncMod.Patches
                 }
             }
 
-            // 清空原版在 Awake 预载入的槽位贴图字典，并将已篡改的面部组件还原回原版基线，防止污染 SkinSync 首次捕获的原始引用。
+            Type bindingType = FindLegacyType(togetherAsm, pluginType, "BodySkinBinding");
+            if (bindingType != null)
+            {
+                MethodInfo resetMethod = bindingType.GetMethod("Reset", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                UnityEngine.Object[] bindings = Resources.FindObjectsOfTypeAll(bindingType);
+                for (int i = 0; i < bindings.Length; i++)
+                {
+                    Component comp = bindings[i] as Component;
+                    if (comp == null) continue;
+                    try { resetMethod?.Invoke(comp, null); } catch { }
+                    UnityEngine.Object.Destroy(comp);
+                    count++;
+                }
+            }
+
+            // 清空原版已载入的槽位贴图字典，并将已篡改的面部组件还原回原版基线，防止污染 SkinSync 首次捕获的原始引用。
             try
             {
                 if (pluginType.GetField("LoadedSprites", AllFlags)?.GetValue(null) is IDictionary loaded)
                     loaded.Clear();
 
-                MethodInfo restoreFace = pluginType.GetMethod("RestoreFaceToStock", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new[] { typeof(FacialExpression) }, null);
+                Type skinFaceType = FindLegacyType(togetherAsm, pluginType, "SkinFace");
+                MethodInfo restoreFace = skinFaceType?.GetMethod("RestoreFaceToStock", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new[] { typeof(FacialExpression) }, null)
+                    ?? pluginType.GetMethod("RestoreFaceToStock", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static, null, new[] { typeof(FacialExpression) }, null);
                 if (restoreFace != null)
                 {
                     FacialExpression[] faces = Resources.FindObjectsOfTypeAll<FacialExpression>();
@@ -261,9 +290,9 @@ namespace SkinSyncMod.Patches
             catch { }
         }
 
-        private static void HideLegacySkinMenuUi(Assembly togetherAsm)
+        private static void HideLegacySkinMenuUi(Assembly togetherAsm, Type pluginType)
         {
-            Type menuType = togetherAsm.GetType("SkinMenuUI", throwOnError: false);
+            Type menuType = FindLegacyType(togetherAsm, pluginType, "SkinMenuUI");
             if (menuType == null) return;
 
             try
@@ -294,21 +323,43 @@ namespace SkinSyncMod.Patches
             if (harmony == null || _skipPrefixMethod == null) return 0;
             int count = 0;
 
-            Type woundType = togetherAsm.GetType("WoundViewIntegration", throwOnError: false);
-            if (woundType != null)
+            count += ShortCircuitMany(
+                harmony,
+                pluginType,
+                "EnsureLoaded",
+                "SwitchToSlot",
+                "SyncSpeciesCache",
+                "ApplyToAll",
+                "ApplyReplacement",
+                "ApplyReplacementToTail");
+
+            Type patchLoaderType = FindLegacyType(togetherAsm, pluginType, "PatchLoader");
+            count += ShortCircuitMany(harmony, patchLoaderType, "Apply");
+
+            Type mpBodyType = FindLegacyType(togetherAsm, pluginType, "MpBody");
+            count += ShortCircuitMany(harmony, mpBodyType, "Tick", "ApplyLocalSkin", "ApplyRemoteSkin", "ResetBodyToStock", "Refresh");
+
+            Type mpSkinSyncType = FindLegacyType(togetherAsm, pluginType, "MpSkinSync");
+            count += ShortCircuitMany(harmony, mpSkinSyncType, "Tick", "OnBodyPartReady", "OnLimbRebuilt");
+
+            Type woundType = FindLegacyType(togetherAsm, pluginType, "WoundViewIntegration");
+            count += ShortCircuitMany(harmony, woundType, "Apply", "ApplyAll", "RefreshForBody", "Note", "RememberStock", "ShowCustomColors");
+
+            Type skinFaceType = FindLegacyType(togetherAsm, pluginType, "SkinFace");
+            count += ShortCircuitMany(harmony, skinFaceType, "ApplyReplacementToFace", "RestoreFaceToStock");
+
+            return count;
+        }
+
+        private static int ShortCircuitMany(Harmony harmony, Type targetType, params string[] methodNames)
+        {
+            if (targetType == null) return 0;
+            int count = 0;
+            for (int i = 0; i < methodNames.Length; i++)
             {
-                if (TryShortCircuitStaticMethods(harmony, woundType, "Apply")) count++;
-                if (TryShortCircuitStaticMethods(harmony, woundType, "RefreshForBody")) count++;
+                if (TryShortCircuitStaticMethods(harmony, targetType, methodNames[i]))
+                    count++;
             }
-
-            if (TryShortCircuitStaticMethods(harmony, pluginType, "ApplyToAll")) count++;
-
-            Type mpSkinSyncType = togetherAsm.GetType("MpSkinSync", throwOnError: false);
-            if (mpSkinSyncType != null)
-            {
-                if (TryShortCircuitStaticMethods(harmony, mpSkinSyncType, "OnBodyPartReady")) count++;
-            }
-
             return count;
         }
 
@@ -320,6 +371,7 @@ namespace SkinSyncMod.Patches
             for (int i = 0; i < methods.Length; i++)
             {
                 MethodInfo method = methods[i];
+                if (method.ContainsGenericParameters) continue;
                 if (!string.Equals(method.Name, methodName, StringComparison.Ordinal)) continue;
                 try
                 {
@@ -329,7 +381,7 @@ namespace SkinSyncMod.Patches
                 }
                 catch (Exception ex)
                 {
-                    ModLog.Debug($"LegacyTogetherSkinSuppressor: 短路 {targetType.Name}.{methodName} 失败：{ex.Message}");
+                    ModLog.Warning($"LegacyTogetherSkinSuppressor: 短路 {targetType.Name}.{methodName} 失败：{ex.Message}");
                 }
             }
             return any;

@@ -3,9 +3,11 @@ using UnityEngine;
 namespace SkinSyncMod
 {
     /// <summary>使用 Verlet 物理链将角色尾巴渲染为动态摆动的带状网格。</summary>
-    [DisallowMultipleComponent]
     public class TailFlowDeform : MonoBehaviour
     {
+        // Unity Destroy 延迟至帧末生效，同帧重挂时需允许新建实例并通过 IsDisposed 跳过待销毁旧组件。
+        internal bool IsDisposed { get; private set; }
+
         private SpriteRenderer _sr;
         private Body _body;
         private GameObject _owner;
@@ -37,6 +39,13 @@ namespace SkinSyncMod
             if (owner != null) _owner = owner;
         }
 
+        internal void MarkDisposed()
+        {
+            IsDisposed = true;
+            if (_meshGo != null && _meshGo.activeSelf) _meshGo.SetActive(false);
+            enabled = false;
+        }
+
         private void Awake()
         {
             _sr = GetComponent<SpriteRenderer>();
@@ -46,6 +55,25 @@ namespace SkinSyncMod
                 _owner = _body.transform.parent != null ? _body.transform.parent.gameObject : _body.gameObject;
             }
             BuildMeshChild();
+        }
+
+        private void EnsureMeshReady()
+        {
+            if (_meshGo != null && _mf != null && _mr != null && _mesh != null && _mat != null)
+                return;
+
+            if (_mesh != null) Destroy(_mesh);
+            if (_mat != null) Destroy(_mat);
+            if (_meshGo != null) Destroy(_meshGo);
+            _mesh = null;
+            _mat = null;
+            _meshGo = null;
+            _mf = null;
+            _mr = null;
+
+            BuildMeshChild();
+            _cachedSpriteId = 0;
+            _physicsInited = false;
         }
 
         private void BuildMeshChild()
@@ -68,6 +96,8 @@ namespace SkinSyncMod
             _mesh = new Mesh { name = "TailDeformMesh", hideFlags = HideFlags.HideAndDontSave };
             _mesh.MarkDynamic();
             _mf.sharedMesh = _mesh;
+            if (!enabled || IsDisposed)
+                _meshGo.SetActive(false);
         }
 
         internal static void ResetTransientLimbUniforms(Material mat)
@@ -127,6 +157,14 @@ namespace SkinSyncMod
             var texRect = sprite.textureRect;
             if (!BuildProfileFromPixels(sprite, axisIsHorizontal, n))
                 BuildFallbackProfile(bounds, axisIsHorizontal, n, tex, texRect);
+
+            if (_mesh != null)
+            {
+                _mesh.Clear();
+                _mesh.vertices = _verts;
+                _mesh.uv = _uvs;
+                _mesh.triangles = _tris;
+            }
 
             _mat.mainTexture = tex;
             _mr.sortingLayerID = _sr.sortingLayerID;
@@ -305,6 +343,7 @@ namespace SkinSyncMod
 
         private void LateUpdate()
         {
+            if (IsDisposed) return;
             if (_sr == null || _sr.sprite == null) return;
 
             TailDeformParams cfg = TailDeformConfig.ResolveFor(_owner, _body);
@@ -312,9 +351,13 @@ namespace SkinSyncMod
             {
                 if (!_sr.enabled) _sr.enabled = true;
                 if (_mr != null && _mr.enabled) _mr.enabled = false;
+                if (_meshGo != null && _meshGo.activeSelf) _meshGo.SetActive(false);
                 return;
             }
-            if (_mr == null || _mesh == null || _mat == null) return;
+
+            EnsureMeshReady();
+            if (_meshGo == null || _mr == null || _mesh == null || _mat == null) return;
+            if (!_meshGo.activeSelf) _meshGo.SetActive(true);
             if (!_mr.enabled) _mr.enabled = true;
 
             int wantSeg = Mathf.Max(2, cfg.Segments);
@@ -333,6 +376,8 @@ namespace SkinSyncMod
 
             float dt = Time.deltaTime;
             if (dt <= 0f) return;
+            // 所有每帧衰减与子步扰动均以 60 FPS（1/60s）为标定基线换算，消除高刷与低帧下的摆幅偏差。
+            float frameScale = dt * 60f;
             int n = _bonePos.Length;
             float playerSpeed = (_body != null && _body.rb != null) ? Mathf.Abs(_body.rb.velocity.x) : 0f;
             Vector2 gravity = new Vector2(cfg.GravityX, cfg.GravityY);
@@ -348,7 +393,8 @@ namespace SkinSyncMod
             _bonePos[0] = root;
             _bonePrev[0] = root;
             Vector2 anchor1 = root + worldAxis * _segLen;
-            float anchorBlend = Mathf.Clamp01(cfg.AnchorFollow);
+            float rawAnchorFollow = Mathf.Clamp01(cfg.AnchorFollow);
+            float anchorBlend = rawAnchorFollow >= 1f ? 1f : 1f - Mathf.Pow(1f - rawAnchorFollow, frameScale);
             _bonePos[1] = Vector2.Lerp(_bonePos[1], anchor1, anchorBlend);
             _bonePrev[1] = Vector2.Lerp(_bonePrev[1], anchor1, anchorBlend);
 
@@ -356,22 +402,25 @@ namespace SkinSyncMod
             float windFreq = cfg.WindFreq + playerSpeed * 0.15f;
             float baseAmp = cfg.WindAmp + playerSpeed * cfg.SpeedDisturb;
             _windPhase += dt * windFreq;
-            _smoothBaseAmp = Mathf.Lerp(_smoothBaseAmp, baseAmp, 0.2f);
+            float ampBlend = 1f - Mathf.Pow(1f - 0.2f, frameScale);
+            _smoothBaseAmp = Mathf.Lerp(_smoothBaseAmp, baseAmp, ampBlend);
 
             float maxFixedDt = Mathf.Max(0.005f, cfg.MaxFixedDt);
-            int subSteps = Mathf.Max(1, Mathf.CeilToInt(dt / maxFixedDt));
+            int subSteps = Mathf.Clamp(Mathf.CeilToInt(dt / maxFixedDt), 1, 8);
             float subDt = dt / subSteps;
+            float stepScale = subDt * 60f;
+            float velKeep = Mathf.Pow(1f - damping, stepScale);
             for (int step = 0; step < subSteps; step++)
             {
                 for (int i = 2; i < n; i++)
                 {
-                    Vector2 vel = (_bonePos[i] - _bonePrev[i]) * (1f - damping);
+                    Vector2 vel = (_bonePos[i] - _bonePrev[i]) * velKeep;
                     if (vel.magnitude > maxStep) vel = vel.normalized * maxStep;
                     _bonePrev[i] = _bonePos[i];
                     Vector2 next = _bonePos[i] + vel + gravity * (subDt * subDt);
                     float t = (float)i / (n - 1);
                     float waveAmp = _smoothBaseAmp * t * t;
-                    float wave = Mathf.Sin(_windPhase + t * Mathf.PI * 2f) * waveAmp;
+                    float wave = Mathf.Sin(_windPhase + t * Mathf.PI * 2f) * waveAmp * stepScale;
                     next += perpWorld * wave;
                     Vector2 disp = next - _bonePos[i];
                     if (disp.magnitude > maxStep) next = _bonePos[i] + disp.normalized * maxStep;
@@ -428,8 +477,10 @@ namespace SkinSyncMod
                 _smoothPos = new Vector2[n];
                 for (int i = 0; i < n; i++) _smoothPos[i] = _bonePos[i];
             }
+            // 原参数顺序以 smooth 表示历史平滑位置的保留权重，按指数衰减保持跨帧率一致。
+            float smoothKeep = smooth <= 0f ? 0f : Mathf.Pow(smooth, frameScale);
             for (int i = 0; i < n; i++)
-                _smoothPos[i] = Vector2.Lerp(_bonePos[i], _smoothPos[i], smooth);
+                _smoothPos[i] = Vector2.Lerp(_bonePos[i], _smoothPos[i], smoothKeep);
 
             Vector2 axisPerp = new Vector2(-worldAxis.y, worldAxis.x);
             float perpSign = axisPerp.y >= 0f ? 1f : -1f;
@@ -451,16 +502,14 @@ namespace SkinSyncMod
                 _verts[i * 2 + 1] = meshTf.InverseTransformPoint(right);
             }
 
-            _mesh.Clear();
             _mesh.vertices = _verts;
-            _mesh.uv = _uvs;
-            _mesh.triangles = _tris;
             _mesh.RecalculateBounds();
         }
 
         private void OnDisable()
         {
             if (_mr != null) _mr.enabled = false;
+            if (_meshGo != null && _meshGo.activeSelf) _meshGo.SetActive(false);
             if (_sr != null) _sr.enabled = true;
         }
 
@@ -469,7 +518,18 @@ namespace SkinSyncMod
             if (_mesh != null) Destroy(_mesh);
             if (_mat != null) Destroy(_mat);
             if (_meshGo != null) Destroy(_meshGo);
-            if (_sr != null) _sr.enabled = true;
+            if (_sr != null && (!IsDisposed || !HasActiveSiblingDeform()))
+                _sr.enabled = true;
+        }
+
+        private bool HasActiveSiblingDeform()
+        {
+            foreach (var d in GetComponents<TailFlowDeform>())
+            {
+                if (d != null && d != this && !d.IsDisposed && d.enabled)
+                    return true;
+            }
+            return false;
         }
     }
 }

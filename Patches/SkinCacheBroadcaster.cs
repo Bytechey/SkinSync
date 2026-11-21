@@ -16,10 +16,14 @@ namespace SkinSyncMod.Patches
         private static readonly Dictionary<uint, TailSyncMessage> _serverTailTable = new Dictionary<uint, TailSyncMessage>();
 
         private readonly Dictionary<uint, uint> _sentToClient = new Dictionary<uint, uint>();
-        private float _pruneTimer;
+        private float _nextScanTime;
+        private float _nextPruneTime;
 
+        private const int MaxAccessoriesPerEntity = 64;
+        private const float ScanInterval = 0.5f;
         private const float PruneInterval = 1f;
 
+        private bool _isPreGenScene;
         private bool _localSeeded;
         private bool _subscribed;
 
@@ -35,14 +39,24 @@ namespace SkinSyncMod.Patches
             _serverSkinTable[netId] = skinId;
         }
 
-        /// <summary>在主机配件表中缓存指定实体的单个配件覆盖状态。</summary>
+        /// <summary>在主机配件表中缓存指定实体的单个配件覆盖状态，单实体最多保留 64 条覆盖。</summary>
         public static void RecordAccessory(AccessorySyncMessage msg)
         {
-            if (msg.netId == 0 || string.IsNullOrEmpty(msg.skinID) || string.IsNullOrEmpty(msg.accId)) return;
+            if (msg.netId == 0
+                || string.IsNullOrEmpty(msg.skinID)
+                || string.IsNullOrEmpty(msg.accId)
+                || msg.accId.Length > MaxAccessoriesPerEntity)
+            {
+                return;
+            }
             if (!_serverAccessoryTable.TryGetValue(msg.netId, out var byId))
             {
-                byId = new Dictionary<string, AccessorySyncMessage>();
+                byId = new Dictionary<string, AccessorySyncMessage>(System.StringComparer.Ordinal);
                 _serverAccessoryTable[msg.netId] = byId;
+            }
+            if (!byId.ContainsKey(msg.accId) && byId.Count >= MaxAccessoriesPerEntity)
+            {
+                return;
             }
             byId[msg.accId] = msg;
         }
@@ -73,6 +87,7 @@ namespace SkinSyncMod.Patches
         private void OnEnable()
         {
             if (!_subscribed) _subscribed = RosterConsumer.SubscribePlayerLeft(OnPlayerLeft);
+            _isPreGenScene = SceneManager.GetActiveScene().name == "PreGen";
             SceneManager.sceneLoaded += OnSceneLoaded;
         }
 
@@ -88,18 +103,24 @@ namespace SkinSyncMod.Patches
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
+            if (mode == LoadSceneMode.Additive) return;
+            _isPreGenScene = scene.name == "PreGen";
             _sentToClient.Clear();
             _serverSkinTable.Clear();
             _serverAccessoryTable.Clear();
             _serverTailTable.Clear();
-            _pruneTimer = 0f;
+            _nextScanTime = 0f;
+            _nextPruneTime = 0f;
             _localSeeded = false;
         }
 
         private void Update()
         {
-            if (!SessionConsumer.IsRunning || !SessionConsumer.IsServer) return;
-            if (SceneManager.GetActiveScene().name == "PreGen") return;
+            if (!SessionConsumer.IsRunning || !SessionConsumer.IsServer || _isPreGenScene) return;
+
+            float now = Time.unscaledTime;
+            if (now < _nextScanTime) return;
+            _nextScanTime = now + ScanInterval;
 
             if (!_localSeeded)
             {
@@ -115,10 +136,9 @@ namespace SkinSyncMod.Patches
                 }
             }
 
-            _pruneTimer += Time.deltaTime;
-            if (_pruneTimer >= PruneInterval)
+            if (now >= _nextPruneTime)
             {
-                _pruneTimer = 0f;
+                _nextPruneTime = now + PruneInterval;
                 PruneDeadEntries();
             }
 
@@ -157,7 +177,7 @@ namespace SkinSyncMod.Patches
         private static void SeedLocalHostOverrides(uint localNetId, string localSkin)
         {
             var settings = SkinSync.Settings;
-            if (settings == null || settings.SyncMode.Value == "Passive") return;
+            if (settings == null || settings.IsPassiveSyncMode) return;
 
             if (settings.SyncAccessories.Value && !_serverAccessoryTable.ContainsKey(localNetId))
             {

@@ -1,5 +1,7 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 
@@ -10,9 +12,10 @@ namespace SkinSyncMod
     {
         private const string ContainerPrefix = "HwZones_";
         private const float DEFAULT_PPU = 8f;
+        private const int MaxZonesPerCharacter = 32;
         private static Material _defaultParticleMat;
 
-        /// <summary>清理目标角色的旧区块容器并按当前肢体贴图重新挂载区块特效。</summary>
+        /// <summary>清理目标角色的旧区块容器并按当前肢体贴图重新挂载区块特效（单角色最多挂载 32 个区块）。</summary>
         public static void Apply(GameObject playerObj, string characterName)
         {
             if (playerObj == null) return;
@@ -20,52 +23,130 @@ namespace SkinSyncMod
             if (body == null) return;
 
             ClearExisting(body);
+            if (string.IsNullOrEmpty(characterName)) return;
 
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
-            if (string.IsNullOrEmpty(skinDir) || !Directory.Exists(skinDir)) return;
+            IReadOnlyList<string> diskFiles = !string.IsNullOrEmpty(skinDir) && Directory.Exists(skinDir)
+                ? SkinPathResolver.GetSkinFiles(skinDir)
+                : null;
+            bool useDisk = diskFiles != null && diskFiles.Count > 0;
+            Dictionary<string, byte[]> memPack = !useDisk ? SkinPackCodec.GetInMemory(characterName) : null;
+            if (!HasAnyZonesConfig(diskFiles, memPack)) return;
 
+            int attachedCount = 0;
             foreach (var limb in body.GetComponentsInChildren<Limb>(true))
             {
+                if (attachedCount >= MaxZonesPerCharacter) break;
                 var sr = limb.GetComponent<SpriteRenderer>();
                 if (sr == null || sr.sprite == null) continue;
-                AttachForRenderer(limb.transform, sr, skinDir, characterName);
+                AttachForRenderer(limb.transform, sr, diskFiles, memPack, characterName, ref attachedCount);
             }
         }
 
-        private static void AttachForRenderer(Transform host, SpriteRenderer sr, string skinDir, string characterName)
+        private static bool HasAnyZonesConfig(IReadOnlyList<string> diskFiles, Dictionary<string, byte[]> memPack)
+        {
+            if (diskFiles != null)
+            {
+                for (int i = 0; i < diskFiles.Count; i++)
+                {
+                    if (diskFiles[i].EndsWith(".zones.json", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            if (memPack != null)
+            {
+                foreach (var kv in memPack)
+                {
+                    if (kv.Key.EndsWith(".zones.json", StringComparison.OrdinalIgnoreCase)) return true;
+                }
+            }
+            return false;
+        }
+
+        private static void AttachForRenderer(
+            Transform host,
+            SpriteRenderer sr,
+            IReadOnlyList<string> diskFiles,
+            Dictionary<string, byte[]> memPack,
+            string characterName,
+            ref int attachedCount)
         {
             string spriteName = sr.sprite.name;
-            string maskPath = FindZonesFile(skinDir, spriteName, ".zones.png");
-            string configPath = FindZonesFile(skinDir, spriteName, ".zones.json");
-            if (maskPath == null || configPath == null) return;
-
             int spriteW = (int)sr.sprite.rect.width;
             int spriteH = (int)sr.sprite.rect.height;
-            var (entries, geom) = ZonesConfigLoader.Load(maskPath, configPath, spriteW, spriteH);
-            if (entries == null || geom == null) return;
 
-            var geomById = new Dictionary<byte, ZonesConfigLoader.ZoneGeometry>();
+            List<ZonesConfigLoader.Entry> entries = null;
+            List<ZonesConfigLoader.ZoneGeometry> geom = null;
+
+            if (diskFiles != null && diskFiles.Count > 0)
+            {
+                string maskPath = FindZonesFileInList(diskFiles, spriteName, ".zones.png");
+                string configPath = FindZonesFileInList(diskFiles, spriteName, ".zones.json");
+                if (maskPath == null || configPath == null) return;
+                (entries, geom) = ZonesConfigLoader.Load(maskPath, configPath, spriteW, spriteH);
+            }
+            else if (memPack != null && TryFindZonesInMemory(memPack, spriteName, out string maskRel, out byte[] maskBytes, out string cfgJson))
+            {
+                (entries, geom) = ZonesConfigLoader.LoadFromBytes(characterName + "/" + maskRel, maskBytes, cfgJson, spriteW, spriteH);
+            }
+
+            if (entries == null || geom == null || geom.Count == 0) return;
+
+            var geomById = new Dictionary<byte, ZonesConfigLoader.ZoneGeometry>(geom.Count);
             foreach (var g in geom) geomById[g.Id] = g;
 
             foreach (var entry in entries)
             {
+                if (attachedCount >= MaxZonesPerCharacter) break;
                 if (!geomById.TryGetValue(entry.Id, out var g)) continue;
                 AttachZone(host, sr, entry, g, spriteW, spriteH, characterName);
+                attachedCount++;
             }
         }
 
-        private static string FindZonesFile(string skinDir, string spriteName, string suffix)
+        private static string FindZonesFileInList(IReadOnlyList<string> files, string spriteName, string suffix)
         {
-            string fileName = spriteName + suffix;
-            try
+            string targetName = spriteName + suffix;
+            for (int i = 0; i < files.Count; i++)
             {
-                foreach (var f in Directory.GetFiles(skinDir, fileName, SearchOption.AllDirectories))
+                string f = files[i];
+                if (!string.IsNullOrEmpty(f) && string.Equals(Path.GetFileName(f), targetName, StringComparison.OrdinalIgnoreCase))
                 {
                     return f;
                 }
             }
-            catch { }
             return null;
+        }
+
+        private static bool TryFindZonesInMemory(
+            Dictionary<string, byte[]> memPack,
+            string spriteName,
+            out string maskRelPath,
+            out byte[] maskBytes,
+            out string configJson)
+        {
+            maskRelPath = null;
+            maskBytes = null;
+            configJson = null;
+            string maskTarget = spriteName + ".zones.png";
+            string cfgTarget = spriteName + ".zones.json";
+            byte[] cfgBytes = null;
+            foreach (var kv in memPack)
+            {
+                string fileName = Path.GetFileName(kv.Key);
+                if (maskBytes == null && string.Equals(fileName, maskTarget, StringComparison.OrdinalIgnoreCase))
+                {
+                    maskRelPath = kv.Key;
+                    maskBytes = kv.Value;
+                }
+                else if (cfgBytes == null && string.Equals(fileName, cfgTarget, StringComparison.OrdinalIgnoreCase))
+                {
+                    cfgBytes = kv.Value;
+                }
+                if (maskBytes != null && cfgBytes != null) break;
+            }
+            if (maskBytes == null || cfgBytes == null) return false;
+            configJson = Encoding.UTF8.GetString(cfgBytes);
+            return true;
         }
 
         private static void AttachZone(Transform host, SpriteRenderer hostSr, ZonesConfigLoader.Entry entry,
@@ -271,8 +352,8 @@ namespace SkinSyncMod
             foreach (var tf in body.GetComponentsInChildren<Transform>(true))
             {
                 if (tf == null || tf.gameObject == null) continue;
-                if (tf.name.StartsWith(ContainerPrefix, System.StringComparison.Ordinal))
-                    Object.Destroy(tf.gameObject);
+                if (tf.name.StartsWith(ContainerPrefix, StringComparison.Ordinal))
+                    UnityEngine.Object.Destroy(tf.gameObject);
             }
         }
     }

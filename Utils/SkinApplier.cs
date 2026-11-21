@@ -10,21 +10,35 @@ namespace SkinSyncMod
     /// <summary>加载皮肤贴图与配置并将其应用到角色的肢体、表情、尾巴、翅膀、配件与区块特效。</summary>
     public static partial class SkinApplier
     {
+        internal const string WingsContainerName = "HwWings";
+        internal const string AccessoriesContainerPrefix = "HwAccessories";
+        internal const string ZonesContainerPrefix = "HwZones_";
+
         private const float PIXELS_PER_UNIT = 8f;
         private const float UPTORSO_OFFSET_X = 6f;
         private const float UPTORSO_OFFSET_Y = -10f;
         private const float RequestRetryCooldownSec = 30f;
+        private static bool NormalizeSizeEnabled => false;
+
+        internal static int SkinStateVersion { get; private set; }
 
         private static readonly Dictionary<string, Dictionary<string, Sprite>> _skinCache
             = new Dictionary<string, Dictionary<string, Sprite>>(StringComparer.Ordinal);
         private static readonly Dictionary<string, WingsConfigLoader.Config> _wingsCache
             = new Dictionary<string, WingsConfigLoader.Config>(StringComparer.Ordinal);
+        private static readonly HashSet<string> _emptySkinDirs
+            = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly HashSet<string> _skinsWithSidedSprites
+            = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly HashSet<string> _loggedMissingSkins
+            = new HashSet<string>(StringComparer.Ordinal);
         private static readonly Dictionary<GameObject, string> _byChara
             = new Dictionary<GameObject, string>();
         private static readonly Dictionary<GameObject, int> _charTypeByChara
             = new Dictionary<GameObject, int>();
         private static readonly HashSet<GameObject> _vanillaApplied
             = new HashSet<GameObject>();
+        private static readonly HashSet<GameObject> _pendingPackTargets = new HashSet<GameObject>();
         private static readonly Dictionary<string, float> _requestedPacks
             = new Dictionary<string, float>(StringComparer.Ordinal);
         private static readonly Dictionary<int, Material> _cleanLitMaterials
@@ -34,9 +48,6 @@ namespace SkinSyncMod
         private static int _lastLimbTotal;
         private static int _lastLimbApplied;
         private static Action<GameObject, bool> _skinApplied;
-
-        private static bool NormalizeSizeEnabled
-            => SkinSync.Settings == null || SkinSync.Settings.NormalizeSpriteSize.Value;
 
         /// <summary>查询角色对象当前生效的皮肤名称；未应用或处于原版外观时返回 null。</summary>
         public static string GetCharacterByChara(GameObject chara)
@@ -140,19 +151,35 @@ namespace SkinSyncMod
             if (body == null) return false;
             foreach (var tf in body.GetComponentsInChildren<Transform>(true))
             {
-                if (tf != null && tf.name == "HwWings") return true;
+                if (tf != null && tf.name == WingsContainerName) return true;
             }
             return false;
         }
 
-        /// <summary>场景切换时清理已销毁角色的缓存引用、远端临时覆盖与皮肤包请求冷却记录。</summary>
+        private static void InvokeSkinApplied(GameObject playerObj, bool hasWings)
+        {
+            var handlers = _skinApplied;
+            if (handlers == null) return;
+            foreach (Action<GameObject, bool> cb in handlers.GetInvocationList())
+            {
+                try { cb(playerObj, hasWings); }
+                catch (Exception ex) { ModLog.Warning("皮肤应用监听回调异常: " + ex.Message); }
+            }
+        }
+
+        /// <summary>场景切换时清理已销毁角色的缓存引用、原版基线字典、远端临时覆盖与皮肤包请求冷却记录。</summary>
         internal static void OnSceneChanged()
         {
             PruneDeadObjects();
+            ClearBaselineDictionaries();
+            _pendingPackTargets.Clear();
             _requestedPacks.Clear();
+            _loggedMissingSkins.Clear();
             AccessoryAttacher.ClearRemoteOverrides();
             TailDeformConfig.ClearRemoteOverrides();
+            BloodAttacher.OnSceneChanged();
             WoundViewAttacher.OnSceneChanged();
+            SkinStateVersion++;
         }
 
         private static void PruneDeadObjects()
@@ -168,6 +195,7 @@ namespace SkinSyncMod
                 _charTypeByChara.Remove(go);
             }
             _vanillaApplied.RemoveWhere(go => go == null);
+            _pendingPackTargets.RemoveWhere(go => go == null);
         }
 
         /// <summary>将指定皮肤完整应用到目标角色对象。</summary>
@@ -178,14 +206,8 @@ namespace SkinSyncMod
             bool hadPrev = _byChara.TryGetValue(playerObj, out var prevSkin);
             bool wasVanilla = _vanillaApplied.Remove(playerObj);
 
-            if (string.IsNullOrEmpty(characterName))
-            {
-                characterName = prevSkin;
-            }
-            if (!string.IsNullOrEmpty(characterName))
-            {
-                _byChara[playerObj] = characterName;
-            }
+            if (string.IsNullOrEmpty(characterName)) characterName = prevSkin;
+            if (!string.IsNullOrEmpty(characterName)) _byChara[playerObj] = characterName;
 
             if (ShouldUseVanillaSkin(playerObj))
             {
@@ -200,7 +222,7 @@ namespace SkinSyncMod
             Body bodyRef = playerObj.GetComponentInChildren<Body>(true);
             int charType = bodyRef != null ? bodyRef.charType : (remoteCharType >= 0 ? remoteCharType : (_charTypeByChara.TryGetValue(playerObj, out int cachedCt) ? cachedCt : 0));
             bool sameCharType = _charTypeByChara.TryGetValue(playerObj, out int prevCharType) && prevCharType == charType;
-            bool sameSkin = !wasVanilla && hadPrev && prevSkin == characterName && sameCharType;
+            bool sameSkin = !wasVanilla && hadPrev && prevSkin == characterName && sameCharType && !_pendingPackTargets.Contains(playerObj);
             if (hadPrev && !wasVanilla && prevSkin == characterName && !sameCharType)
             {
                 ResetCharacterToVanillaBaseline(playerObj);
@@ -209,13 +231,23 @@ namespace SkinSyncMod
 
             if (!_skinCache.TryGetValue(characterName, out var spriteDict))
             {
+                if (_emptySkinDirs.Contains(characterName))
+                {
+                    _pendingPackTargets.Add(playerObj);
+                    SkinStateVersion++;
+                    return;
+                }
                 spriteDict = LoadCharacterSprites(characterName);
                 if (spriteDict == null || spriteDict.Count == 0)
                 {
+                    // 记录因缺包早退尚未完成贴图替换的目标，避免后续补齐时被误判为 sameSkin。
+                    _pendingPackTargets.Add(playerObj);
+                    SkinStateVersion++;
                     return;
                 }
                 _skinCache[characterName] = spriteDict;
             }
+            _pendingPackTargets.Remove(playerObj);
 
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
             if (!_wingsCache.TryGetValue(characterName, out var wingsCfg))
@@ -252,13 +284,13 @@ namespace SkinSyncMod
 
                 foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
                 {
-                    var deform = tail.GetComponent<TailFlowDeform>();
-                    if (deform == null)
+                    TailFlowDeform deform = null;
+                    foreach (var d in tail.GetComponents<TailFlowDeform>())
                     {
-                        var renderer = tail.GetComponent<SpriteRenderer>();
-                        if (tail.enabled && renderer != null && renderer.enabled)
-                            deform = tail.gameObject.AddComponent<TailFlowDeform>();
+                        if (d != null && !d.IsDisposed) { deform = d; break; }
                     }
+                    if (deform == null && tail.enabled && tail.GetComponent<SpriteRenderer>() != null)
+                        deform = tail.gameObject.AddComponent<TailFlowDeform>();
                     if (deform != null)
                     {
                         deform.BindOwner(playerObj);
@@ -274,16 +306,10 @@ namespace SkinSyncMod
             AccessoryAttacher.Apply(playerObj, accEntries, spriteDict, characterName);
             ModLog.Debug($"应用皮肤 {characterName}：肢体 {playerObj.GetComponentsInChildren<Limb>(true).Length} 个，配件 {accEntries.Count} 项{(sameSkin ? "（皮肤未变，仅刷新配件）" : string.Empty)}");
 
-            if (!sameSkin)
-            {
-                ReportCoverage(characterName, playerObj);
-            }
+            if (!sameSkin) ReportCoverage(characterName, playerObj);
 
             _currentCharacter = characterName;
-            if (!sameSkin)
-            {
-                ZonesAttacher.Apply(playerObj, characterName);
-            }
+            if (!sameSkin) ZonesAttacher.Apply(playerObj, characterName);
 
             if (BloodRenderConfig.Enabled)
                 BloodAttacher.Apply(playerObj, characterName);
@@ -291,8 +317,9 @@ namespace SkinSyncMod
                 BloodAttacher.Restore(playerObj);
 
             EnsureLimbDirWatcher(playerObj, bodyRef, curIsRight);
+            SkinStateVersion++;
             if (bodyRef != null) WoundViewAttacher.RefreshForBody(bodyRef);
-            _skinApplied?.Invoke(playerObj, HasWings(playerObj));
+            InvokeSkinApplied(playerObj, HasWings(playerObj));
         }
 
         /// <summary>在 FacialExpression.Start 后补刷被联机模组重置的面部与鼻血贴图；找到已套用皮肤的角色时返回 true。</summary>
@@ -344,65 +371,58 @@ namespace SkinSyncMod
         {
             if (playerObj == null) return false;
             Body body = playerObj.GetComponentInChildren<Body>(true);
-            var cam = PlayerCamera.main;
-            if (cam != null && cam.body != null && body != null && body == cam.body)
-            {
-                return true;
-            }
 
-            // 换物种重建网格早于相机重绑触发时，优先经联机名册核验归属，防止同帧旧 cam.body 导致本机被误判为远端。
-            if (SessionConsumer.IsAvailable)
+            // 联机运行中强制以权威名册归属为准，防止观战相机跟随队友或母版克隆阶段误把远端角色判为本机。
+            if (SkinSync.TogetherInstalled && SessionConsumer.IsRunning)
             {
                 if (RosterConsumer.TryGetLocalNetBody(out _, out _, out var localGo) && localGo != null
                     && (playerObj == localGo || (body != null && localGo == body.gameObject)))
                 {
                     return true;
                 }
-
                 if (body != null && RosterConsumer.TryResolveBodyIdentity(body, out _, out _, out bool isLocalPlayer))
                 {
                     return isLocalPlayer;
                 }
-            }
-
-            if (cam != null && cam.body != null)
-            {
                 return false;
             }
 
-            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen")
-            {
-                return true;
-            }
-
-            return !SessionConsumer.IsRunning;
+            var cam = PlayerCamera.main;
+            if (cam != null && cam.body != null) return body != null && body == cam.body;
+            if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name == "PreGen") return true;
+            return true;
         }
 
         /// <summary>获取受 2D 光照影响但不受肢体血污参数污染的共享干净材质。</summary>
         internal static Material GetSharedCleanLitMaterial(SpriteRenderer refSr)
         {
             if (WorldGeneration.world != null && WorldGeneration.world.defaultMat != null)
-            {
                 return WorldGeneration.world.defaultMat;
-            }
             if (refSr == null || refSr.sharedMaterial == null || refSr.sharedMaterial.shader == null)
-            {
                 return null;
-            }
 
             int shaderId = refSr.sharedMaterial.shader.GetInstanceID();
             if (_cleanLitMaterials.TryGetValue(shaderId, out var cached) && cached != null)
-            {
                 return cached;
-            }
 
-            var clean = new Material(refSr.sharedMaterial)
-            {
-                hideFlags = HideFlags.HideAndDontSave,
-            };
+            var clean = new Material(refSr.sharedMaterial) { hideFlags = HideFlags.HideAndDontSave };
             TailFlowDeform.ResetTransientLimbUniforms(clean);
             _cleanLitMaterials[shaderId] = clean;
             return clean;
+        }
+
+        /// <summary>清除未登记皮肤的远端角色在克隆母版时继承的自定义贴图、配件与模组容器。</summary>
+        internal static void EnsureUnassignedRemoteVanilla(GameObject playerObj, int charType)
+        {
+            if (playerObj == null) return;
+            _byChara.Remove(playerObj);
+            _charTypeByChara.Remove(playerObj);
+            _vanillaApplied.Remove(playerObj);
+            _pendingPackTargets.Remove(playerObj);
+            SanitizeClonedBodyToStock(playerObj, charType);
+            SkinStateVersion++;
+            Body body = playerObj.GetComponentInChildren<Body>(true);
+            if (body != null) WoundViewAttacher.RefreshForBody(body);
         }
 
         /// <summary>将已套用皮肤的角色恢复为游戏原版贴图并移除模组挂载物。</summary>
@@ -411,22 +431,25 @@ namespace SkinSyncMod
             if (playerObj == null) return;
             ResetCharacterToVanillaBaseline(playerObj);
             _vanillaApplied.Add(playerObj);
+            _pendingPackTargets.Remove(playerObj);
+            SkinStateVersion++;
             Body body = playerObj.GetComponentInChildren<Body>(true);
             if (body != null) WoundViewAttacher.RefreshForBody(body);
-            _skinApplied?.Invoke(playerObj, false);
+            InvokeSkinApplied(playerObj, false);
         }
 
         private static void DestroyModContainers(GameObject playerObj)
         {
+            // TailDeformMesh 由所属 TailFlowDeform.OnDestroy 独占释放，避免同帧延迟销毁误删存活组件的子网格。
             var doomed = new List<GameObject>();
             foreach (var tf in playerObj.GetComponentsInChildren<Transform>(true))
             {
                 if (tf == null) continue;
                 string n = tf.name;
-                if (n == "HwWings"
-                    || n == "HwAccessories"
-                    || n.StartsWith("HwAccessories_", StringComparison.Ordinal)
-                    || n.StartsWith("HwZones_", StringComparison.Ordinal))
+                if (n == WingsContainerName
+                    || n == AccessoriesContainerPrefix
+                    || n.StartsWith(AccessoriesContainerPrefix + "_", StringComparison.Ordinal)
+                    || n.StartsWith(ZonesContainerPrefix, StringComparison.Ordinal))
                 {
                     doomed.Add(tf.gameObject);
                 }
@@ -467,23 +490,26 @@ namespace SkinSyncMod
             ModLog.Info($"视觉开关刷新：已处理 {targets.Count} 个角色");
         }
 
-        /// <summary>角色左右朝向翻转时刷新带方向前缀的肢体、尾巴、面部与配件贴图。</summary>
+        /// <summary>角色左右朝向翻转时按需刷新带侧向变体的肢体、尾巴、面部与配件贴图。</summary>
         public static void RefreshSidedSprites(GameObject playerObj, bool isRight)
         {
             if (playerObj == null || _vanillaApplied.Contains(playerObj)) return;
             if (!_byChara.TryGetValue(playerObj, out var character) || string.IsNullOrEmpty(character)) return;
             if (!_skinCache.TryGetValue(character, out var spriteDict) || spriteDict == null) return;
 
-            Body body = playerObj.GetComponentInChildren<Body>(true);
-            int charType = body != null ? body.charType : 0;
+            if (_skinsWithSidedSprites.Contains(character))
+            {
+                Body body = playerObj.GetComponentInChildren<Body>(true);
+                int charType = body != null ? body.charType : 0;
 
-            float fitScale = GlobalFitScale(spriteDict);
-            foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
-                ReplaceLimbSprite(limb, spriteDict, isRight, charType, fitScale);
-            foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
-                ReplaceTailSprite(tail, spriteDict, isRight, charType, fitScale);
-            foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
-                ReplaceFacialExpressionSprites(face, spriteDict, isRight, charType, fitScale);
+                float fitScale = GlobalFitScale(spriteDict);
+                foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
+                    ReplaceLimbSprite(limb, spriteDict, isRight, charType, fitScale);
+                foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
+                    ReplaceTailSprite(tail, spriteDict, isRight, charType, fitScale);
+                foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
+                    ReplaceFacialExpressionSprites(face, spriteDict, isRight, charType, fitScale);
+            }
 
             AccessoryAttacher.RefreshSidedSprites(playerObj, spriteDict, isRight);
         }
@@ -537,37 +563,71 @@ namespace SkinSyncMod
             string basePath = SkinPathResolver.GetSkinDir(character);
             if (string.IsNullOrEmpty(basePath) || !Directory.Exists(basePath))
             {
-                if (TryLoadFromMemoryPack(character, dict)) return dict;
+                if (TryLoadFromMemoryPack(character, dict))
+                {
+                    RecordSidedVariantFlag(character, dict);
+                    return dict;
+                }
                 if (TryRequestSkinPack(character))
                     ModLog.Info($"本机缺少皮肤 {character}，已向其他玩家请求皮肤包");
-                else
+                else if (_loggedMissingSkins.Add(character))
                     ModLog.Info($"本机缺少皮肤目录 {character}（{basePath}）；请将该皮肤包放入 plugins/CustomSprites/{character}");
                 return dict;
             }
 
             var baseSizes = BaseSizesLoader.Load(character);
-            foreach (var filePath in Directory.GetFiles(basePath, "*.png", SearchOption.AllDirectories))
+            foreach (var filePath in SkinPathResolver.GetSkinFiles(basePath))
             {
+                if (!filePath.EndsWith(".png", StringComparison.OrdinalIgnoreCase)) continue;
                 if (filePath.EndsWith(".zones.png", StringComparison.OrdinalIgnoreCase)) continue;
                 if (WoundViewAttacher.IsInsideWoundViewSubdir(basePath, filePath)) continue;
                 string fileName = Path.GetFileNameWithoutExtension(filePath);
                 if (string.IsNullOrEmpty(fileName) || dict.ContainsKey(fileName)) continue;
-                BuildSpriteInto(dict, fileName, File.ReadAllBytes(filePath), baseSizes);
+                try { BuildSpriteInto(dict, fileName, File.ReadAllBytes(filePath), baseSizes); }
+                catch (Exception ex) { ModLog.Warning($"读取皮肤贴图失败 ({fileName}): {ex.Message}"); }
             }
+
+            if (dict.Count == 0) _emptySkinDirs.Add(character);
+            else RecordSidedVariantFlag(character, dict);
             return dict;
+        }
+
+        private static void RecordSidedVariantFlag(string character, Dictionary<string, Sprite> dict)
+        {
+            foreach (var name in dict.Keys)
+            {
+                if (IsSidedSpriteName(name))
+                {
+                    _skinsWithSidedSprites.Add(character);
+                    return;
+                }
+            }
+        }
+
+        private static bool IsSidedSpriteName(string fileName)
+        {
+            if (string.IsNullOrEmpty(fileName)) return false;
+            return fileName.StartsWith("R_", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith("F", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith("B", StringComparison.OrdinalIgnoreCase)
+                || fileName.EndsWith("Alt", StringComparison.OrdinalIgnoreCase);
         }
 
         private static void BuildSpriteInto(Dictionary<string, Sprite> dict, string fileName, byte[] data, Dictionary<string, Vector2Int> baseSizes)
         {
             if (string.IsNullOrEmpty(fileName) || data == null || data.Length == 0 || dict.ContainsKey(fileName)) return;
+            if (!SkinPackCodec.IsPngDimensionsSafe(data, fileName)) return;
+
             var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false)
             {
                 filterMode = FilterMode.Point,
                 hideFlags = HideFlags.HideAndDontSave,
             };
+            // 仅尾巴贴图需保留 CPU 可读副本供 TailFlowDeform 提取轮廓，其余贴图直接释放系统内存副本。
+            bool markNonReadable = fileName.IndexOf("tail", StringComparison.OrdinalIgnoreCase) < 0;
             try
             {
-                if (!ImageConversion.LoadImage(tex, data))
+                if (!ImageConversion.LoadImage(tex, data, markNonReadable))
                 {
                     UnityEngine.Object.Destroy(tex);
                     return;
@@ -628,9 +688,7 @@ namespace SkinSyncMod
             if (!SessionConsumer.IsAvailable || !SessionConsumer.IsRunning) return false;
             float now = Time.realtimeSinceStartup;
             if (_requestedPacks.TryGetValue(character, out float lastAt) && now - lastAt < RequestRetryCooldownSec)
-            {
                 return false;
-            }
             _requestedPacks[character] = now;
             Network.MultiplayerSender.SendSkinPackRequest(character);
             return true;
@@ -639,10 +697,7 @@ namespace SkinSyncMod
         /// <summary>释放单个皮肤包的请求冷却记录，允许分片传输超时或配额淘汰后立即重新请求。</summary>
         internal static void ClearRequestedPack(string skinId)
         {
-            if (!string.IsNullOrEmpty(skinId))
-            {
-                _requestedPacks.Remove(skinId);
-            }
+            if (!string.IsNullOrEmpty(skinId)) _requestedPacks.Remove(skinId);
         }
 
         /// <summary>当远端皮肤包到达或本地重扫后清理对应缓存并重新应用。</summary>
@@ -656,29 +711,30 @@ namespace SkinSyncMod
             }
             foreach (var go in targets)
             {
-                if (!_vanillaApplied.Contains(go))
-                {
-                    ResetCharacterToVanillaBaseline(go);
-                }
+                if (!_vanillaApplied.Contains(go)) ResetCharacterToVanillaBaseline(go);
                 _byChara.Remove(go);
                 _charTypeByChara.Remove(go);
+                _pendingPackTargets.Remove(go);
             }
 
             _skinCache.TryGetValue(skinID, out var retiredDict);
             _skinCache.Remove(skinID);
             _wingsCache.Remove(skinID);
+            _emptySkinDirs.Remove(skinID);
+            _skinsWithSidedSprites.Remove(skinID);
+            _loggedMissingSkins.Remove(skinID);
             _requestedPacks.Remove(skinID);
             SkinPathResolver.Invalidate(skinID);
             BaseSizesLoader.Invalidate(skinID);
+            ZonesConfigLoader.Invalidate(skinID);
             BloodAttacher.Invalidate(skinID);
             WoundViewAttacher.Invalidate(skinID);
             SkinPreviewRenderer.Invalidate(skinID);
+            SkinSync.InvalidateAccessoryRowsCache(skinID);
             DestroySpriteDict(retiredDict);
 
-            foreach (var go in targets)
-            {
-                ApplySkinToPlayer(go, skinID);
-            }
+            foreach (var go in targets) ApplySkinToPlayer(go, skinID);
+            SkinStateVersion++;
             WoundViewAttacher.RefreshAll();
         }
 
@@ -695,30 +751,28 @@ namespace SkinSyncMod
 
             foreach (var kv in active)
             {
-                if (!_vanillaApplied.Contains(kv.Key))
-                {
-                    ResetCharacterToVanillaBaseline(kv.Key);
-                }
+                if (!_vanillaApplied.Contains(kv.Key)) ResetCharacterToVanillaBaseline(kv.Key);
                 _byChara.Remove(kv.Key);
                 _charTypeByChara.Remove(kv.Key);
+                _pendingPackTargets.Remove(kv.Key);
             }
 
             var retired = new List<Dictionary<string, Sprite>>(_skinCache.Values);
             _skinCache.Clear();
             _wingsCache.Clear();
+            _emptySkinDirs.Clear();
+            _skinsWithSidedSprites.Clear();
+            _loggedMissingSkins.Clear();
             _requestedPacks.Clear();
+            ZonesConfigLoader.Invalidate(null);
+            SkinSync.InvalidateAccessoryRowsCache(null);
             BloodAttacher.ClearCaches();
             WoundViewAttacher.ClearCaches();
             ClearFittedSprites();
-            for (int i = 0; i < retired.Count; i++)
-            {
-                DestroySpriteDict(retired[i]);
-            }
+            for (int i = 0; i < retired.Count; i++) DestroySpriteDict(retired[i]);
 
-            foreach (var kv in active)
-            {
-                ApplySkinToPlayer(kv.Key, kv.Value);
-            }
+            foreach (var kv in active) ApplySkinToPlayer(kv.Key, kv.Value);
+            SkinStateVersion++;
             WoundViewAttacher.RefreshAll();
         }
 

@@ -1,16 +1,23 @@
 using System;
 using SkinSyncMod.Interop;
 using SkinSyncMod.Interop.Consumers;
+using UnityEngine;
 
 namespace SkinSyncMod.Patches
 {
     /// <summary>向联机模组注册服务端与客户端自定义数据包接收器并按子消息 ID 分发。</summary>
     public static class TogetherReceiverRegistrar
     {
+        private const float LogCooldownSec = 5f;
+
         private static bool _registered;
         private static bool _serverRegistered;
         private static bool _clientRegistered;
         private static bool _unavailableLogged;
+        private static float _nextServerUnknownWarnAt;
+        private static float _nextServerErrorWarnAt;
+        private static float _nextClientUnknownWarnAt;
+        private static float _nextClientErrorWarnAt;
 
         /// <summary>注册服务端与客户端通道接收器，尚未就绪时返回 false 供后续重试。</summary>
         public static bool Register()
@@ -66,14 +73,24 @@ namespace SkinSyncMod.Patches
                         SkinMessageHandlers.OnServerSkinPackChunk(callerId, reader);
                         break;
                     default:
-                        SkinSyncMod.ModLog.Warning($"服务端收到未知皮肤子消息 ID {msgId}");
-                        SkinSyncMod.ModLog.Debug($"未知子 ID：服务端来源 clientId {callerId}，子 ID {msgId}，负载 {(reader == null ? 0 : reader.RemainingBytes)} 字节");
+                        float now = Time.realtimeSinceStartup;
+                        if (now >= _nextServerUnknownWarnAt)
+                        {
+                            _nextServerUnknownWarnAt = now + LogCooldownSec;
+                            SkinSyncMod.ModLog.Warning($"服务端收到未知皮肤子消息 ID {msgId}");
+                            SkinSyncMod.ModLog.Debug($"未知子 ID：服务端来源 clientId {callerId}，子 ID {msgId}，负载 {(reader == null ? 0 : reader.RemainingBytes)} 字节");
+                        }
                         break;
                 }
             }
             catch (Exception ex)
             {
-                SkinSyncMod.ModLog.Warning("TogetherReceiverRegistrar: 服务端处理失败 " + ex);
+                float now = Time.realtimeSinceStartup;
+                if (now >= _nextServerErrorWarnAt)
+                {
+                    _nextServerErrorWarnAt = now + LogCooldownSec;
+                    SkinSyncMod.ModLog.Warning("TogetherReceiverRegistrar: 服务端处理失败 " + ex);
+                }
             }
         }
 
@@ -104,14 +121,24 @@ namespace SkinSyncMod.Patches
                         SkinMessageHandlers.OnClientSkinPackChunk(0u, reader);
                         break;
                     default:
-                        SkinSyncMod.ModLog.Warning($"客户端收到未知皮肤子消息 ID {msgId}");
-                        SkinSyncMod.ModLog.Debug($"未知子 ID：客户端来源，子 ID {msgId}，负载 {(reader == null ? 0 : reader.RemainingBytes)} 字节");
+                        float now = Time.realtimeSinceStartup;
+                        if (now >= _nextClientUnknownWarnAt)
+                        {
+                            _nextClientUnknownWarnAt = now + LogCooldownSec;
+                            SkinSyncMod.ModLog.Warning($"客户端收到未知皮肤子消息 ID {msgId}");
+                            SkinSyncMod.ModLog.Debug($"未知子 ID：客户端来源，子 ID {msgId}，负载 {(reader == null ? 0 : reader.RemainingBytes)} 字节");
+                        }
                         break;
                 }
             }
             catch (Exception ex)
             {
-                SkinSyncMod.ModLog.Warning("TogetherReceiverRegistrar: 客户端处理失败 " + ex);
+                float now = Time.realtimeSinceStartup;
+                if (now >= _nextClientErrorWarnAt)
+                {
+                    _nextClientErrorWarnAt = now + LogCooldownSec;
+                    SkinSyncMod.ModLog.Warning("TogetherReceiverRegistrar: 客户端处理失败 " + ex);
+                }
             }
         }
     }

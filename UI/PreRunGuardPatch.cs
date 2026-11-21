@@ -51,18 +51,25 @@ namespace SkinSyncMod
         }
     }
 
-    /// <summary>面板打开期间阻断 PlayerCamera.HandleInput 键盘与视角输入。</summary>
+    /// <summary>面板打开期间阻断 PlayerCamera.HandleInput 键盘与视角输入，并清零残留移动与下蹲状态。</summary>
     [HarmonyPatch(typeof(PlayerCamera), "HandleInput")]
     internal static class SkinSyncPlayerCameraHandleInputGuard
     {
         [HarmonyPrefix]
         private static bool Prefix()
         {
-            return !UiBlocker.IsBlocking;
+            if (!UiBlocker.IsBlocking) return true;
+            var cam = PlayerCamera.main;
+            if (cam != null && cam.body != null)
+            {
+                cam.body.moveDir = Vector2.zero;
+                cam.body.crouching = false;
+            }
+            return false;
         }
     }
 
-    /// <summary>面板打开期间阻断 PlayerCamera 世界物体悬停高亮与右键拖拽拾取。</summary>
+    /// <summary>面板打开期间阻断 PlayerCamera 世界物体悬停高亮与右键拖拽拾取，并清理悬停框与拖拽状态。</summary>
     [HarmonyPatch]
     internal static class SkinSyncPlayerCameraMouseGuard
     {
@@ -77,7 +84,15 @@ namespace SkinSyncMod
         [HarmonyPrefix]
         private static bool Prefix()
         {
-            return !UiBlocker.IsBlocking;
+            if (!UiBlocker.IsBlocking) return true;
+            var cam = PlayerCamera.main;
+            if (cam != null)
+            {
+                if (cam.hoverSquare != null) cam.hoverSquare.enabled = false;
+                if (cam.dragImage != null) cam.dragImage.enabled = false;
+                cam.dragItem = null;
+            }
+            return false;
         }
     }
 }

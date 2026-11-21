@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace SkinSyncMod.Character
 {
-    /// <summary>从 Resources 采集所有角色预制体的部位贴图名与原生像素尺寸。</summary>
+    /// <summary>从 Resources 采集所有角色预制体的原生部位贴图与像素尺寸。</summary>
     internal static class CharacterCatalog
     {
         private const string RootPath = "Special/Characters";
@@ -44,6 +44,11 @@ namespace SkinSyncMod.Character
         {
             if (_profiles != null) return;
 
+            var profiles = new List<CharacterProfile>();
+            var byCharType = new Dictionary<int, CharacterProfile>();
+            var spriteSizes = new Dictionary<string, Vector2Int>(StringComparer.Ordinal);
+            var spriteOwners = new Dictionary<string, KeyValuePair<string, int>>(StringComparer.Ordinal);
+
             GameObject[] prefabs;
             try
             {
@@ -52,13 +57,12 @@ namespace SkinSyncMod.Character
             catch (Exception ex)
             {
                 SkinSyncMod.ModLog.Warning("枚举角色 prefab 失败：" + ex.Message);
+                _profiles = profiles;
+                _byCharType = byCharType;
+                _spriteSizes = spriteSizes;
+                _spriteOwners = spriteOwners;
                 return;
             }
-
-            var profiles = new List<CharacterProfile>();
-            var byCharType = new Dictionary<int, CharacterProfile>();
-            var spriteSizes = new Dictionary<string, Vector2Int>(StringComparer.Ordinal);
-            var spriteOwners = new Dictionary<string, KeyValuePair<string, int>>(StringComparer.Ordinal);
 
             if (prefabs == null || prefabs.Length == 0)
             {
@@ -170,6 +174,7 @@ namespace SkinSyncMod.Character
             {
                 PartKey = partKey,
                 SpriteName = sprite.name,
+                StockSprite = sprite,
                 PixelSize = new Vector2Int(
                     Mathf.RoundToInt(sprite.rect.width), Mathf.RoundToInt(sprite.rect.height)),
                 SortingOrder = 0,
@@ -187,6 +192,7 @@ namespace SkinSyncMod.Character
             {
                 PartKey = partKey,
                 SpriteName = sprite.name,
+                StockSprite = sprite,
                 PixelSize = new Vector2Int(
                     Mathf.RoundToInt(sprite.rect.width), Mathf.RoundToInt(sprite.rect.height)),
                 SortingOrder = renderer.sortingOrder,

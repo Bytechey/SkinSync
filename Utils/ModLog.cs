@@ -1,3 +1,4 @@
+using System;
 using System.Diagnostics;
 using System.Reflection;
 using BepInEx.Logging;
@@ -10,7 +11,7 @@ namespace SkinSyncMod
         private const string Prefix = "[SkinSync] ";
 
         private static ManualLogSource _sink;
-        private static MethodInfo _consoleLog;
+        private static Action<ConsoleScript, string> _consoleLog;
         private static bool _consoleResolved;
 
         internal static bool ShowInConsole { get; set; }
@@ -50,10 +51,9 @@ namespace SkinSyncMod
             try
             {
                 var instance = ConsoleScript.instance;
-                if (instance == null) return;
-                if (!ResolveConsoleLog()) return;
+                if (instance == null || !ResolveConsoleLog()) return;
                 string text = string.IsNullOrEmpty(color) ? Prefix + message : $"<color={color}>{Prefix}{message}</color>";
-                _consoleLog.Invoke(instance, new object[] { text });
+                _consoleLog(instance, text);
             }
             catch { }
         }
@@ -62,9 +62,19 @@ namespace SkinSyncMod
         {
             if (_consoleResolved) return _consoleLog != null;
             _consoleResolved = true;
-            _consoleLog = typeof(ConsoleScript).GetMethod("LogToConsole",
+            MethodInfo logMethod = typeof(ConsoleScript).GetMethod(
+                "LogToConsole",
                 BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
-                null, new[] { typeof(string) }, null);
+                null,
+                new[] { typeof(string) },
+                null);
+            if (logMethod != null)
+            {
+                _consoleLog = (Action<ConsoleScript, string>)Delegate.CreateDelegate(
+                    typeof(Action<ConsoleScript, string>),
+                    logMethod,
+                    throwOnBindFailure: false);
+            }
             return _consoleLog != null;
         }
     }

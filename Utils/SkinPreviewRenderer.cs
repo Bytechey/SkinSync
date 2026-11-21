@@ -23,8 +23,6 @@ namespace SkinSyncMod
             public int ZOrder;
             public bool FlipX;
             public float Rotation;
-            public bool HeadDefaultOnly;
-            public bool EyeOpenOnly;
         }
 
         internal struct WingPiece
@@ -73,10 +71,11 @@ namespace SkinSyncMod
             new Entry { PartName = "wingDL",              Cat = Category.Wings, X =  -1, Y = -10, Rotation =   0f, ZOrder =   4 },
             new Entry { PartName = "wingUR",              Cat = Category.Wings, X =  -2, Y =  -9, Rotation = 318f, ZOrder =   5 },
             new Entry { PartName = "wingDR",              Cat = Category.Wings, X =   0, Y = -12, Rotation =   0f, ZOrder =   4 },
-            new Entry { PartName = "experimentHeadBack",  Cat = Category.Head,  X =  10, Y = -19, Rotation = 347f, ZOrder =  50, HeadDefaultOnly = true },
-            new Entry { PartName = "experimentEyeOpen",   Cat = Category.Head,  X =  10, Y = -19, Rotation = 347f, ZOrder =  53, EyeOpenOnly = true },
+            new Entry { PartName = "experimentHeadBack",  Cat = Category.Head,  X =  10, Y = -19, Rotation = 347f, ZOrder =  50 },
+            new Entry { PartName = "experimentEyeOpen",   Cat = Category.Head,  X =  10, Y = -19, Rotation = 347f, ZOrder =  53 },
         };
 
+        // 字典值对应 DefaultAssembly 数组下标（无 F/B 后缀的泛指肢体默认映射到前景侧 F）。
         internal static readonly Dictionary<string, int> AccessoryParentByLimb = new Dictionary<string, int>(StringComparer.Ordinal)
         {
             { "Head",      20 },
@@ -93,15 +92,26 @@ namespace SkinSyncMod
 
         private static readonly Dictionary<string, Texture2D> _texCache
             = new Dictionary<string, Texture2D>(StringComparer.Ordinal);
+        private static readonly HashSet<string> _failedSkins
+            = new HashSet<string>(StringComparer.Ordinal);
 
-        /// <summary>获取或生成指定皮肤的预览贴图，皮肤目录不存在时返回 null。</summary>
-        internal static Texture2D GetOrBuild(string skinId, string skinDir, SkinSyncSettings settings)
+        /// <summary>获取或按需渐进构建指定皮肤的预览贴图；allowBuild 为 false 时仅查询缓存而不触发同步合成。</summary>
+        internal static Texture2D GetOrBuildIncremental(string skinId, string skinDir, SkinSyncSettings settings, bool allowBuild)
         {
             if (string.IsNullOrEmpty(skinId)) return null;
-            if (_texCache.TryGetValue(skinId, out var cached) && cached != null) return cached;
+            if (_texCache.TryGetValue(skinId, out var cached))
+            {
+                if (cached != null) return cached;
+                _texCache.Remove(skinId);
+            }
+            if (_failedSkins.Contains(skinId) || !allowBuild) return null;
 
             byte[] rgba = RenderRgba(skinId, skinDir, settings);
-            if (rgba == null) return null;
+            if (rgba == null)
+            {
+                _failedSkins.Add(skinId);
+                return null;
+            }
 
             var tex = new Texture2D(CompositeW, CompositeH, TextureFormat.RGBA32, false)
             {
@@ -126,7 +136,13 @@ namespace SkinSyncMod
             return tex;
         }
 
-        /// <summary>释放单个皮肤的预览贴图与部件解析缓存。</summary>
+        /// <summary>获取或立即生成指定皮肤的预览贴图，皮肤目录不存在时返回 null。</summary>
+        internal static Texture2D GetOrBuild(string skinId, string skinDir, SkinSyncSettings settings)
+        {
+            return GetOrBuildIncremental(skinId, skinDir, settings, allowBuild: true);
+        }
+
+        /// <summary>释放单个皮肤的预览贴图、失败负缓存与部件解析缓存。</summary>
         internal static void Invalidate(string skinId)
         {
             if (string.IsNullOrEmpty(skinId)) return;
@@ -135,6 +151,7 @@ namespace SkinSyncMod
                 UnityEngine.Object.Destroy(t);
             }
             _texCache.Remove(skinId);
+            _failedSkins.Remove(skinId);
             string skinDir = SkinPathResolver.GetSkinDir(skinId);
             if (!string.IsNullOrEmpty(skinDir))
             {
@@ -142,7 +159,7 @@ namespace SkinSyncMod
             }
         }
 
-        /// <summary>清空并销毁所有皮肤预览贴图与部件解析缓存。</summary>
+        /// <summary>清空并销毁所有皮肤预览贴图、失败负缓存与部件解析缓存。</summary>
         internal static void InvalidateAll()
         {
             foreach (var kv in _texCache)
@@ -150,6 +167,7 @@ namespace SkinSyncMod
                 if (kv.Value != null) UnityEngine.Object.Destroy(kv.Value);
             }
             _texCache.Clear();
+            _failedSkins.Clear();
             ResolvePartNameCache.Clear();
         }
 
@@ -196,14 +214,15 @@ namespace SkinSyncMod
             return new WingPiece { X = p.X, Y = p.Y, Rotation = p.Rotation, ZOrder = p.ZOrder };
         }
 
-        /// <summary>读取 PNG 文件并解码为左上原点的 RGBA8 字节数组。</summary>
+        /// <summary>读取 PNG 文件、校验宽高上限并解码为左上原点的 RGBA8 字节数组。</summary>
         internal static Pixels LoadPng(string path)
         {
             var p = new Pixels();
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return p;
             try
             {
-                byte[] data = File.ReadAllBytes(path);
+                byte[] bytes = File.ReadAllBytes(path);
+                if (!SkinPackCodec.IsPngDimensionsSafe(bytes, path)) return p;
                 var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false)
                 {
                     filterMode = FilterMode.Point,
@@ -211,7 +230,7 @@ namespace SkinSyncMod
                 };
                 try
                 {
-                    if (!ImageConversion.LoadImage(tex, data)) return p;
+                    if (!ImageConversion.LoadImage(tex, bytes)) return p;
                     p.W = tex.width;
                     p.H = tex.height;
                     Color32[] cols = tex.GetPixels32();
@@ -242,6 +261,15 @@ namespace SkinSyncMod
                 ModLog.Warning("preview LoadPng failed: " + path + " : " + ex.Message);
             }
             return p;
+        }
+
+        private static Pixels LoadPngCached(string path, Dictionary<string, Pixels> pixelCache)
+        {
+            if (string.IsNullOrEmpty(path)) return default;
+            if (pixelCache.TryGetValue(path, out var cached)) return cached;
+            Pixels loaded = LoadPng(path);
+            pixelCache[path] = loaded;
+            return loaded;
         }
 
         /// <summary>将源像素按给定角度与镜像参数最近邻旋转混合到目标画布。</summary>
@@ -403,13 +431,12 @@ namespace SkinSyncMod
 
             (int rootX, int rootY, float rootRot, float halfH)? upL = null;
             (int rootX, int rootY, float rootRot, float halfH)? upR = null;
-            var preloadedWings = new Dictionary<string, Pixels>(StringComparer.Ordinal);
+            var pixelCache = new Dictionary<string, Pixels>(StringComparer.OrdinalIgnoreCase);
             foreach (var e in entries)
             {
                 if (e.Cat != Category.Wings) continue;
                 if (e.PartName != "wingUL" && e.PartName != "wingUR") continue;
-                var px = LoadPng(Path.Combine(skinDir, "Wings", e.PartName + ".png"));
-                preloadedWings[e.PartName] = px;
+                var px = LoadPngCached(Path.Combine(skinDir, "Wings", e.PartName + ".png"), pixelCache);
                 if (px.W == 0) continue;
                 var pose = (e.X, e.Y, e.Rotation, px.H * 0.5f);
                 if (e.PartName == "wingUL") upL = pose;
@@ -422,7 +449,7 @@ namespace SkinSyncMod
             {
                 if (entry.Cat == Category.Accessories)
                 {
-                    DrawAccessory(canvas, entry, accById, skinId, skinDir, settings);
+                    DrawAccessory(canvas, entry, accById, skinId, skinDir, settings, pixelCache);
                     continue;
                 }
 
@@ -454,21 +481,14 @@ namespace SkinSyncMod
                 Pixels pix = default;
                 bool usedSided = false;
 
-                if (entry.Cat == Category.Wings && preloadedWings.TryGetValue(entry.PartName, out var cachedWing))
+                if (!string.IsNullOrEmpty(sided))
                 {
-                    pix = cachedWing;
+                    pix = LoadPngCached(Path.Combine(skinDir, CategoryDir(entry.Cat), sided + ".png"), pixelCache);
+                    usedSided = pix.W > 0;
                 }
-                else
+                if (pix.W == 0)
                 {
-                    if (!string.IsNullOrEmpty(sided))
-                    {
-                        pix = LoadPng(Path.Combine(skinDir, CategoryDir(entry.Cat), sided + ".png"));
-                        usedSided = pix.W > 0;
-                    }
-                    if (pix.W == 0)
-                    {
-                        pix = LoadPng(Path.Combine(skinDir, CategoryDir(entry.Cat), actualBase + ".png"));
-                    }
+                    pix = LoadPngCached(Path.Combine(skinDir, CategoryDir(entry.Cat), actualBase + ".png"), pixelCache);
                 }
                 if (pix.W == 0) continue;
 
@@ -584,7 +604,8 @@ namespace SkinSyncMod
         }
 
         private static void DrawAccessory(byte[] canvas, Entry entry,
-            Dictionary<string, AccessoryConfigLoader.Entry> accById, string skinId, string skinDir, SkinSyncSettings settings)
+            Dictionary<string, AccessoryConfigLoader.Entry> accById, string skinId, string skinDir,
+            SkinSyncSettings settings, Dictionary<string, Pixels> pixelCache)
         {
             string raw = entry.PartName;
             if (string.IsNullOrEmpty(raw) || !raw.StartsWith("__acc:", StringComparison.Ordinal)) return;
@@ -632,7 +653,7 @@ namespace SkinSyncMod
             }
             if (string.IsNullOrEmpty(sprite)) return;
 
-            var pix = LoadPng(Path.Combine(skinDir, "Accessories", sprite + ".png"));
+            var pix = LoadPngCached(Path.Combine(skinDir, "Accessories", sprite + ".png"), pixelCache);
             if (pix.W == 0) return;
 
             float parentRad = -parentRot * Mathf.Deg2Rad;

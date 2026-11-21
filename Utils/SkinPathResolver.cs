@@ -5,10 +5,12 @@ using BepInEx;
 
 namespace SkinSyncMod
 {
-    /// <summary>解析皮肤目录的实际根路径并校验皮肤名称安全性。</summary>
+    /// <summary>解析皮肤目录的实际根路径、索引目录文件列表并校验皮肤名称安全性。</summary>
     public static class SkinPathResolver
     {
-        private static readonly Dictionary<string, string> _resolved = new Dictionary<string, string>();
+        private static readonly Dictionary<string, string> _resolved = new Dictionary<string, string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, bool> _localCustomCache = new Dictionary<string, bool>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, string[]> _dirFilesCache = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         private static readonly string[] _markerDirs = { "Body", "Head", "Wings", "Accessories", "Blood" };
         private static readonly HashSet<string> _reservedNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -17,7 +19,9 @@ namespace SkinSyncMod
             "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
         };
 
-        public static string SyncCacheRoot => Path.Combine(Paths.PluginPath, "SkinSync_SyncCache");
+        public static string SyncCacheRoot => Path.Combine(Paths.CachePath, "SkinSync_SyncCache");
+
+        internal static string LegacySyncCacheRoot => Path.Combine(Paths.PluginPath, "SkinSync_SyncCache");
 
         /// <summary>校验皮肤标识是否为不含路径穿越与系统保留设备名的合法单级目录名。</summary>
         public static bool IsSafeSkinName(string name)
@@ -54,10 +58,11 @@ namespace SkinSyncMod
             if (!IsSafeSkinName(characterName)) return "";
             if (_resolved.TryGetValue(characterName, out var cached)) return cached;
 
-            string direct = Path.Combine(Paths.PluginPath, "CustomSprites", characterName);
+            string customSpritesRoot = Path.Combine(Paths.PluginPath, "CustomSprites");
+            string direct = Path.Combine(customSpritesRoot, characterName);
             string syncDir = Path.Combine(SyncCacheRoot, characterName);
 
-            if (Directory.Exists(direct) && HasAnyContent(direct))
+            if (IsEffectiveLocalCustomDir(customSpritesRoot, characterName, direct))
             {
                 string actual = ResolveActual(direct);
                 _resolved[characterName] = actual;
@@ -69,28 +74,90 @@ namespace SkinSyncMod
                 _resolved[characterName] = actual;
                 return actual;
             }
-            if (Directory.Exists(direct))
-            {
-                _resolved[characterName] = direct;
-                return direct;
-            }
 
-            return direct;
+            // 原版内置槽位容器（Exp/Milky/Dune）或空目录不能被当作已就绪皮肤目录返回或缓存，否则会短路内存包回退与远端皮肤请求。
+            if (!Directory.Exists(direct)) return direct;
+            if (!Directory.Exists(syncDir)) return syncDir;
+            return "";
         }
 
         /// <summary>判断本机 CustomSprites 目录下是否已存在包含有效贴图或配置的同名自有皮肤。</summary>
         public static bool HasLocalCustomSkin(string characterName)
         {
             if (!IsSafeSkinName(characterName)) return false;
-            string direct = Path.Combine(Paths.PluginPath, "CustomSprites", characterName);
-            return Directory.Exists(direct) && HasAnyContent(direct);
+            if (_localCustomCache.TryGetValue(characterName, out bool cached)) return cached;
+
+            string customSpritesRoot = Path.Combine(Paths.PluginPath, "CustomSprites");
+            string direct = Path.Combine(customSpritesRoot, characterName);
+            bool exists = IsEffectiveLocalCustomDir(customSpritesRoot, characterName, direct);
+            _localCustomCache[characterName] = exists;
+            return exists;
         }
 
-        /// <summary>清除单个或全部皮肤目录的解析缓存。</summary>
+        private static bool IsEffectiveLocalCustomDir(string customSpritesRoot, string characterName, string directDir)
+        {
+            return Directory.Exists(directDir)
+                && !Patches.LegacyTogetherSkinSuppressor.IsLegacyContainerDir(customSpritesRoot, characterName)
+                && HasAnyContent(directDir);
+        }
+
+        /// <summary>返回并缓存指定皮肤目录下的全部文件路径列表；目录不存在或访问异常时缓存空数组。</summary>
+        internal static IReadOnlyList<string> GetSkinFiles(string skinDir)
+        {
+            if (string.IsNullOrEmpty(skinDir)) return Array.Empty<string>();
+
+            string normalized;
+            try
+            {
+                normalized = Path.GetFullPath(skinDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            }
+            catch
+            {
+                return Array.Empty<string>();
+            }
+
+            if (_dirFilesCache.TryGetValue(normalized, out string[] cached))
+            {
+                return cached;
+            }
+
+            string[] files;
+            if (!Directory.Exists(normalized))
+            {
+                files = Array.Empty<string>();
+            }
+            else
+            {
+                try
+                {
+                    files = Directory.GetFiles(normalized, "*", SearchOption.AllDirectories);
+                }
+                catch
+                {
+                    files = Array.Empty<string>();
+                }
+            }
+
+            _dirFilesCache[normalized] = files;
+            return files;
+        }
+
+        /// <summary>清除单个或全部皮肤目录的解析、本地归属与文件列表缓存。</summary>
         public static void Invalidate(string characterName = null)
         {
-            if (string.IsNullOrEmpty(characterName)) _resolved.Clear();
-            else _resolved.Remove(characterName);
+            if (string.IsNullOrEmpty(characterName))
+            {
+                _resolved.Clear();
+                _localCustomCache.Clear();
+            }
+            else
+            {
+                _resolved.Remove(characterName);
+                _localCustomCache.Remove(characterName);
+            }
+
+            _dirFilesCache.Clear();
+            SkinPackCodec.InvalidatePackCache(characterName);
         }
 
         private static bool HasAnyContent(string dir)

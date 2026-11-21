@@ -696,6 +696,11 @@ namespace SkinSyncMod.Interop
 
         private void PutBytes(object writer, byte[] value)
         {
+            if (value != null && value.Length > ushort.MaxValue)
+            {
+                InteropDiagnostics.WarnOnce("TogetherProvider.PutBytes.Limit", "PutBytes 负载超过 65535 字节，已降级为空负载以保持流边界。");
+            }
+
             byte[] safe = value == null || value.Length > ushort.MaxValue ? Array.Empty<byte>() : value;
             InteropReflection.TryInvoke(_putBytes, writer, new object[] { safe }, out object ignored);
         }

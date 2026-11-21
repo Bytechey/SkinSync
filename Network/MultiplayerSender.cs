@@ -114,27 +114,6 @@ namespace SkinSyncMod.Network
             ChannelConsumer.SendToServer(writer);
         }
 
-        public static void ServerBroadcastSkinChange(uint netId, string skinID)
-        {
-            if (!SessionConsumer.IsRunning)
-            {
-                CommsTrace.SendSkipped(skinID, netId, "无活动会话（主机广播自身切换）");
-                return;
-            }
-
-            int charType = CharTypeOf(netId);
-            IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinChangeMessageId);
-            SkinMessageCodec.WriteSkinChange(writer, new SkinChangeMessage
-            {
-                skinID = skinID,
-                netId = netId,
-                charType = charType,
-            });
-            CommsTrace.HostBroadcast(skinID, netId, -1, 0);
-            DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "全部客户端");
-            ChannelConsumer.Broadcast(writer);
-        }
-
         /// <summary>服务端向单个客户端单播指定实体的皮肤状态。</summary>
         public static void ServerSendSkinChangeToClient(uint targetClientId, uint netId, string skinID)
         {
@@ -190,13 +169,13 @@ namespace SkinSyncMod.Network
             ChannelConsumer.SendToClient((ushort)targetClientId, writer);
         }
 
-        private const int MaxChunksPerFrame = 8;
+        private const float BytesPerSecondBudget = 512 * 1024f;
+        private const float MaxBurstBytes = 128 * 1024f;
         private const ulong TargetKeyServer = 1UL << 32;
 
         private sealed class OutboundChunkJob
         {
             public ulong TargetKey;
-            public string TargetLabel;
             public uint TransferId;
             public ushort TotalChunks;
             public int TotalBytes;
@@ -204,24 +183,26 @@ namespace SkinSyncMod.Network
             public bool AllowPersist;
             public byte[] Payload;
             public ushort NextChunkIndex;
-            public System.Action<IInteropWriter> SendAction;
+            public System.Func<IInteropWriter, int> SendAction;
         }
 
         private static readonly Queue<OutboundChunkJob> _outboundQueue = new Queue<OutboundChunkJob>();
         private static uint _nextTransferId = 1;
-        private static int _lastTickFrame = -1;
-        private static int _chunksSentThisFrame;
+        private static float _availableBytes = MaxBurstBytes;
+        private static int _lastBudgetFrame = -1;
 
         private static ulong TargetKeyClient(uint clientId) => (2UL << 32) | clientId;
         private static ulong TargetKeyForwardExcept(uint excludeClientId) => (3UL << 32) | excludeClientId;
 
-        /// <summary>清空尚未发送完毕的大型皮肤包分片队列。</summary>
+        /// <summary>清空尚未发送完毕的大型皮肤包分片队列并恢复发送字节预算。</summary>
         internal static void ClearOutboundQueue()
         {
             _outboundQueue.Clear();
+            _availableBytes = MaxBurstBytes;
+            _lastBudgetFrame = -1;
         }
 
-        /// <summary>按每帧最多 8 片（256 KB）流控排空待发送分片队列，防止瞬时击穿 Steamworks 1 MB 发送缓冲区。</summary>
+        /// <summary>按时间字节令牌桶与实际扇出人数排空待发送分片队列，与帧率解耦并保护 Steamworks 1 MB 发送缓冲区。</summary>
         internal static void TickOutboundChunks()
         {
             if (!SessionConsumer.IsRunning)
@@ -229,17 +210,19 @@ namespace SkinSyncMod.Network
                 ClearOutboundQueue();
                 return;
             }
-            if (_outboundQueue.Count == 0) return;
 
             int frame = Time.frameCount;
-            if (frame != _lastTickFrame)
+            if (frame != _lastBudgetFrame)
             {
-                _lastTickFrame = frame;
-                _chunksSentThisFrame = 0;
+                _lastBudgetFrame = frame;
+                float dt = Mathf.Clamp(Time.unscaledDeltaTime, 0f, 0.25f);
+                _availableBytes = Mathf.Min(MaxBurstBytes, _availableBytes + dt * BytesPerSecondBudget);
             }
 
+            if (_outboundQueue.Count == 0) return;
+
             int chunkSize = SkinPackCodec.CHUNK_PAYLOAD_SIZE;
-            while (_chunksSentThisFrame < MaxChunksPerFrame && _outboundQueue.Count > 0)
+            while (_availableBytes > 0f && _outboundQueue.Count > 0)
             {
                 OutboundChunkJob job = _outboundQueue.Peek();
                 ushort idx = job.NextChunkIndex++;
@@ -259,10 +242,14 @@ namespace SkinSyncMod.Network
                     allowPersist = job.AllowPersist,
                     data = slice,
                 });
-                DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinPackChunkMessageId, job.TargetLabel);
-                job.SendAction(writer);
-                _chunksSentThisFrame++;
+                int recipients = job.SendAction(writer);
+                if (recipients <= 0)
+                {
+                    _outboundQueue.Dequeue();
+                    continue;
+                }
 
+                _availableBytes -= (float)len * recipients;
                 if (job.NextChunkIndex >= job.TotalChunks)
                 {
                     _outboundQueue.Dequeue();
@@ -273,75 +260,70 @@ namespace SkinSyncMod.Network
         /// <summary>客户端向服务端上传皮肤包字节流，超过单包上限时自动分片发送。</summary>
         public static bool SendSkinPackData(byte[] payload, bool allowPersist)
         {
-            if (!SessionConsumer.IsRunning || payload == null || payload.Length == 0) return false;
-            if (!IsPayloadWithinLimit(payload)) return false;
-
-            if (payload.Length <= SkinPackCodec.SINGLE_PACKET_LIMIT)
-            {
-                IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
-                SkinMessageCodec.WriteSkinPackData(writer, new SkinPackDataMessage { payload = payload, allowPersist = allowPersist });
-                DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinPackDataMessageId, "服务端");
-                ChannelConsumer.SendToServer(writer);
-                return true;
-            }
-
-            SendChunked(TargetKeyServer, payload, allowPersist, "服务端", writer => ChannelConsumer.SendToServer(writer));
-            return true;
+            return DispatchSkinPack(
+                TargetKeyServer,
+                payload,
+                allowPersist,
+                (writer, subId) =>
+                {
+                    DebugMessageTrace.Sent(writer, subId, "服务端");
+                    ChannelConsumer.SendToServer(writer);
+                    return 1;
+                });
         }
 
         /// <summary>服务端向指定客户端单播皮肤包字节流，超过单包上限时自动分片发送。</summary>
         public static bool ServerSendSkinPackDataToClient(uint targetClientId, byte[] payload, bool allowPersist)
         {
-            if (!SessionConsumer.IsRunning || payload == null || payload.Length == 0) return false;
-            if (!IsPayloadWithinLimit(payload)) return false;
-
             string targetLabel = "客户端 " + targetClientId;
-            if (payload.Length <= SkinPackCodec.SINGLE_PACKET_LIMIT)
-            {
-                IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
-                SkinMessageCodec.WriteSkinPackData(writer, new SkinPackDataMessage { payload = payload, allowPersist = allowPersist });
-                DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinPackDataMessageId, targetLabel);
-                ChannelConsumer.SendToClient((ushort)targetClientId, writer);
-                return true;
-            }
-
-            SendChunked(
+            return DispatchSkinPack(
                 TargetKeyClient(targetClientId),
                 payload,
                 allowPersist,
-                targetLabel,
-                writer => ChannelConsumer.SendToClient((ushort)targetClientId, writer));
-            return true;
+                (writer, subId) =>
+                {
+                    DebugMessageTrace.Sent(writer, subId, targetLabel);
+                    ChannelConsumer.SendToClient((ushort)targetClientId, writer);
+                    return 1;
+                });
         }
 
         /// <summary>服务端将已校验的皮肤包转发给除来源客户端外的其他远端客户端。</summary>
         public static void ServerForwardSkinPackExcept(uint excludeClientId, byte[] payload, bool allowPersist)
         {
-            if (!SessionConsumer.IsRunning || payload == null || payload.Length == 0) return;
-            if (!IsPayloadWithinLimit(payload)) return;
+            DispatchSkinPack(
+                TargetKeyForwardExcept(excludeClientId),
+                payload,
+                allowPersist,
+                (writer, subId) => ChannelConsumer.ForwardExcept((ushort)excludeClientId, writer, subId));
+        }
+
+        private static bool DispatchSkinPack(
+            ulong targetKey,
+            byte[] payload,
+            bool allowPersist,
+            System.Func<IInteropWriter, ushort, int> sendAction)
+        {
+            if (!SessionConsumer.IsRunning || payload == null || payload.Length == 0) return false;
+            if (!IsPayloadWithinLimit(payload)) return false;
 
             if (payload.Length <= SkinPackCodec.SINGLE_PACKET_LIMIT)
             {
                 IInteropWriter writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.SkinPackDataMessageId);
                 SkinMessageCodec.WriteSkinPackData(writer, new SkinPackDataMessage { payload = payload, allowPersist = allowPersist });
-                ChannelConsumer.ForwardExcept((ushort)excludeClientId, writer, SkinNetworkIDs.SkinPackDataMessageId);
-                return;
+                sendAction(writer, SkinNetworkIDs.SkinPackDataMessageId);
+                return true;
             }
 
-            SendChunked(
-                TargetKeyForwardExcept(excludeClientId),
-                payload,
-                allowPersist,
-                "其他客户端",
-                writer => ChannelConsumer.ForwardExcept((ushort)excludeClientId, writer, SkinNetworkIDs.SkinPackChunkMessageId));
+            SendChunked(targetKey, payload, allowPersist, writer => sendAction(writer, SkinNetworkIDs.SkinPackChunkMessageId));
+            return true;
         }
 
         private static void SendChunked(
             ulong targetKey,
             byte[] payload,
             bool allowPersist,
-            string targetLabel,
-            System.Action<IInteropWriter> send)
+            System.Func<IInteropWriter, int> send)
         {
             uint crc = SkinPackChunkAssembler.ComputeCrc32(payload);
             foreach (var pending in _outboundQueue)
@@ -362,7 +344,6 @@ namespace SkinSyncMod.Network
             _outboundQueue.Enqueue(new OutboundChunkJob
             {
                 TargetKey = targetKey,
-                TargetLabel = targetLabel,
                 TransferId = transferId,
                 TotalChunks = totalChunks,
                 TotalBytes = totalBytes,

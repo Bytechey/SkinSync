@@ -33,6 +33,13 @@ namespace SkinSyncMod
             public Eye[] Eyes;
         }
 
+        private static void ClearBaselineDictionaries()
+        {
+            _originalLimbSprites.Clear();
+            _originalTailSprites.Clear();
+            _originalFaces.Clear();
+        }
+
         private static void RestoreVanillaParts(GameObject playerObj)
         {
             foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
@@ -45,8 +52,10 @@ namespace SkinSyncMod
 
             foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
             {
-                var deform = tail.GetComponent<TailFlowDeform>();
-                if (deform != null) deform.enabled = false;
+                foreach (var deform in tail.GetComponents<TailFlowDeform>())
+                {
+                    if (deform != null) deform.enabled = false;
+                }
 
                 var renderer = tail.GetComponent<SpriteRenderer>();
                 if (renderer != null && _originalTailSprites.TryGetValue(renderer.GetInstanceID(), out var orig) && orig != null)
@@ -85,8 +94,12 @@ namespace SkinSyncMod
             var renderer = limb.GetComponent<SpriteRenderer>();
             if (renderer == null) return false;
             int id = renderer.GetInstanceID();
-            if (!_originalLimbSprites.ContainsKey(id) && renderer.sprite != null)
-                _originalLimbSprites[id] = renderer.sprite;
+            if (!_originalLimbSprites.ContainsKey(id))
+            {
+                var profile = Character.CharacterCatalog.ForCharType(charType);
+                Sprite baseline = ResolveLimbStockSprite(profile, limb, renderer.sprite);
+                if (baseline != null) _originalLimbSprites[id] = baseline;
+            }
             if (renderer.sprite == null && !_originalLimbSprites.TryGetValue(id, out _)) return false;
 
             Sprite reference = _originalLimbSprites.TryGetValue(id, out var orig) ? orig : renderer.sprite;
@@ -98,6 +111,28 @@ namespace SkinSyncMod
             var outcome = Resolve.SkinResolver.ResolveByName(baseSprite, dict, charType, side, isRight);
             renderer.sprite = outcome.Hit ? FitToTarget(outcome.Sprite, reference, scale) : reference;
             return outcome.Hit;
+        }
+
+        private static Sprite ResolveLimbStockSprite(Character.CharacterProfile profile, Limb limb, Sprite fallback)
+        {
+            if (profile != null && limb != null && !string.IsNullOrEmpty(limb.gameObject.name)
+                && profile.Limbs.TryGetValue(limb.gameObject.name, out var binding)
+                && binding != null && binding.StockSprite != null)
+            {
+                return binding.StockSprite;
+            }
+            return fallback;
+        }
+
+        private static Sprite ResolveFaceStockSprite(Character.CharacterProfile profile, string partKey, Sprite fallback)
+        {
+            if (profile != null && partKey != null
+                && profile.Faces.TryGetValue(partKey, out var binding)
+                && binding != null && binding.StockSprite != null)
+            {
+                return binding.StockSprite;
+            }
+            return fallback;
         }
 
         /// <summary>按统一全局倍率重采样皮肤贴图，保留原图的 pivot 与 pixelsPerUnit。</summary>
@@ -228,8 +263,12 @@ namespace SkinSyncMod
             var renderer = tail.GetComponent<SpriteRenderer>();
             if (renderer == null) return;
             int id = renderer.GetInstanceID();
-            if (!_originalTailSprites.ContainsKey(id) && renderer.sprite != null)
-                _originalTailSprites[id] = renderer.sprite;
+            if (!_originalTailSprites.ContainsKey(id))
+            {
+                var profile = Character.CharacterCatalog.ForCharType(charType);
+                Sprite baseline = profile?.Tail?.StockSprite != null ? profile.Tail.StockSprite : renderer.sprite;
+                if (baseline != null) _originalTailSprites[id] = baseline;
+            }
             Sprite reference = _originalTailSprites.TryGetValue(id, out var orig) ? orig : renderer.sprite;
             if (reference == null) return;
 
@@ -244,17 +283,7 @@ namespace SkinSyncMod
             int id = face.GetInstanceID();
             if (!_originalFaces.TryGetValue(id, out var orig))
             {
-                orig = new FacialOriginal
-                {
-                    DefaultHead = face.defaultHead,
-                    DefaultHeadMouth = face.defaultHeadMouth,
-                    DefaultHeadMouthHalf = face.defaultHeadMouthHalf,
-                    EyesGone = face.eyesGone,
-                    EyesGoneHealed = face.eyesGoneHealed,
-                    DisfiguredHead = (Sprite[])(face.disfiguredHead?.Clone() ?? new Sprite[0]),
-                    DisfiguredHeadHeal = (Sprite[])(face.disfiguredHeadHeal?.Clone() ?? new Sprite[0]),
-                    Eyes = liveEyeList != null ? liveEyeList.ToArray() : new Eye[0],
-                };
+                orig = CaptureFacialBaseline(face, liveEyeList, charType);
                 _originalFaces[id] = orig;
             }
 
@@ -291,6 +320,203 @@ namespace SkinSyncMod
             RefreshPausedEyesIfNeeded(pauseComp, isPaused);
         }
 
+        private static FacialOriginal CaptureFacialBaseline(FacialExpression face, List<Eye> liveEyeList, int charType)
+        {
+            var profile = Character.CharacterCatalog.ForCharType(charType);
+            var dh = (Sprite[])(face.disfiguredHead?.Clone() ?? Array.Empty<Sprite>());
+            for (int i = 0; i < dh.Length; i++)
+                dh[i] = ResolveFaceStockSprite(profile, Character.PartKeyNames.DisfiguredHead(i), dh[i]);
+
+            var dhh = (Sprite[])(face.disfiguredHeadHeal?.Clone() ?? Array.Empty<Sprite>());
+            for (int i = 0; i < dhh.Length; i++)
+                dhh[i] = ResolveFaceStockSprite(profile, Character.PartKeyNames.DisfiguredHeadHeal(i), dhh[i]);
+
+            var eyes = liveEyeList != null ? liveEyeList.ToArray() : Array.Empty<Eye>();
+            for (int i = 0; i < eyes.Length; i++)
+            {
+                var eye = eyes[i];
+                eye.front = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyeFront(i), eye.front);
+                eye.back = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyeBack(i), eye.back);
+                eyes[i] = eye;
+            }
+
+            return new FacialOriginal
+            {
+                DefaultHead = ResolveFaceStockSprite(profile, Character.PartKeyNames.DefaultHead, face.defaultHead),
+                DefaultHeadMouth = ResolveFaceStockSprite(profile, Character.PartKeyNames.DefaultHeadMouth, face.defaultHeadMouth),
+                DefaultHeadMouthHalf = ResolveFaceStockSprite(profile, Character.PartKeyNames.DefaultHeadMouthHalf, face.defaultHeadMouthHalf),
+                EyesGone = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyesGone, face.eyesGone),
+                EyesGoneHealed = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyesGoneHealed, face.eyesGoneHealed),
+                DisfiguredHead = dh,
+                DisfiguredHeadHeal = dhh,
+                Eyes = eyes,
+            };
+        }
+
+        private static bool NeedsStockRestore(Sprite current, Sprite stock)
+        {
+            if (stock == null) return false;
+            if (current == null) return true;
+            if (ReferenceEquals(current, stock)) return false;
+            if ((current.hideFlags & HideFlags.HideAndDontSave) != 0) return true;
+            return current != stock;
+        }
+
+        private static void SanitizeClonedBodyToStock(GameObject playerObj, int charType)
+        {
+            if (playerObj == null) return;
+
+            foreach (var watcher in playerObj.GetComponentsInChildren<LimbDirWatcher>(true))
+            {
+                if (watcher == null) continue;
+                watcher.enabled = false;
+                UnityEngine.Object.Destroy(watcher);
+            }
+
+            foreach (var vomit in playerObj.GetComponentsInChildren<BloodVomitWatcher>(true))
+            {
+                if (vomit == null) continue;
+                vomit.MarkDisposed();
+                UnityEngine.Object.Destroy(vomit);
+            }
+
+            foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
+            {
+                if (tail == null) continue;
+                foreach (var deform in tail.GetComponents<TailFlowDeform>())
+                {
+                    if (deform == null) continue;
+                    deform.MarkDisposed();
+                    UnityEngine.Object.Destroy(deform);
+                }
+                var tailSr = tail.GetComponent<SpriteRenderer>();
+                if (tail.enabled && tailSr != null && !tailSr.enabled)
+                    tailSr.enabled = true;
+            }
+
+            // 清除克隆母版时可能残留且不再受存活 TailFlowDeform 托管的孤立尾巴网格子物体。
+            var orphanMeshes = new List<GameObject>();
+            foreach (var tf in playerObj.GetComponentsInChildren<Transform>(true))
+            {
+                if (tf != null && tf.name == "TailDeformMesh")
+                    orphanMeshes.Add(tf.gameObject);
+            }
+            foreach (var go in orphanMeshes)
+            {
+                if (go == null) continue;
+                var mr = go.GetComponent<MeshRenderer>();
+                if (mr != null) mr.enabled = false;
+                UnityEngine.Object.Destroy(go);
+            }
+
+            BloodAttacher.Restore(playerObj);
+            AccessoryAttacher.Apply(playerObj, null, null, null);
+            DestroyModContainers(playerObj);
+
+            Body body = playerObj.GetComponentInChildren<Body>(true);
+            int resolvedType = charType >= 0 ? charType : (body != null ? body.charType : 0);
+            var profile = Character.CharacterCatalog.ForCharType(resolvedType);
+            if (profile == null) return;
+
+            foreach (var limb in playerObj.GetComponentsInChildren<Limb>(true))
+            {
+                if (limb == null) continue;
+                var sr = limb.GetComponent<SpriteRenderer>();
+                if (sr == null) continue;
+                Sprite stock = ResolveLimbStockSprite(profile, limb, null);
+                if (NeedsStockRestore(sr.sprite, stock))
+                    sr.sprite = stock;
+                _originalLimbSprites.Remove(sr.GetInstanceID());
+            }
+
+            Sprite tailStock = profile.Tail?.StockSprite;
+            if (tailStock != null)
+            {
+                foreach (var tail in playerObj.GetComponentsInChildren<TailScript>(true))
+                {
+                    if (tail == null) continue;
+                    var sr = tail.GetComponent<SpriteRenderer>();
+                    if (sr == null) continue;
+                    if (NeedsStockRestore(sr.sprite, tailStock))
+                        sr.sprite = tailStock;
+                    _originalTailSprites.Remove(sr.GetInstanceID());
+                }
+            }
+
+            foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
+            {
+                if (face == null) continue;
+                SanitizeFaceToStock(face, profile);
+                _originalFaces.Remove(face.GetInstanceID());
+            }
+        }
+
+        private static void SanitizeFaceToStock(FacialExpression face, Character.CharacterProfile profile)
+        {
+            bool dirty = false;
+
+            Sprite sHead = ResolveFaceStockSprite(profile, Character.PartKeyNames.DefaultHead, null);
+            if (NeedsStockRestore(face.defaultHead, sHead)) { face.defaultHead = sHead; dirty = true; }
+
+            Sprite sMouth = ResolveFaceStockSprite(profile, Character.PartKeyNames.DefaultHeadMouth, null);
+            if (NeedsStockRestore(face.defaultHeadMouth, sMouth)) { face.defaultHeadMouth = sMouth; dirty = true; }
+
+            Sprite sHalf = ResolveFaceStockSprite(profile, Character.PartKeyNames.DefaultHeadMouthHalf, null);
+            if (NeedsStockRestore(face.defaultHeadMouthHalf, sHalf)) { face.defaultHeadMouthHalf = sHalf; dirty = true; }
+
+            Sprite sGone = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyesGone, null);
+            if (NeedsStockRestore(face.eyesGone, sGone)) { face.eyesGone = sGone; dirty = true; }
+
+            Sprite sGoneHeal = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyesGoneHealed, null);
+            if (NeedsStockRestore(face.eyesGoneHealed, sGoneHeal)) { face.eyesGoneHealed = sGoneHeal; dirty = true; }
+
+            if (face.disfiguredHead != null)
+            {
+                for (int i = 0; i < face.disfiguredHead.Length; i++)
+                {
+                    Sprite s = ResolveFaceStockSprite(profile, Character.PartKeyNames.DisfiguredHead(i), null);
+                    if (NeedsStockRestore(face.disfiguredHead[i], s)) { face.disfiguredHead[i] = s; dirty = true; }
+                }
+            }
+            if (face.disfiguredHeadHeal != null)
+            {
+                for (int i = 0; i < face.disfiguredHeadHeal.Length; i++)
+                {
+                    Sprite s = ResolveFaceStockSprite(profile, Character.PartKeyNames.DisfiguredHeadHeal(i), null);
+                    if (NeedsStockRestore(face.disfiguredHeadHeal[i], s)) { face.disfiguredHeadHeal[i] = s; dirty = true; }
+                }
+            }
+
+            List<Eye> liveEyes = GetUnderlyingEyeList(face, out Component pauseComp, out bool isPaused);
+            if (liveEyes != null)
+            {
+                for (int i = 0; i < liveEyes.Count; i++)
+                {
+                    Eye eye = liveEyes[i];
+                    bool eyeChanged = false;
+                    Sprite sf = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyeFront(i), null);
+                    if (NeedsStockRestore(eye.front, sf)) { eye.front = sf; eyeChanged = true; }
+                    Sprite sb = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyeBack(i), null);
+                    if (NeedsStockRestore(eye.back, sb)) { eye.back = sb; eyeChanged = true; }
+                    if (eyeChanged) { liveEyes[i] = eye; dirty = true; }
+                }
+            }
+
+            if (dirty) RefreshPausedEyesIfNeeded(pauseComp, isPaused);
+
+            if (face.head != null && sHead != null
+                && (dirty || (face.head.sprite != null && (face.head.sprite.hideFlags & HideFlags.HideAndDontSave) != 0)))
+            {
+                face.head.sprite = sHead;
+            }
+            Sprite sEye0 = ResolveFaceStockSprite(profile, Character.PartKeyNames.EyeFront(0), null);
+            if (face.eyes != null && sEye0 != null
+                && (dirty || (face.eyes.sprite != null && (face.eyes.sprite.hideFlags & HideFlags.HideAndDontSave) != 0)))
+            {
+                face.eyes.sprite = sEye0;
+            }
+        }
+
         private static void RestoreEyeList(FacialExpression face, Eye[] origEyes)
         {
             if (origEyes == null) return;
@@ -324,6 +550,10 @@ namespace SkinSyncMod
                 _pausePausedEyesField = t.GetField("pausedEyeList", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 _pauseLastAliveField = t.GetField("lastAlive", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
                 _pauseReflected = true;
+                if (_pauseOrigEyesField == null || _pausePausedEyesField == null || _pauseLastAliveField == null)
+                {
+                    ModLog.Warning("FacialExpressionPause 内部字段反射不完整，暂停期间眼部贴图同步可能受影响。");
+                }
             }
 
             var origList = _pauseOrigEyesField?.GetValue(pauseComp) as List<Eye>;
@@ -341,7 +571,7 @@ namespace SkinSyncMod
 
         private static void DisableConflictingReplacers(GameObject root)
         {
-            if (root == null) return;
+            if (root == null || !SkinSync.TogetherInstalled || Patches.LegacyTogetherSkinSuppressor.NoLegacyDetected) return;
             foreach (var mb in root.GetComponentsInChildren<MonoBehaviour>(true))
             {
                 if (mb == null || mb.GetType().Name != "SkinSpriteReplacer") continue;
@@ -377,7 +607,7 @@ namespace SkinSyncMod
             Transform upTorsoTf = FindLimbTransform(body, "UpTorso");
             Transform parent = upTorsoTf != null ? upTorsoTf : body.transform;
 
-            Transform existing = parent.Find("HwWings");
+            Transform existing = parent.Find(WingsContainerName);
             if (existing != null) UnityEngine.Object.Destroy(existing.gameObject);
 
             Sprite wingUL = dict.TryGetValue("wingUL", out var ul) ? ul : null;
@@ -386,7 +616,7 @@ namespace SkinSyncMod
             Sprite wingDR = dict.TryGetValue("wingDR", out var dr) ? dr : null;
             if (wingUL == null && wingUR == null && wingDL == null && wingDR == null) return;
 
-            var container = new GameObject("HwWings");
+            var container = new GameObject(WingsContainerName);
             container.transform.SetParent(parent, worldPositionStays: false);
             container.transform.localPosition = Vector3.zero;
             container.transform.localScale = Vector3.one;

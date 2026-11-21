@@ -21,15 +21,16 @@ namespace SkinSyncMod
         internal ConfigEntry<bool> RequireEquipmentForAccessories { get; }
         internal ConfigEntry<bool> RenderCustomBlood { get; }
         internal ConfigEntry<bool> TailDeformEnabled { get; }
-        internal ConfigEntry<bool> NormalizeSpriteSize { get; }
         internal ConfigEntry<bool> VanillaSkinForSelf { get; }
         internal ConfigEntry<bool> VanillaSkinForOthers { get; }
 
         internal ConfigEntry<bool> ShowLogInConsole { get; }
         internal ConfigEntry<bool> AcceptUpdateNotice { get; }
         internal ConfigEntry<string> PreferredLanguage { get; }
+        internal ConfigEntry<int> UiScalePercent { get; }
 
         internal ConfigEntry<string> SyncMode { get; }
+        internal bool IsPassiveSyncMode => string.Equals(SyncMode.Value?.Trim(), "Passive", StringComparison.OrdinalIgnoreCase);
         internal ConfigEntry<bool> SyncAccessories { get; }
         internal ConfigEntry<bool> SyncTailDeform { get; }
 
@@ -67,6 +68,7 @@ namespace SkinSyncMod
             public float? SpeedDisturb;
         }
 
+        private readonly ConfigFile _config;
         private readonly ConfigEntry<string> _accessoryOverrides;
         private readonly ConfigEntry<string> _tailDeformOverrides;
 
@@ -78,6 +80,7 @@ namespace SkinSyncMod
 
         internal SkinSyncSettings(ConfigFile config)
         {
+            _config = config;
             TogglePanelHotkey = config.Bind("Hotkeys", "TogglePanel",
                 new KeyboardShortcut(KeyCode.F10),
                 "打开 / 关闭 SkinSync 配置面板。");
@@ -106,9 +109,6 @@ namespace SkinSyncMod
             TailDeformEnabled = config.Bind("Visual", "TailDeformEnabled", true,
                 "是否启用尾巴物理形变。关闭时尾巴显示原始 sprite 不做摆动。");
 
-            NormalizeSpriteSize = config.Bind("Visual", "NormalizeSpriteSize", true,
-                "是否启用皮肤贴图尺寸缩放。");
-
             VanillaSkinForSelf = config.Bind("Visual", "VanillaSkinForSelf", false,
                 "只自己使用游戏原版皮肤：本地玩家恢复成游戏原生外观，其他玩家不受影响。");
 
@@ -121,18 +121,28 @@ namespace SkinSyncMod
                 "是否在启动时检查 GitHub 新版本并在游戏内提示。");
             PreferredLanguage = config.Bind("I18n", "PreferredLanguage", "auto",
                 "界面语言：auto=跟随游戏；zh=强制中文；en=强制英文。");
+            UiScalePercent = config.Bind("UI", "UiScalePercent", 100,
+                new ConfigDescription(
+                    "界面缩放百分比（75-150）。检测到 CuSaveManager 时自动跟随主面板统一缩放。",
+                    new AcceptableValueRange<int>(75, 150)));
 
             SyncMode = config.Bind("Sync", "Mode", "OnEnter",
                 "多人同步策略。OnEnter=进入游戏时同步皮肤与已保存的配件/尾巴覆盖；Passive=入局只报皮肤名，改动参数时再广播。");
+            string rawSyncMode = SyncMode.Value?.Trim();
+            if (!string.Equals(rawSyncMode, "OnEnter", StringComparison.OrdinalIgnoreCase)
+                && !string.Equals(rawSyncMode, "Passive", StringComparison.OrdinalIgnoreCase))
+            {
+                ModLog.Warning($"未知的 Sync.Mode 配置值 \"{SyncMode.Value}\"，将按 OnEnter 处理（有效值：OnEnter / Passive）。");
+            }
             SyncAccessories = config.Bind("Sync", "Accessories", true,
                 "本机改动配件覆盖时广播给其他玩家。");
             SyncTailDeform = config.Bind("Sync", "TailDeform", true,
                 "本机改动尾巴形变参数时广播给其他玩家。");
 
-            EnableSkinPackSync = config.Bind("Experimental", "EnableSkinPackSync", false,
-                "实验性：缺少对方使用的皮肤时，自动从持有该皮肤的玩家请求皮肤包。");
+            EnableSkinPackSync = config.Bind("Experimental", "EnableSkinPackSync", true,
+                "缺少其他玩家使用的皮肤时，自动从持有方拉取皮肤包到临时会话缓存。");
             SkinPackPersistOnDisk = config.Bind("Experimental", "SkinPackPersistOnDisk", false,
-                "接收到的皮肤包永久写入 plugins/CustomSprites/；关闭时写入临时会话缓存并在下次启动清理。");
+                "接收到的皮肤包永久写入 plugins/CustomSprites/；关闭时仅写入 BepInEx/cache/SkinSync_SyncCache/ 临时会话缓存并在下次启动清理。");
             AllowPeersPersistMyPack = config.Bind("Experimental", "AllowPeersPersistMyPack", true,
                 "允许接收到本机皮肤包的玩家将其永久落盘到 CustomSprites。");
 
@@ -145,12 +155,55 @@ namespace SkinSyncMod
             ParseTailOverrides(_tailDeformOverrides.Value);
         }
 
+        internal void SetUiScalePercent(int percent)
+        {
+            int clamped = Mathf.Clamp(percent, 75, 150);
+            if (UiScalePercent != null)
+            {
+                UiScalePercent.Value = clamped;
+            }
+            _config?.Save();
+        }
+
         internal static bool IsBound(KeyboardShortcut sc) => sc.MainKey != KeyCode.None;
 
+        /// <summary>检测快捷键是否在本帧触发，仅核对 Shift/Ctrl/Alt 三组标准修饰键以避免移动键 WASD 吞掉热键。</summary>
         internal static bool TriggeredThisFrame(ConfigEntry<KeyboardShortcut> entry)
         {
+            if (entry == null) return false;
             var sc = entry.Value;
-            return IsBound(sc) && sc.IsDown();
+            if (sc.MainKey == KeyCode.None || !Input.GetKeyDown(sc.MainKey)) return false;
+
+            bool wantShift = false, wantCtrl = false, wantAlt = false;
+            if (sc.Modifiers != null)
+            {
+                foreach (KeyCode mod in sc.Modifiers)
+                {
+                    if (mod == KeyCode.LeftShift || mod == KeyCode.RightShift) wantShift = true;
+                    else if (mod == KeyCode.LeftControl || mod == KeyCode.RightControl) wantCtrl = true;
+                    else if (mod == KeyCode.LeftAlt || mod == KeyCode.RightAlt) wantAlt = true;
+                }
+            }
+
+            if (sc.MainKey != KeyCode.LeftShift && sc.MainKey != KeyCode.RightShift)
+            {
+                bool hasShift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+                if (wantShift != hasShift) return false;
+            }
+
+            if (sc.MainKey != KeyCode.LeftControl && sc.MainKey != KeyCode.RightControl)
+            {
+                bool hasCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+                if (wantCtrl != hasCtrl) return false;
+            }
+
+            if (sc.MainKey != KeyCode.LeftAlt && sc.MainKey != KeyCode.RightAlt)
+            {
+                bool hasAlt = Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt);
+                if (wantAlt != hasAlt) return false;
+            }
+
+            return true;
         }
 
         internal AccessoryOverride GetAccessoryOverride(string skinId, string accId)

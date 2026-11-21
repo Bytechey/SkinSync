@@ -20,12 +20,17 @@ namespace SkinSyncMod
         private static readonly FieldInfo _limbMatField =
             typeof(Limb).GetField("mat", BindingFlags.NonPublic | BindingFlags.Instance);
 
+        private static bool _reflectionChecked;
+        private static bool _warnedMissingShaderProp;
+
         private static readonly Dictionary<string, BloodConfigLoader.Config> _cfgCache
             = new Dictionary<string, BloodConfigLoader.Config>(StringComparer.Ordinal);
         private static readonly HashSet<string> _noBloodSkins
             = new HashSet<string>(StringComparer.Ordinal);
         private static readonly Dictionary<string, Texture2D> _texCache
             = new Dictionary<string, Texture2D>(StringComparer.OrdinalIgnoreCase);
+        private static readonly HashSet<GameObject> _modifiedObjects
+            = new HashSet<GameObject>();
 
         private static readonly Dictionary<int, (Color dark, Color light)> _origLimbBlood
             = new Dictionary<int, (Color dark, Color light)>();
@@ -54,7 +59,35 @@ namespace SkinSyncMod
             public Material RendererMaterial;
         }
 
-        /// <summary>对指定角色应用自定义血液配置；无配置时恢复原版血液表现。</summary>
+        private static void EnsureReflectionChecked()
+        {
+            if (_reflectionChecked) return;
+            _reflectionChecked = true;
+            if (_bleedField == null || _waterBleedField == null || _limbMatField == null)
+                ModLog.Warning("BloodAttacher: Limb 内部血液字段反射不完整，自定义血液表现可能受限。");
+        }
+
+        private static void MarkHostModified(Transform childTf)
+        {
+            if (childTf == null) return;
+            Body body = childTf.GetComponentInParent<Body>();
+            if (body == null) return;
+            _modifiedObjects.Add(body.gameObject);
+            if (body.transform.parent != null)
+                _modifiedObjects.Add(body.transform.parent.gameObject);
+        }
+
+        /// <summary>场景切换时清空原版血液基线字典与已修改角色登记表。</summary>
+        internal static void OnSceneChanged()
+        {
+            _origLimbBlood.Clear();
+            _origBloodTex.Clear();
+            _origParticles.Clear();
+            _origNoseSprite.Clear();
+            _modifiedObjects.Clear();
+        }
+
+        /// <summary>对指定角色应用自定义血液配置；无配置或未启用时恢复原版血液表现。</summary>
         public static void Apply(GameObject playerObj, string characterName)
         {
             if (playerObj == null || string.IsNullOrEmpty(characterName)) return;
@@ -64,60 +97,62 @@ namespace SkinSyncMod
                 return;
             }
 
+            EnsureReflectionChecked();
             Body body = playerObj.GetComponentInChildren<Body>(true);
             if (body == null) return;
 
             TryGetBloodConfig(characterName, out var cfg);
-            string skinDir = cfg != null ? SkinPathResolver.GetSkinDir(characterName) : null;
-            Texture2D customTex = cfg != null ? GetCachedBloodTexture(skinDir, characterName, "Blood/BloodParticle.png") : null;
-            Texture2D limbBloodTex = cfg != null ? GetCachedBloodTexture(skinDir, characterName, "Blood/limbBlood.png") : null;
-            Texture2D noseTex = cfg != null ? GetCachedBloodTexture(skinDir, characterName, "Blood/nosebleed.png") : null;
+            if (cfg == null)
+            {
+                Restore(playerObj);
+                return;
+            }
+
+            _modifiedObjects.Add(playerObj);
+            string skinDir = SkinPathResolver.GetSkinDir(characterName);
+            Texture2D customTex = GetCachedBloodTexture(skinDir, characterName, "Blood/BloodParticle.png");
+            Texture2D limbBloodTex = GetCachedBloodTexture(skinDir, characterName, "Blood/limbBlood.png");
+            Texture2D noseTex = GetCachedBloodTexture(skinDir, characterName, "Blood/nosebleed.png");
 
             foreach (var limb in body.GetComponentsInChildren<Limb>(true))
-            {
                 ApplyToLimb(limb, cfg, customTex, limbBloodTex);
-            }
 
             foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
-            {
                 ApplyNoseBleed(face, cfg, noseTex);
-            }
 
-            var watcher = playerObj.GetComponent<BloodVomitWatcher>();
-            if (cfg != null)
+            BloodVomitWatcher watcher = null;
+            foreach (var w in playerObj.GetComponents<BloodVomitWatcher>())
             {
-                if (watcher == null) watcher = playerObj.AddComponent<BloodVomitWatcher>();
-                watcher.Configure(body, characterName);
+                if (w != null && !w.IsDisposed) { watcher = w; break; }
             }
-            else if (watcher != null)
-            {
-                UnityEngine.Object.Destroy(watcher);
-            }
+            if (watcher == null) watcher = playerObj.AddComponent<BloodVomitWatcher>();
+            watcher.enabled = true;
+            watcher.Configure(body, characterName);
         }
 
-        /// <summary>将指定角色的肢体血色、流血粒子与鼻血贴图恢复为游戏原版。</summary>
+        /// <summary>将已修改过自定义血液的角色恢复为游戏原版血液表现。</summary>
         public static void Restore(GameObject playerObj)
         {
             if (playerObj == null) return;
+            _modifiedObjects.RemoveWhere(go => go == null);
+            if (!_modifiedObjects.Remove(playerObj)) return;
 
             Body body = playerObj.GetComponentInChildren<Body>(true);
             if (body != null)
             {
+                _modifiedObjects.Remove(body.gameObject);
                 foreach (var limb in body.GetComponentsInChildren<Limb>(true))
-                {
                     ApplyToLimb(limb, null, null, null);
-                }
             }
 
             foreach (var face in playerObj.GetComponentsInChildren<FacialExpression>(true))
-            {
                 ApplyNoseBleed(face, null, null);
-            }
 
-            var watcher = playerObj.GetComponent<BloodVomitWatcher>();
-            if (watcher != null)
+            foreach (var w in playerObj.GetComponents<BloodVomitWatcher>())
             {
-                UnityEngine.Object.Destroy(watcher);
+                if (w == null) continue;
+                w.MarkDisposed();
+                UnityEngine.Object.Destroy(w);
             }
         }
 
@@ -291,7 +326,9 @@ namespace SkinSyncMod
         internal static void ApplyToLimbByCharacter(Limb limb, string characterName)
         {
             if (limb == null || string.IsNullOrEmpty(characterName)) return;
+            EnsureReflectionChecked();
             if (!TryLoadCharacterBlood(characterName, out var cfg, out var tex)) return;
+            MarkHostModified(limb.transform);
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
             var limbBloodTex = GetCachedBloodTexture(skinDir, characterName, "Blood/limbBlood.png");
             ApplyToLimb(limb, cfg, tex, limbBloodTex);
@@ -303,9 +340,11 @@ namespace SkinSyncMod
             if (face == null || string.IsNullOrEmpty(characterName)) return;
             if (!TryGetBloodConfig(characterName, out var cfg))
             {
-                ApplyNoseBleed(face, null, null);
+                if (face.nosebleedSprite != null && _origNoseSprite.ContainsKey(face.nosebleedSprite.GetInstanceID()))
+                    ApplyNoseBleed(face, null, null);
                 return;
             }
+            MarkHostModified(face.transform);
             string skinDir = SkinPathResolver.GetSkinDir(characterName);
             var noseTex = GetCachedBloodTexture(skinDir, characterName, "Blood/nosebleed.png");
             ApplyNoseBleed(face, cfg, noseTex);
@@ -330,13 +369,9 @@ namespace SkinSyncMod
             if (_texCache.TryGetValue(cacheKey, out var cached))
             {
                 if (!ReferenceEquals(cached, null) && cached == null)
-                {
                     _texCache.Remove(cacheKey);
-                }
                 else
-                {
                     return cached;
-                }
             }
 
             Texture2D loaded = !string.IsNullOrEmpty(skinDir) ? LoadTexture(Path.Combine(skinDir, relPath)) : null;
@@ -349,7 +384,7 @@ namespace SkinSyncMod
                     {
                         if (kv.Key.Equals(norm, StringComparison.OrdinalIgnoreCase))
                         {
-                            loaded = LoadTextureFromBytes(kv.Value);
+                            loaded = LoadTextureFromBytes(kv.Value, cacheKey);
                             break;
                         }
                     }
@@ -363,10 +398,7 @@ namespace SkinSyncMod
         private static Texture2D LoadTexture(string path)
         {
             if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
-            try
-            {
-                return LoadTextureFromBytes(File.ReadAllBytes(path));
-            }
+            try { return LoadTextureFromBytes(File.ReadAllBytes(path), path); }
             catch (Exception ex)
             {
                 ModLog.Warning("Load blood texture failed: " + ex.Message);
@@ -374,9 +406,10 @@ namespace SkinSyncMod
             }
         }
 
-        private static Texture2D LoadTextureFromBytes(byte[] data)
+        private static Texture2D LoadTextureFromBytes(byte[] raw, string context = null)
         {
-            if (data == null || data.Length == 0) return null;
+            if (raw == null || raw.Length == 0) return null;
+            if (!SkinPackCodec.IsPngDimensionsSafe(raw, context)) return null;
             var tex = new Texture2D(2, 2, TextureFormat.RGBA32, false)
             {
                 filterMode = FilterMode.Point,
@@ -384,7 +417,7 @@ namespace SkinSyncMod
             };
             try
             {
-                if (!ImageConversion.LoadImage(tex, data))
+                if (!ImageConversion.LoadImage(tex, raw, markNonReadable: true))
                 {
                     UnityEngine.Object.Destroy(tex);
                     return null;
@@ -407,24 +440,28 @@ namespace SkinSyncMod
             // 仅修改已完成 Awake 实例化独立材质的 Limb，避免污染未唤醒实例引用的共享默认材质。
             var mat = _limbMatField?.GetValue(limb) as Material;
             if (mat == null) return;
+            if (!mat.HasProperty("_BloodDark") || !mat.HasProperty("_BloodLight"))
+            {
+                if (!_warnedMissingShaderProp)
+                {
+                    _warnedMissingShaderProp = true;
+                    ModLog.Warning("BloodAttacher: 肢体材质缺少 _BloodDark/_BloodLight 着色器属性，已跳过血色覆盖。");
+                }
+                return;
+            }
 
+            bool hasBloodTexProp = mat.HasProperty(LimbBloodProp);
             int matId = mat.GetInstanceID();
             if (!_origLimbBlood.ContainsKey(matId))
-            {
                 _origLimbBlood[matId] = (mat.GetColor("_BloodDark"), mat.GetColor("_BloodLight"));
-            }
-            if (!_origBloodTex.ContainsKey(matId))
-            {
+            if (hasBloodTexProp && !_origBloodTex.ContainsKey(matId))
                 _origBloodTex[matId] = mat.GetTexture(LimbBloodProp) as Texture2D;
-            }
 
             var orig = _origLimbBlood[matId];
             mat.SetColor("_BloodDark", orig.dark);
             mat.SetColor("_BloodLight", orig.light);
-            if (_origBloodTex.TryGetValue(matId, out var origTex) && origTex != null)
-            {
+            if (hasBloodTexProp && _origBloodTex.TryGetValue(matId, out var origTex) && origTex != null)
                 mat.SetTexture(LimbBloodProp, origTex);
-            }
 
             if (cfg == null) return;
 
@@ -443,6 +480,7 @@ namespace SkinSyncMod
                 mat.SetColor("_BloodLight", c);
             }
 
+            if (!hasBloodTexProp) return;
             if (limbBloodTex != null)
                 mat.SetTexture(LimbBloodProp, limbBloodTex);
             else
@@ -629,10 +667,7 @@ namespace SkinSyncMod
 
                 if (cfg == null) return;
             }
-            else if (cfg == null)
-            {
-                return;
-            }
+            else if (cfg == null) return;
 
             if (customTex != null)
             {
@@ -647,18 +682,10 @@ namespace SkinSyncMod
             }
             else if (cfg.ParticleStartColor.HasValue)
             {
-                if (cfg.ParticleEndColor.HasValue)
-                {
-                    main.startColor = new ParticleSystem.MinMaxGradient(
-                        (Color)cfg.ParticleStartColor.Value, (Color)cfg.ParticleEndColor.Value)
-                    {
-                        mode = ParticleSystemGradientMode.TwoColors,
-                    };
-                }
-                else
-                {
-                    main.startColor = (Color)cfg.ParticleStartColor.Value;
-                }
+                main.startColor = cfg.ParticleEndColor.HasValue
+                    ? new ParticleSystem.MinMaxGradient((Color)cfg.ParticleStartColor.Value, (Color)cfg.ParticleEndColor.Value)
+                        { mode = ParticleSystemGradientMode.TwoColors }
+                    : (ParticleSystem.MinMaxGradient)(Color)cfg.ParticleStartColor.Value;
             }
 
             if (cfg.ParticleSize.HasValue) main.startSize = cfg.ParticleSize.Value;
@@ -677,9 +704,7 @@ namespace SkinSyncMod
 
             bool glow = cfg.Glow ?? false;
             if (renderer != null && baseMat != null && (customTex != null || glow))
-            {
                 renderer.sharedMaterial = GetOrCreateParticleMaterial(baseMat, customTex, glow);
-            }
 
             if (glow && (cfg.GlowIntensity ?? 1f) > 1f && main.startColor.mode == ParticleSystemGradientMode.Color)
             {
@@ -698,9 +723,8 @@ namespace SkinSyncMod
                 tsa.enabled = true;
                 tsa.numTilesX = Mathf.Max(1, cfg.AnimFrames.Value);
                 tsa.numTilesY = 1;
-                float fps = Mathf.Max(1f, cfg.AnimFps ?? 8f);
-                float lifetime = main.startLifetime.constant;
-                if (lifetime <= 0f) lifetime = 1f;
+                float fps = Mathf.Max(0.5f, cfg.AnimFps ?? 8f);
+                float lifetime = main.startLifetime.constant > 0f ? main.startLifetime.constant : 1f;
                 tsa.cycleCount = Mathf.Max(1, Mathf.RoundToInt(fps * lifetime));
                 tsa.frameOverTime = new ParticleSystem.MinMaxCurve(1f, AnimationCurve.Linear(0f, 0f, 1f, 1f));
             }
@@ -751,20 +775,9 @@ namespace SkinSyncMod
                 case "constant":
                     return new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(1f, 1f) };
                 case "easeOut":
-                    return new[]
-                    {
-                        new GradientAlphaKey(1f, 0f),
-                        new GradientAlphaKey(0.7f, 0.6f),
-                        new GradientAlphaKey(0f, 1f),
-                    };
+                    return new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0.7f, 0.6f), new GradientAlphaKey(0f, 1f) };
                 case "blink":
-                    return new[]
-                    {
-                        new GradientAlphaKey(1f, 0f),
-                        new GradientAlphaKey(0f, 0.3f),
-                        new GradientAlphaKey(1f, 0.6f),
-                        new GradientAlphaKey(0f, 1f),
-                    };
+                    return new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 0.3f), new GradientAlphaKey(1f, 0.6f), new GradientAlphaKey(0f, 1f) };
                 default:
                     return new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(0f, 1f) };
             }

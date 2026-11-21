@@ -4,10 +4,25 @@ using UnityEngine.UI;
 
 namespace SkinSyncMod.Patches
 {
+    internal static class WoundViewPatchLog
+    {
+        private const float WarnCooldownSec = 5f;
+
+        internal static void WarnThrottled(ref float nextWarnAt, string prefix, System.Exception ex)
+        {
+            float now = Time.realtimeSinceStartup;
+            if (now < nextWarnAt) return;
+            nextWarnAt = now + WarnCooldownSec;
+            ModLog.Warning(prefix + ex.Message);
+        }
+    }
+
     /// <summary>在 WoundView.Start 重置物种头图后强制重涂自定义伤势贴图与彩色肌肉层，防止首次激活面板时覆盖官方钩子预涂装结果。</summary>
     [HarmonyPatch(typeof(WoundView), "Start")]
     public static class WoundViewStartSkinPatch
     {
+        private static float _nextWarnAt;
+
         [HarmonyPostfix]
         [HarmonyPriority(Priority.Last)]
         public static void Postfix(WoundView __instance)
@@ -19,7 +34,7 @@ namespace SkinSyncMod.Patches
             }
             catch (System.Exception ex)
             {
-                ModLog.Debug("WoundViewStartSkinPatch failed: " + ex.Message);
+                WoundViewPatchLog.WarnThrottled(ref _nextWarnAt, "WoundViewStartSkinPatch failed: ", ex);
             }
         }
     }
@@ -28,6 +43,8 @@ namespace SkinSyncMod.Patches
     [HarmonyPatch(typeof(WoundView), nameof(WoundView.UpdateView))]
     public static class WoundViewUpdateSkinPatch
     {
+        private static float _nextWarnAt;
+
         [HarmonyPostfix]
         [HarmonyPriority(Priority.Last)]
         public static void Postfix(WoundView __instance)
@@ -39,7 +56,7 @@ namespace SkinSyncMod.Patches
             }
             catch (System.Exception ex)
             {
-                ModLog.Debug("WoundViewUpdateSkinPatch failed: " + ex.Message);
+                WoundViewPatchLog.WarnThrottled(ref _nextWarnAt, "WoundViewUpdateSkinPatch failed: ", ex);
             }
         }
     }
@@ -48,6 +65,8 @@ namespace SkinSyncMod.Patches
     [HarmonyPatch(typeof(WoundView), nameof(WoundView.AddImageToLimb))]
     public static class WoundViewAddImageSkinPatch
     {
+        private static float _nextWarnAt;
+
         [HarmonyPostfix]
         public static void Postfix(WoundView __instance, Limb __0, Image __result)
         {
@@ -58,7 +77,7 @@ namespace SkinSyncMod.Patches
             }
             catch (System.Exception ex)
             {
-                ModLog.Debug("WoundViewAddImageSkinPatch failed: " + ex.Message);
+                WoundViewPatchLog.WarnThrottled(ref _nextWarnAt, "WoundViewAddImageSkinPatch failed: ", ex);
             }
         }
     }

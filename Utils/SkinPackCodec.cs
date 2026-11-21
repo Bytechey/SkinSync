@@ -10,22 +10,97 @@ namespace SkinSyncMod
     internal static class SkinPackCodec
     {
         private const int MAGIC = 0x4B505331;
-        internal const int SINGLE_PACKET_LIMIT = 48 * 1024;
-        internal const int CHUNK_PAYLOAD_SIZE = 32 * 1024;
+        private const int MAX_PACK_CACHE_ENTRIES = 8;
+        internal const int SINGLE_PACKET_LIMIT = 16 * 1024;
+        internal const int CHUNK_PAYLOAD_SIZE = 16 * 1024;
         internal const int MAX_PACK_SIZE = 2 * 1024 * 1024;
         internal const int MAX_FILE_SIZE = 512 * 1024;
         internal const int MAX_FILE_COUNT = 256;
+        internal const int MAX_TEXTURE_DIMENSION = 4096;
 
         private static readonly Dictionary<string, Dictionary<string, byte[]>> _cache
             = new Dictionary<string, Dictionary<string, byte[]>>(StringComparer.Ordinal);
         private static readonly Dictionary<string, bool> _remoteAllowPersist
             = new Dictionary<string, bool>(StringComparer.Ordinal);
+        private static readonly HashSet<string> _diskBackedSkins
+            = new HashSet<string>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, byte[]> _packCache
+            = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+        private static readonly List<string> _packCacheOrder
+            = new List<string>(MAX_PACK_CACHE_ENTRIES);
 
         internal static bool HasInMemory(string skinID)
             => !string.IsNullOrEmpty(skinID) && _cache.ContainsKey(skinID);
 
         internal static Dictionary<string, byte[]> GetInMemory(string skinID)
             => !string.IsNullOrEmpty(skinID) && _cache.TryGetValue(skinID, out var d) ? d : null;
+
+        /// <summary>校验 PNG 字节流的签名与 IHDR 宽高是否在 1..4096 安全范围内，防止超巨型贴图撑爆显存或内存。</summary>
+        internal static bool IsPngDimensionsSafe(byte[] data, string context = null)
+        {
+            if (data == null || data.Length < 24
+                || data[0] != 0x89 || data[1] != 0x50 || data[2] != 0x4E || data[3] != 0x47
+                || data[4] != 0x0D || data[5] != 0x0A || data[6] != 0x1A || data[7] != 0x0A
+                || data[12] != (byte)'I' || data[13] != (byte)'H' || data[14] != (byte)'D' || data[15] != (byte)'R')
+            {
+                if (context != null)
+                {
+                    ModLog.Warning($"SkinPackCodec: PNG 文件头或 IHDR 块损坏 ({context})，已拒绝加载。");
+                }
+                return false;
+            }
+
+            uint width = ((uint)data[16] << 24) | ((uint)data[17] << 16) | ((uint)data[18] << 8) | data[19];
+            uint height = ((uint)data[20] << 24) | ((uint)data[21] << 16) | ((uint)data[22] << 8) | data[23];
+            if (width < 1u || width > MAX_TEXTURE_DIMENSION || height < 1u || height > MAX_TEXTURE_DIMENSION)
+            {
+                if (context != null)
+                {
+                    ModLog.Warning($"SkinPackCodec: PNG 尺寸 {width}x{height} 超出安全范围 1..{MAX_TEXTURE_DIMENSION} ({context})，已拒绝加载。");
+                }
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>切场景时释放已成功落盘至缓存目录或本地皮肤目录的内存字节字典，保留远端持久化授权表。</summary>
+        internal static void TrimSessionMemoryCache()
+        {
+            if (_cache.Count == 0) return;
+
+            var removable = new List<string>();
+            foreach (var kv in _cache)
+            {
+                string id = kv.Key;
+                if (SkinPathResolver.HasLocalCustomSkin(id)
+                    || (_diskBackedSkins.Contains(id) && Directory.Exists(Path.Combine(SkinPathResolver.SyncCacheRoot, id))))
+                {
+                    removable.Add(id);
+                }
+            }
+
+            for (int i = 0; i < removable.Count; i++)
+            {
+                _cache.Remove(removable[i]);
+            }
+        }
+
+        /// <summary>清除单个或全部皮肤的已打包字节流缓存。</summary>
+        internal static void InvalidatePackCache(string skinID = null)
+        {
+            if (string.IsNullOrEmpty(skinID))
+            {
+                _packCache.Clear();
+                _packCacheOrder.Clear();
+                return;
+            }
+
+            if (_packCache.Remove(skinID))
+            {
+                _packCacheOrder.Remove(skinID);
+            }
+        }
 
         /// <summary>从首片缓冲区头部预读并校验皮肤名称，供分片组装器在超时或淘汰时释放对应请求去重锁。</summary>
         internal static bool TryPeekSkinId(byte[] buffer, int validBytes, out string skinID)
@@ -52,18 +127,28 @@ namespace SkinSyncMod
             }
         }
 
-        /// <summary>按来源归属打包指定皮肤并计算有效的持久化授权，防止中继节点篡改原作者隐私设置。</summary>
+        /// <summary>按来源归属打包指定皮肤并计算有效的持久化授权，命中 LRU 打包缓存时直接复用，防止中继篡改原作者隐私设置。</summary>
         internal static bool TryPackForShare(string skinID, bool localAllowPersist, out byte[] payload, out bool effectiveAllowPersist)
         {
             payload = null;
             effectiveAllowPersist = false;
             if (!SkinPathResolver.IsSafeSkinName(skinID)) return false;
 
-            if (SkinPathResolver.HasLocalCustomSkin(skinID))
+            bool isLocalOwned = SkinPathResolver.HasLocalCustomSkin(skinID);
+            if (TryGetCachedPack(skinID, out payload))
+            {
+                effectiveAllowPersist = isLocalOwned
+                    ? localAllowPersist
+                    : (_remoteAllowPersist.TryGetValue(skinID, out bool cachedAllow) && cachedAllow);
+                return true;
+            }
+
+            if (isLocalOwned)
             {
                 string localDir = SkinPathResolver.GetSkinDir(skinID);
                 payload = TryPackDirectory(skinID, localDir);
                 if (payload == null) return false;
+                StoreCachedPack(skinID, payload);
                 effectiveAllowPersist = localAllowPersist;
                 return true;
             }
@@ -82,8 +167,53 @@ namespace SkinSyncMod
             }
             if (payload == null) return false;
 
+            StoreCachedPack(skinID, payload);
             effectiveAllowPersist = _remoteAllowPersist.TryGetValue(skinID, out bool origAllow) && origAllow;
             return true;
+        }
+
+        private static bool TryGetCachedPack(string skinID, out byte[] payload)
+        {
+            if (_packCache.TryGetValue(skinID, out payload) && payload != null)
+            {
+                int idx = _packCacheOrder.IndexOf(skinID);
+                if (idx >= 0 && idx < _packCacheOrder.Count - 1)
+                {
+                    _packCacheOrder.RemoveAt(idx);
+                    _packCacheOrder.Add(skinID);
+                }
+                return true;
+            }
+
+            payload = null;
+            return false;
+        }
+
+        private static void StoreCachedPack(string skinID, byte[] payload)
+        {
+            if (string.IsNullOrEmpty(skinID) || payload == null) return;
+
+            if (_packCache.ContainsKey(skinID))
+            {
+                _packCache[skinID] = payload;
+                int idx = _packCacheOrder.IndexOf(skinID);
+                if (idx >= 0 && idx < _packCacheOrder.Count - 1)
+                {
+                    _packCacheOrder.RemoveAt(idx);
+                    _packCacheOrder.Add(skinID);
+                }
+                return;
+            }
+
+            if (_packCacheOrder.Count >= MAX_PACK_CACHE_ENTRIES)
+            {
+                string evicted = _packCacheOrder[0];
+                _packCacheOrder.RemoveAt(0);
+                _packCache.Remove(evicted);
+            }
+
+            _packCache[skinID] = payload;
+            _packCacheOrder.Add(skinID);
         }
 
         /// <summary>读取指定皮肤的贴图与配置文件并编码为字节数组，超限或缺失时返回 null。</summary>
@@ -155,10 +285,26 @@ namespace SkinSyncMod
                 string rel = MakeRelative(baseDir, fp);
                 if (!IsSafeRelPath(rel)) continue;
                 byte[] bytes;
-                try { bytes = File.ReadAllBytes(fp); }
-                catch { continue; }
-                if (bytes.Length == 0 || bytes.Length > MAX_FILE_SIZE) continue;
-                if (files.Count >= MAX_FILE_COUNT) return false;
+                try
+                {
+                    bytes = File.ReadAllBytes(fp);
+                }
+                catch (Exception ex)
+                {
+                    SkinSyncMod.ModLog.Warning($"SkinPackCodec: 读取皮肤文件失败 ({rel}): {ex.Message}");
+                    continue;
+                }
+                if (bytes.Length == 0) continue;
+                if (bytes.Length > MAX_FILE_SIZE)
+                {
+                    SkinSyncMod.ModLog.Warning($"SkinPackCodec: 跳过超大皮肤文件 ({rel}, {bytes.Length} bytes > {MAX_FILE_SIZE} bytes)。");
+                    continue;
+                }
+                if (files.Count >= MAX_FILE_COUNT)
+                {
+                    SkinSyncMod.ModLog.Warning($"SkinPackCodec: 皮肤文件数量超过上限 {MAX_FILE_COUNT}，打包已中止。");
+                    return false;
+                }
                 files.Add(new KeyValuePair<string, byte[]>(rel, bytes));
             }
             return true;
@@ -168,16 +314,28 @@ namespace SkinSyncMod
         {
             string path = Path.Combine(baseDir, fileName);
             if (!File.Exists(path)) return true;
+            byte[] data;
             try
             {
-                byte[] data = File.ReadAllBytes(path);
-                if (data.Length > 0 && data.Length <= MAX_FILE_SIZE)
-                {
-                    if (files.Count >= MAX_FILE_COUNT) return false;
-                    files.Add(new KeyValuePair<string, byte[]>(fileName, data));
-                }
+                data = File.ReadAllBytes(path);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                SkinSyncMod.ModLog.Warning($"SkinPackCodec: 读取配置文件失败 ({fileName}): {ex.Message}");
+                return true;
+            }
+            if (data.Length == 0) return true;
+            if (data.Length > MAX_FILE_SIZE)
+            {
+                SkinSyncMod.ModLog.Warning($"SkinPackCodec: 跳过超大配置文件 ({fileName}, {data.Length} bytes > {MAX_FILE_SIZE} bytes)。");
+                return true;
+            }
+            if (files.Count >= MAX_FILE_COUNT)
+            {
+                SkinSyncMod.ModLog.Warning($"SkinPackCodec: 皮肤文件数量超过上限 {MAX_FILE_COUNT}，打包已中止。");
+                return false;
+            }
+            files.Add(new KeyValuePair<string, byte[]>(fileName, data));
             return true;
         }
 
@@ -198,7 +356,11 @@ namespace SkinSyncMod
             _remoteAllowPersist[skinID] = remoteAllowPersist;
             _cache[skinID] = dict;
             bool persisted = PersistToDisk(skinID, dict, persistent: persistToDisk);
+            if (persisted) _diskBackedSkins.Add(skinID);
+            else _diskBackedSkins.Remove(skinID);
+
             SkinPathResolver.Invalidate(skinID);
+            StoreCachedPack(skinID, payload);
             if (persistToDisk && persisted)
             {
                 SkinSync.NotifyDiskSkinsChanged(skinID);
@@ -253,12 +415,10 @@ namespace SkinSyncMod
                         if (dl <= 0 || dl > MAX_FILE_SIZE) return false;
                         byte[] data = br.ReadBytes(dl);
                         if (data.Length != dl) return false;
-                        if (path.EndsWith(".png", StringComparison.OrdinalIgnoreCase))
+                        if (path.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+                            && !IsPngDimensionsSafe(data, $"{skinID}/{path}"))
                         {
-                            if (data.Length < 8
-                                || data[0] != 0x89 || data[1] != 0x50 || data[2] != 0x4E || data[3] != 0x47
-                                || data[4] != 0x0D || data[5] != 0x0A || data[6] != 0x1A || data[7] != 0x0A)
-                                return false;
+                            return false;
                         }
                         parsed[path] = data;
                     }
@@ -280,6 +440,10 @@ namespace SkinSyncMod
                 string baseDir = persistent
                     ? Path.Combine(Paths.PluginPath, "CustomSprites", skinID)
                     : Path.Combine(SkinPathResolver.SyncCacheRoot, skinID);
+                if (!persistent && Directory.Exists(baseDir))
+                {
+                    Directory.Delete(baseDir, true);
+                }
                 Directory.CreateDirectory(baseDir);
                 foreach (var kv in dict)
                 {

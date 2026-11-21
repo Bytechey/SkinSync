@@ -1,5 +1,7 @@
 .history
 obj
 bin
+build/
+*.log
 .vs/
 .vs/**

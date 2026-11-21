@@ -77,23 +77,38 @@ namespace SkinSyncMod.Interop.Consumers
 
         internal static void SendToServer(IInteropWriter writer)
         {
+            if (writer == null || !SupportsUShortPrimitive())
+            {
+                return;
+            }
+
             InteropBootstrap.Initialize().Channel.SendToServer(writer, true);
         }
 
         internal static void Broadcast(IInteropWriter writer)
         {
+            if (writer == null || !SupportsUShortPrimitive())
+            {
+                return;
+            }
+
             InteropBootstrap.Initialize().Channel.Broadcast(writer, true);
         }
 
         internal static void SendToClient(ushort clientId, IInteropWriter writer)
         {
+            if (writer == null || !SupportsUShortPrimitive())
+            {
+                return;
+            }
+
             InteropBootstrap.Initialize().Channel.SendToClient(clientId, writer, true);
         }
 
         /// <summary>服务端向除发送来源与房主本地回环外的所有客户端转发消息。</summary>
         internal static int ForwardExcept(ushort excludeClientId, IInteropWriter writer, ushort subId)
         {
-            if (writer == null)
+            if (writer == null || !SupportsUShortPrimitive())
             {
                 return 0;
             }

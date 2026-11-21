@@ -54,16 +54,16 @@ namespace SkinSyncMod
                     ParticleStartColor = ParseColor(raw.particleStartColor),
                     ParticleEndColor = ParseColor(raw.particleEndColor),
                     RandomColors = ParseColorList(raw.randomColors),
-                    ParticleSize = raw.particleSize,
-                    ParticleLifetime = raw.particleLifetime,
+                    ParticleSize = ClampFinite(raw.particleSize, 0.01f, 10f),
+                    ParticleLifetime = ClampFinite(raw.particleLifetime, 0.05f, 30f),
                     FadeCurve = raw.fadeCurve,
                     BloodDark = ParseColor(raw.bloodDark),
                     BloodLight = ParseColor(raw.bloodLight),
                     Glow = raw.glow,
-                    GlowIntensity = raw.glowIntensity,
+                    GlowIntensity = ClampFinite(raw.glowIntensity, 0f, 5f),
                     Animated = raw.animated,
-                    AnimFrames = raw.animFrames,
-                    AnimFps = raw.animFps,
+                    AnimFrames = ClampInt(raw.animFrames, 1, 64),
+                    AnimFps = ClampFinite(raw.animFps, 0.5f, 120f),
                 };
             }
             catch (System.Exception ex)
@@ -71,6 +71,19 @@ namespace SkinSyncMod
                 SkinSyncMod.ModLog.Warning("blood.json parse failed: " + ex.Message);
                 return null;
             }
+        }
+
+        private static float? ClampFinite(float? val, float min, float max)
+        {
+            if (!val.HasValue) return null;
+            float v = val.Value;
+            if (float.IsNaN(v) || float.IsInfinity(v)) return null;
+            return Mathf.Clamp(v, min, max);
+        }
+
+        private static int? ClampInt(int? val, int min, int max)
+        {
+            return val.HasValue ? Mathf.Clamp(val.Value, min, max) : (int?)null;
         }
 
         private static Color32? ParseColor(int[] arr)

@@ -14,6 +14,9 @@ namespace SkinSyncMod
         /// <summary>当未完成分片因超时、配额淘汰、头元数据冲突或 CRC32 不一致被丢弃且已识别出 skinId 时触发。</summary>
         internal static Action<string> OnTransferDropped = SkinApplier.ClearRequestedPack;
 
+        /// <summary>服务端收到新分片传输第 0 片时校验该发送端是否获准上传对应皮肤包，未通过则拒绝分配缓冲区。</summary>
+        internal static Func<uint, string, bool> CanAcceptInboundSkin;
+
         private sealed class InboundState
         {
             public uint SenderKey;
@@ -36,6 +39,16 @@ namespace SkinSyncMod
         {
             _pending.Clear();
             _scratchKeys.Clear();
+        }
+
+        /// <summary>判断分片是否为已鉴权挂起会话中尚未接收的合法后续分片，供服务端令牌桶放行正常大包分片流。</summary>
+        internal static bool IsExpectedFollowUpChunk(uint senderKey, SkinPackChunkMessage msg)
+        {
+            if (msg.transferId == 0 || msg.chunkIndex == 0) return false;
+            ulong key = ((ulong)senderKey << 32) | msg.transferId;
+            return _pending.TryGetValue(key, out InboundState state)
+                && msg.chunkIndex < state.TotalChunks
+                && !state.ReceivedMask[msg.chunkIndex];
         }
 
         /// <summary>喂入一片分片消息；全部收齐且 CRC32 校验通过时返回 true 并输出完整字节流。</summary>
@@ -81,13 +94,19 @@ namespace SkinSyncMod
 
             if (!_pending.TryGetValue(key, out InboundState state))
             {
-                // 可靠有序通道上第 0 片必先送达，未通过首片包头与安全名称预检前绝不分配整包缓冲区。
+                // 可靠有序通道上第 0 片必先送达，未通过首片包头、安全名称与上传授权预检前绝不分配整包缓冲区。
                 if (msg.chunkIndex != 0
                     || !SkinPackCodec.TryPeekSkinId(msg.data, msg.data.Length, out string peekedSkinId))
                 {
                     return false;
                 }
                 if (senderKey == ushort.MaxValue && SkinPathResolver.HasLocalCustomSkin(peekedSkinId))
+                {
+                    return false;
+                }
+                if (senderKey != ushort.MaxValue
+                    && CanAcceptInboundSkin != null
+                    && !CanAcceptInboundSkin(senderKey, peekedSkinId))
                 {
                     return false;
                 }
@@ -117,14 +136,16 @@ namespace SkinSyncMod
                 return false;
             }
 
+            if (state.ReceivedMask[msg.chunkIndex])
+            {
+                return false;
+            }
+
             Buffer.BlockCopy(msg.data, 0, state.Buffer, destOffset, msg.data.Length);
 
             state.UpdatedAt = now;
-            if (!state.ReceivedMask[msg.chunkIndex])
-            {
-                state.ReceivedMask[msg.chunkIndex] = true;
-                state.ReceivedChunks++;
-            }
+            state.ReceivedMask[msg.chunkIndex] = true;
+            state.ReceivedChunks++;
 
             if (state.ReceivedChunks < state.TotalChunks)
             {

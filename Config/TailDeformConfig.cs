@@ -125,15 +125,30 @@ namespace SkinSyncMod
                 return LocalSnapshot();
             }
 
-            string skinId = SkinApplier.GetAssignedSkin(owner);
-            if (!string.IsNullOrEmpty(skinId)
-                && _remoteOverrides.TryGetValue(owner, out var map)
-                && map.TryGetValue(skinId, out var remoteCfg))
-            {
-                return remoteCfg;
-            }
+            GameObject bodyGo = body != null ? body.gameObject : null;
+            GameObject parentGo = body != null && body.transform.parent != null ? body.transform.parent.gameObject : null;
+            // 联机与单机路径可能分别以根对象或子级 Body 作为登记键，按候选顺序回退避免键值错位。
+            string fallbackSkinId = SkinApplier.GetAssignedSkin(owner)
+                ?? SkinApplier.GetAssignedSkin(bodyGo)
+                ?? SkinApplier.GetAssignedSkin(parentGo);
+
+            if (TryLookupRemoteOverride(owner, fallbackSkinId, out var remoteCfg)) return remoteCfg;
+            if (bodyGo != null && bodyGo != owner && TryLookupRemoteOverride(bodyGo, fallbackSkinId, out remoteCfg)) return remoteCfg;
+            if (parentGo != null && parentGo != owner && parentGo != bodyGo && TryLookupRemoteOverride(parentGo, fallbackSkinId, out remoteCfg)) return remoteCfg;
 
             return Defaults;
+        }
+
+        private static bool TryLookupRemoteOverride(GameObject candidate, string fallbackSkinId, out TailDeformParams cfg)
+        {
+            cfg = default;
+            if (candidate == null) return false;
+            string skinId = SkinApplier.GetAssignedSkin(candidate);
+            if (string.IsNullOrEmpty(skinId)) skinId = fallbackSkinId;
+            if (string.IsNullOrEmpty(skinId)) return false;
+            return _remoteOverrides.TryGetValue(candidate, out var map)
+                && map != null
+                && map.TryGetValue(skinId, out cfg);
         }
 
         internal static void SetRemoteOverride(GameObject playerObj, string skinId, TailDeformParams cfg)

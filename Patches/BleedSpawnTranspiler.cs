@@ -16,15 +16,22 @@ namespace SkinSyncMod.Patches
         [HarmonyTranspiler]
         public static IEnumerable<CodeInstruction> Transpile(IEnumerable<CodeInstruction> instructions)
         {
+            int matched = 0;
             foreach (var ins in instructions)
             {
                 yield return ins;
                 if (IsInstantiateCall(ins))
                 {
+                    matched++;
                     yield return new CodeInstruction(OpCodes.Dup);
                     yield return new CodeInstruction(OpCodes.Ldarg_0);
                     yield return new CodeInstruction(OpCodes.Call, _colorHook);
                 }
+            }
+
+            if (matched != 2)
+            {
+                ModLog.Warning($"BleedSpawnTranspiler: 预期匹配 2 处 Instantiate，实际匹配 {matched} 处。");
             }
         }
 
@@ -67,7 +74,8 @@ namespace SkinSyncMod.Patches
             }
         }
 
-        private static string ResolveCharacter(Transform t)
+        /// <summary>沿节点父链向上查找所属角色当前生效的自定义皮肤名。</summary>
+        internal static string ResolveCharacter(Transform t)
         {
             while (t != null)
             {

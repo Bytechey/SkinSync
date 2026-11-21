@@ -13,6 +13,7 @@ namespace SkinSyncMod
         private float _nextTick;
 
         private readonly HashSet<SpriteRenderer> _hidden = new HashSet<SpriteRenderer>();
+        private readonly List<SpriteRenderer> _toRemove = new List<SpriteRenderer>();
 
         private void Update()
         {
@@ -25,6 +26,8 @@ namespace SkinSyncMod
 
         private void ApplyHide()
         {
+            PruneDetachedRenderers();
+
             var bodies = FindObjectsOfType<Body>();
             foreach (var body in bodies)
             {
@@ -53,12 +56,47 @@ namespace SkinSyncMod
             }
         }
 
+        private void PruneDetachedRenderers()
+        {
+            if (_hidden.Count == 0) return;
+            _toRemove.Clear();
+            foreach (var sr in _hidden)
+            {
+                if (sr == null)
+                {
+                    _toRemove.Add(sr);
+                    continue;
+                }
+                Transform parent = sr.transform.parent;
+                if (parent == null)
+                {
+                    sr.enabled = true;
+                    _toRemove.Add(sr);
+                }
+                else if (parent.GetComponent<Limb>() == null)
+                {
+                    // 移入背包等 Container 节点的物品由容器自身控制隐藏，仅解除本组件跟踪而不篡改 sr.enabled。
+                    _toRemove.Add(sr);
+                }
+            }
+            for (int i = 0; i < _toRemove.Count; i++)
+            {
+                _hidden.Remove(_toRemove[i]);
+            }
+            _toRemove.Clear();
+        }
+
         private void RestoreAll()
         {
             if (_hidden.Count == 0) return;
             foreach (var sr in _hidden)
             {
-                if (sr != null) sr.enabled = true;
+                if (sr == null) continue;
+                Transform parent = sr.transform.parent;
+                if (parent == null || parent.GetComponent<Limb>() != null)
+                {
+                    sr.enabled = true;
+                }
             }
             _hidden.Clear();
         }

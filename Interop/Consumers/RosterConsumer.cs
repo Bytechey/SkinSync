@@ -14,7 +14,7 @@ namespace SkinSyncMod.Interop.Consumers
     {
         private static readonly object Sync = new object();
 
-        private static bool _resolved;
+        private static volatile bool _resolved;
         private static Type _netBodyType;
         private static Type _knetidType;
         private static MethodInfo _tryGetLocalNetBody;
@@ -41,7 +41,7 @@ namespace SkinSyncMod.Interop.Consumers
             _localNetId = 0;
         }
 
-        /// <summary>获取本地玩家的 NetBody 实例、实体 netId 与角色 GameObject；相机尚未重绑时按本地 ClientId 回退反查。</summary>
+        /// <summary>获取本地玩家的 NetBody 实例、实体 netId 与角色对象，联机运行中按本地 ClientId 强校验归属以防观战错绑队友。</summary>
         internal static bool TryGetLocalNetBody(out object box, out uint netId, out GameObject chara)
         {
             box = null;
@@ -61,6 +61,34 @@ namespace SkinSyncMod.Interop.Consumers
                 GameObject candidateChara = ReadChara(candidateBox);
                 if (candidateNetId != 0 && candidateChara != null)
                 {
+                    if (SessionConsumer.IsRunning && TryGetLocalClientId(out uint authLocalCid))
+                    {
+                        if (TryGetNetBodyOfClient(authLocalCid, out uint authNetId) && authNetId != 0)
+                        {
+                            if (candidateNetId != authNetId)
+                            {
+                                if (TryGetNetBody(authNetId, out object authBox) && authBox != null)
+                                {
+                                    GameObject authChara = ReadChara(authBox);
+                                    if (authChara != null)
+                                    {
+                                        box = authBox;
+                                        netId = authNetId;
+                                        chara = authChara;
+                                        return true;
+                                    }
+                                }
+
+                                return false;
+                            }
+                        }
+                        else if (InteropBootstrap.Initialize().Roster.TryGetPlayerByActor(candidateBox, out InteropPlayerRef owner)
+                            && owner.IsValid && !owner.IsLocal)
+                        {
+                            return false;
+                        }
+                    }
+
                     box = candidateBox;
                     netId = candidateNetId;
                     chara = candidateChara;
@@ -75,10 +103,14 @@ namespace SkinSyncMod.Interop.Consumers
                 && TryGetNetBody(fallbackNetId, out object fallbackBox)
                 && fallbackBox != null)
             {
-                box = fallbackBox;
-                netId = fallbackNetId;
-                chara = ReadChara(fallbackBox);
-                return true;
+                GameObject fallbackChara = ReadChara(fallbackBox);
+                if (fallbackChara != null)
+                {
+                    box = fallbackBox;
+                    netId = fallbackNetId;
+                    chara = fallbackChara;
+                    return true;
+                }
             }
 
             box = null;
@@ -144,7 +176,7 @@ namespace SkinSyncMod.Interop.Consumers
             netId = 0;
             chara = null;
             isLocal = false;
-            if (body == null)
+            if (body == null || !SessionConsumer.IsAvailable)
             {
                 return false;
             }
@@ -173,6 +205,11 @@ namespace SkinSyncMod.Interop.Consumers
         internal static bool TryGetLocalClientId(out uint clientId)
         {
             clientId = 0;
+            if (!SessionConsumer.IsAvailable)
+            {
+                return false;
+            }
+
             InteropPlayerRef local = InteropBootstrap.Initialize().Roster.LocalPlayer;
             if (!local.IsValid)
             {
@@ -186,6 +223,11 @@ namespace SkinSyncMod.Interop.Consumers
         /// <summary>获取本地玩家的 SteamID，非 Steam 会话或未就绪返回 0。</summary>
         internal static ulong TryGetLocalSteamId()
         {
+            if (!SessionConsumer.IsAvailable)
+            {
+                return 0UL;
+            }
+
             InteropPlayerRef local = InteropBootstrap.Initialize().Roster.LocalPlayer;
             return local.IsValid ? local.SteamId : 0UL;
         }
@@ -194,6 +236,11 @@ namespace SkinSyncMod.Interop.Consumers
         internal static bool TryGetPlayerSteamId(uint clientId, out ulong steamId)
         {
             steamId = 0UL;
+            if (!SessionConsumer.IsAvailable)
+            {
+                return false;
+            }
+
             if (!InteropBootstrap.Initialize().Roster.TryGetPlayer((ushort)clientId, out InteropPlayerRef player))
             {
                 return false;
@@ -240,7 +287,7 @@ namespace SkinSyncMod.Interop.Consumers
         /// <summary>订阅远端玩家离开会话事件。</summary>
         internal static bool SubscribePlayerLeft(Action<uint> onLeft)
         {
-            if (onLeft == null)
+            if (onLeft == null || !SessionConsumer.IsAvailable)
             {
                 return false;
             }
@@ -335,6 +382,11 @@ namespace SkinSyncMod.Interop.Consumers
                 return _netBodyType != null;
             }
 
+            if (!SessionConsumer.IsAvailable)
+            {
+                return false;
+            }
+
             lock (Sync)
             {
                 if (_resolved)
@@ -342,13 +394,18 @@ namespace SkinSyncMod.Interop.Consumers
                     return _netBodyType != null;
                 }
 
-                _resolved = true;
+                if (!SessionConsumer.IsAvailable)
+                {
+                    return false;
+                }
+
                 IInteropTypeRegistry types = InteropBootstrap.Initialize().Types;
                 if (!types.TryResolveType("Together.NetBody", out Type netBodyType)
                     || !types.TryResolveType("Together.knetid", out Type knetidType)
                     || !types.TryResolveType("Together.ScavPlayer", out Type scavPlayerType))
                 {
                     InteropDiagnostics.WarnOnce("RosterConsumer.Types", "Together.NetBody / Together.knetid / Together.ScavPlayer 解析失败，netId 相关功能禁用。");
+                    _resolved = true;
                     return false;
                 }
 
@@ -363,11 +420,13 @@ namespace SkinSyncMod.Interop.Consumers
                     || _netBodyNetId == null || _netBodyBody == null || _knetidId == null || _knetidCtor == null)
                 {
                     InteropDiagnostics.WarnOnce("RosterConsumer.Members", "Together.NetBody / Together.knetid / Together.ScavPlayer 成员缺失，netId 相关功能禁用。");
+                    _resolved = true;
                     return false;
                 }
 
                 _netBodyType = netBodyType;
                 _knetidType = knetidType;
+                _resolved = true;
                 return true;
             }
         }

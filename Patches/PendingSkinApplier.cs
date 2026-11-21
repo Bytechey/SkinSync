@@ -46,6 +46,7 @@ namespace SkinSyncMod.Patches
 
         private static void OnSceneLoaded(Scene scene, LoadSceneMode mode)
         {
+            if (mode == LoadSceneMode.Additive) return;
             _pending.Clear();
         }
 

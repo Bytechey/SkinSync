@@ -4,11 +4,12 @@ using UnityEngine;
 
 namespace SkinSyncMod.Character
 {
-    /// <summary>单个角色部位的贴图与原生像素尺寸记录。</summary>
+    /// <summary>单个角色部位的原生贴图引用、名称与像素尺寸记录。</summary>
     internal sealed class PartBinding
     {
         internal string PartKey;
         internal string SpriteName;
+        internal Sprite StockSprite;
         internal Vector2Int PixelSize;
         internal int SortingOrder;
     }

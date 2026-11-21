@@ -7,13 +7,16 @@ namespace SkinSyncMod.Patches
     [HarmonyPatch(typeof(Limb), "Awake")]
     public static class LimbAwakeBleedColorPatch
     {
+        private const float WarnCooldownSeconds = 5f;
+        private static float _nextWarnTime;
+
         [HarmonyPostfix]
         public static void Postfix(Limb __instance)
         {
             if (!BloodRenderConfig.Enabled || __instance == null) return;
             try
             {
-                string character = ResolveCharacter(__instance.transform);
+                string character = BleedSpawnTranspiler.ResolveCharacter(__instance.transform);
                 if (character != null)
                 {
                     BloodAttacher.ApplyToLimbByCharacter(__instance, character);
@@ -21,26 +24,23 @@ namespace SkinSyncMod.Patches
             }
             catch (System.Exception ex)
             {
-                ModLog.Debug("LimbAwakeBleedColorPatch failed: " + ex.Message);
+                float now = Time.unscaledTime;
+                if (now >= _nextWarnTime)
+                {
+                    _nextWarnTime = now + WarnCooldownSeconds;
+                    ModLog.Warning("LimbAwakeBleedColorPatch failed: " + ex.Message);
+                }
             }
-        }
-
-        private static string ResolveCharacter(Transform t)
-        {
-            while (t != null)
-            {
-                var name = SkinApplier.GetCharacterByChara(t.gameObject);
-                if (!string.IsNullOrEmpty(name)) return name;
-                t = t.parent;
-            }
-            return null;
         }
     }
 
-    /// <summary>在 FacialExpression.Start 末尾重刷已套皮肤角色的表情贴图，或为同 netId 重建的新躯体恢复皮肤。</summary>
+    /// <summary>在 FacialExpression.Start 末尾重刷已套皮肤角色的表情贴图，或为联机新就绪躯体触发皮肤恢复与净身。</summary>
     [HarmonyPatch(typeof(FacialExpression), "Start")]
     public static class FacialExpressionStartSkinPatch
     {
+        private const float WarnCooldownSeconds = 5f;
+        private static float _nextWarnTime;
+
         [HarmonyPostfix]
         [HarmonyPriority(Priority.Last)]
         public static void Postfix(FacialExpression __instance)
@@ -51,12 +51,17 @@ namespace SkinSyncMod.Patches
                 if (SkinApplier.ReapplyFaceIfNeeded(__instance)) return;
                 if (__instance.body != null && Interop.Consumers.SessionConsumer.IsRunning)
                 {
-                    SkinSync.OnExternalBodyReadyOrRebuilt(__instance.body, 0u, __instance.body.charType, isRebuild: true);
+                    SkinSync.OnExternalBodyReadyOrRebuilt(__instance.body, 0u, __instance.body.charType, isRebuild: false);
                 }
             }
             catch (System.Exception ex)
             {
-                ModLog.Debug("FacialExpressionStartSkinPatch failed: " + ex.Message);
+                float now = Time.unscaledTime;
+                if (now >= _nextWarnTime)
+                {
+                    _nextWarnTime = now + WarnCooldownSeconds;
+                    ModLog.Warning("FacialExpressionStartSkinPatch failed: " + ex.Message);
+                }
             }
         }
     }
