@@ -160,6 +160,16 @@ namespace SkinSyncMod.Network
             ChannelConsumer.SendToServer(writer);
         }
 
+        /// <summary>客户端完成关卡场景加载后通知服务端单播补发当前局内皮肤状态表。</summary>
+        public static void SendClientWorldReady()
+        {
+            if (!SessionConsumer.IsRunning || SessionConsumer.IsServer) return;
+            var writer = ChannelConsumer.CreateWriter(SkinNetworkIDs.ClientWorldReadyMessageId);
+            writer.PutUInt(1u);
+            DebugMessageTrace.Sent(writer, SkinNetworkIDs.ClientWorldReadyMessageId, "服务端");
+            ChannelConsumer.SendToServer(writer);
+        }
+
         public static void ServerSendSkinPackRequestToClient(uint targetClientId, string skinID)
         {
             if (!SessionConsumer.IsRunning) return;

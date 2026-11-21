@@ -114,6 +114,13 @@ namespace SkinSyncMod
             PruneDeadBodies();
         }
 
+        internal static void ClearSceneObjectOverrides()
+        {
+            // 局内切图仅释放旧场景 GameObject 引用，保留按 netId 暂存的待绑定覆盖供新躯体恢复。
+            _remoteOverrides.Clear();
+            PruneDeadBodies();
+        }
+
         /// <summary>清理目标角色的旧配件并按配置与覆盖参数重新挂载。</summary>
         public static void Apply(GameObject playerObj, IList<AccessoryConfigLoader.Entry> entries, Dictionary<string, Sprite> sprites, string skinId = null)
         {

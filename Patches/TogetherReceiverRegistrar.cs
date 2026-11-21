@@ -72,6 +72,9 @@ namespace SkinSyncMod.Patches
                     case SkinNetworkIDs.SkinPackChunkMessageId:
                         SkinMessageHandlers.OnServerSkinPackChunk(callerId, reader);
                         break;
+                    case SkinNetworkIDs.ClientWorldReadyMessageId:
+                        SkinMessageHandlers.OnServerClientWorldReady(callerId, reader);
+                        break;
                     default:
                         float now = Time.realtimeSinceStartup;
                         if (now >= _nextServerUnknownWarnAt)

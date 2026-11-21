@@ -167,37 +167,6 @@ namespace SkinSyncMod
             }
         }
 
-        /// <summary>场景切换时清理已销毁角色的缓存引用、原版基线字典、远端临时覆盖与皮肤包请求冷却记录。</summary>
-        internal static void OnSceneChanged()
-        {
-            PruneDeadObjects();
-            ClearBaselineDictionaries();
-            _pendingPackTargets.Clear();
-            _requestedPacks.Clear();
-            _loggedMissingSkins.Clear();
-            AccessoryAttacher.ClearRemoteOverrides();
-            TailDeformConfig.ClearRemoteOverrides();
-            BloodAttacher.OnSceneChanged();
-            WoundViewAttacher.OnSceneChanged();
-            SkinStateVersion++;
-        }
-
-        private static void PruneDeadObjects()
-        {
-            var dead = new List<GameObject>();
-            foreach (var kv in _byChara)
-            {
-                if (kv.Key == null) dead.Add(kv.Key);
-            }
-            foreach (var go in dead)
-            {
-                _byChara.Remove(go);
-                _charTypeByChara.Remove(go);
-            }
-            _vanillaApplied.RemoveWhere(go => go == null);
-            _pendingPackTargets.RemoveWhere(go => go == null);
-        }
-
         /// <summary>将指定皮肤完整应用到目标角色对象。</summary>
         public static void ApplySkinToPlayer(GameObject playerObj, string characterName, int remoteCharType = -1)
         {
@@ -724,6 +693,7 @@ namespace SkinSyncMod
             _skinsWithSidedSprites.Remove(skinID);
             _loggedMissingSkins.Remove(skinID);
             _requestedPacks.Remove(skinID);
+            ClearPackRetryState(skinID);
             SkinPathResolver.Invalidate(skinID);
             BaseSizesLoader.Invalidate(skinID);
             ZonesConfigLoader.Invalidate(skinID);
@@ -764,6 +734,7 @@ namespace SkinSyncMod
             _skinsWithSidedSprites.Clear();
             _loggedMissingSkins.Clear();
             _requestedPacks.Clear();
+            ClearPackRetryState();
             ZonesConfigLoader.Invalidate(null);
             SkinSync.InvalidateAccessoryRowsCache(null);
             BloodAttacher.ClearCaches();

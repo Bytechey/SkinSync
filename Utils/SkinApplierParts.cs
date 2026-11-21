@@ -7,10 +7,17 @@ namespace SkinSyncMod
 {
     public static partial class SkinApplier
     {
+        private const int MaxPackRequestAttempts = 3;
+        private const float PackRetryMinIntervalSec = 2f;
+
         private static readonly Dictionary<int, Sprite> _originalLimbSprites = new Dictionary<int, Sprite>();
         private static readonly Dictionary<int, Sprite> _originalTailSprites = new Dictionary<int, Sprite>();
         private static readonly Dictionary<int, FacialOriginal> _originalFaces = new Dictionary<int, FacialOriginal>();
         private static readonly Dictionary<long, Sprite> _fittedSprites = new Dictionary<long, Sprite>();
+        private static readonly Dictionary<string, int> _packRequestAttempts
+            = new Dictionary<string, int>(StringComparer.Ordinal);
+        private static readonly Dictionary<string, float> _packNextRetryAt
+            = new Dictionary<string, float>(StringComparer.Ordinal);
 
         private static MethodInfo _replacerRestoreMethod;
         private static PropertyInfo _replacerActiveProp;
@@ -31,6 +38,111 @@ namespace SkinSyncMod
             public Sprite[] DisfiguredHead;
             public Sprite[] DisfiguredHeadHeal;
             public Eye[] Eyes;
+        }
+
+        /// <summary>场景切换时清理已销毁角色引用与原版基线；活跃联机切图时保留待绑定覆盖与皮肤包请求状态。</summary>
+        internal static void OnSceneChanged(bool preserveActiveSession = false)
+        {
+            PruneDeadObjects();
+            ClearBaselineDictionaries();
+            _loggedMissingSkins.Clear();
+            if (preserveActiveSession)
+            {
+                AccessoryAttacher.ClearSceneObjectOverrides();
+                TailDeformConfig.ClearSceneObjectOverrides();
+            }
+            else
+            {
+                _pendingPackTargets.Clear();
+                _requestedPacks.Clear();
+                ClearPackRetryState();
+                AccessoryAttacher.ClearRemoteOverrides();
+                TailDeformConfig.ClearRemoteOverrides();
+            }
+            BloodAttacher.OnSceneChanged();
+            WoundViewAttacher.OnSceneChanged();
+            SkinStateVersion++;
+        }
+
+        private static void PruneDeadObjects()
+        {
+            var dead = new List<GameObject>();
+            foreach (var kv in _byChara)
+            {
+                if (kv.Key == null) dead.Add(kv.Key);
+            }
+            foreach (var go in dead)
+            {
+                _byChara.Remove(go);
+                _charTypeByChara.Remove(go);
+            }
+            _vanillaApplied.RemoveWhere(go => go == null);
+            _pendingPackTargets.RemoveWhere(go => go == null);
+        }
+
+        internal static void ClearPackRetryState(string skinId = null)
+        {
+            if (string.IsNullOrEmpty(skinId))
+            {
+                _packRequestAttempts.Clear();
+                _packNextRetryAt.Clear();
+                return;
+            }
+            _packRequestAttempts.Remove(skinId);
+            _packNextRetryAt.Remove(skinId);
+        }
+
+        /// <summary>定期检查因缺失皮肤包挂起的目标对象，缓存就绪时补套皮肤，冷却释放后按上限重发请求。</summary>
+        internal static void RetryPendingPackRequests()
+        {
+            PruneDeadObjects();
+            if (_pendingPackTargets.Count == 0) return;
+
+            // 先快照集合，防止 ApplySkinToPlayer 修改 _pendingPackTargets 导致遍历异常。
+            var targets = new List<GameObject>(_pendingPackTargets);
+            float now = Time.realtimeSinceStartup;
+            for (int i = 0; i < targets.Count; i++)
+            {
+                GameObject go = targets[i];
+                if (go == null) continue;
+                if (!_byChara.TryGetValue(go, out string skinId) || string.IsNullOrEmpty(skinId))
+                {
+                    _pendingPackTargets.Remove(go);
+                    continue;
+                }
+
+                if (_skinCache.ContainsKey(skinId))
+                {
+                    ApplySkinToPlayer(go, skinId);
+                    continue;
+                }
+
+                if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value
+                    || !Interop.Consumers.SessionConsumer.IsAvailable || !Interop.Consumers.SessionConsumer.IsRunning)
+                {
+                    continue;
+                }
+                if (_requestedPacks.TryGetValue(skinId, out float lastReqAt) && now - lastReqAt < RequestRetryCooldownSec)
+                {
+                    continue;
+                }
+                if (_packNextRetryAt.TryGetValue(skinId, out float nextRetryAt) && now < nextRetryAt)
+                {
+                    continue;
+                }
+                _packRequestAttempts.TryGetValue(skinId, out int attempts);
+                if (attempts >= MaxPackRequestAttempts)
+                {
+                    continue;
+                }
+
+                _packRequestAttempts[skinId] = attempts + 1;
+                _packNextRetryAt[skinId] = now + PackRetryMinIntervalSec;
+                if (TryRequestSkinPack(skinId))
+                {
+                    ModLog.Info($"本机仍缺少皮肤 {skinId}，自动重发皮肤包请求 ({attempts + 1}/{MaxPackRequestAttempts})");
+                }
+            }
         }
 
         private static void ClearBaselineDictionaries()

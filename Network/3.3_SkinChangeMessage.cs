@@ -17,5 +17,6 @@ namespace SkinSyncMod
         public const ushort SkinPackRequestMessageId = 50003;
         public const ushort SkinPackDataMessageId = 50004;
         public const ushort SkinPackChunkMessageId = 50005;
+        public const ushort ClientWorldReadyMessageId = 50006;
     }
 }

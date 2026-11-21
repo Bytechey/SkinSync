@@ -201,6 +201,12 @@ namespace SkinSyncMod
             _pendingRemoteOverrides.Clear();
         }
 
+        internal static void ClearSceneObjectOverrides()
+        {
+            // 局内切图仅释放旧场景 GameObject 引用，保留按 netId 暂存的待绑定覆盖供新躯体恢复。
+            _remoteOverrides.Clear();
+        }
+
         private static void PruneDeadOwners()
         {
             List<GameObject> dead = null;

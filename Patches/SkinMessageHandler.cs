@@ -12,6 +12,7 @@ namespace SkinSyncMod
     {
         private const float PackRequestForwardCooldownSec = 5f;
         private const float CallerWarningCooldownSec = 5f;
+        private const float WorldReadyCooldownSec = 1f;
         private const float ClientTokenRefillPerSec = 20f;
         private const float ClientTokenBurstLimit = 40f;
         private const int MaxAccessoryIdLength = 64;
@@ -52,6 +53,8 @@ namespace SkinSyncMod
             = new Dictionary<CallerSkinKey, float>();
         private static readonly Dictionary<uint, ClientRateBucket> _clientRateBuckets
             = new Dictionary<uint, ClientRateBucket>();
+        private static readonly Dictionary<uint, float> _lastWorldReadyAt
+            = new Dictionary<uint, float>();
         private static readonly Dictionary<uint, float> _nextCallerWarnAt
             = new Dictionary<uint, float>();
 
@@ -60,12 +63,14 @@ namespace SkinSyncMod
             SkinPackChunkAssembler.CanAcceptInboundSkin = IsAuthorizedPackUpload;
         }
 
-        internal static void OnSceneChanged()
+        internal static void OnSceneChanged(bool preserveActiveSession = false)
         {
+            if (preserveActiveSession) return;
             _remoteSkinByNetId.Clear();
             _pendingPackRequesters.Clear();
             _lastForwardedRequestAt.Clear();
             _lastPackRequestAt.Clear();
+            _lastWorldReadyAt.Clear();
             _clientRateBuckets.Clear();
             _nextCallerWarnAt.Clear();
             SkinPackChunkAssembler.Clear();
@@ -144,6 +149,18 @@ namespace SkinSyncMod
             return Patches.SkinCacheBroadcaster.TryGetRecordedSkin(netId, out skinId);
         }
 
+        internal static void CopyRecordedRemoteSkinsTo(Dictionary<uint, string> target)
+        {
+            if (target == null) return;
+            foreach (var kv in _remoteSkinByNetId)
+            {
+                if (kv.Key != 0 && !string.IsNullOrEmpty(kv.Value) && !target.ContainsKey(kv.Key))
+                {
+                    target[kv.Key] = kv.Value;
+                }
+            }
+        }
+
         internal static void DropRemoteNetId(uint netId)
         {
             if (netId == 0) return;
@@ -209,6 +226,8 @@ namespace SkinSyncMod
                 return;
             }
 
+            Patches.SkinCacheBroadcaster.NotifyClientWorldReady(callerId, replayImmediately: false);
+
             bool isHostLocal = RosterConsumer.TryGetLocalNetBody(out _, out uint hostLocalNetId, out _)
                 && hostLocalNetId != 0
                 && hostLocalNetId == msg.netId;
@@ -224,6 +243,23 @@ namespace SkinSyncMod
             CommsTrace.HostBroadcast(msg.skinID, msg.netId, recipients, callerId);
 
             Patches.SkinCacheBroadcaster.RecordSkin(msg.netId, msg.skinID);
+        }
+
+        internal static void OnServerClientWorldReady(uint callerId, IInteropReader reader)
+        {
+            if (reader != null && reader.RemainingBytes >= 4)
+            {
+                reader.GetUInt();
+            }
+            if (!TryConsumeClientToken(callerId)) return;
+
+            float now = Time.realtimeSinceStartup;
+            if (_lastWorldReadyAt.TryGetValue(callerId, out float lastAt) && now - lastAt < WorldReadyCooldownSec)
+            {
+                return;
+            }
+            _lastWorldReadyAt[callerId] = now;
+            Patches.SkinCacheBroadcaster.NotifyClientWorldReady(callerId, replayImmediately: true);
         }
 
         private static void ApplySkinToPlayer(uint netId, string characterName, int charType = 0)
@@ -421,14 +457,19 @@ namespace SkinSyncMod
                 return;
             }
 
-            if (!_pendingPackRequesters.TryGetValue(msg.skinID, out HashSet<uint> waiters))
+            bool hadActiveWaiters = _pendingPackRequesters.TryGetValue(msg.skinID, out HashSet<uint> waiters)
+                && waiters != null
+                && waiters.Count > 0;
+            if (waiters == null)
             {
                 waiters = new HashSet<uint>();
                 _pendingPackRequesters[msg.skinID] = waiters;
             }
             waiters.Add(callerId);
 
-            if (_lastForwardedRequestAt.TryGetValue(msg.skinID, out float lastAt)
+            // 仅当存在未交割等待者且仍在合并窗口内时抑制重复广播，避免上一轮刚交割后新加入客机的请求被静默吞掉。
+            if (hadActiveWaiters
+                && _lastForwardedRequestAt.TryGetValue(msg.skinID, out float lastAt)
                 && now - lastAt < PackRequestForwardCooldownSec)
             {
                 return;

@@ -191,9 +191,13 @@ namespace SkinSyncMod
             return true;
         }
 
+        private bool _worldReadySentForScene;
         private void OnSceneLoaded(UnityEngine.SceneManagement.Scene scene, UnityEngine.SceneManagement.LoadSceneMode mode)
         {
+            if (mode == UnityEngine.SceneManagement.LoadSceneMode.Additive) return;
             _activeSceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+            bool preserveSession = TogetherInstalled && SessionConsumer.IsRunning && scene.name != "PreGen";
+            _worldReadySentForScene = preserveSession && !SessionConsumer.IsServer;
             _window?.ClosePanel();
             _persistentApplied = null;
             _appliedTargetObject = null;
@@ -209,10 +213,11 @@ namespace SkinSyncMod
             if (TogetherInstalled)
             {
                 RosterConsumer.ResetLocalCache();
-                Network.MultiplayerSender.ClearOutboundQueue();
-                SkinMessageHandlers.OnSceneChanged();
+                if (!preserveSession) Network.MultiplayerSender.ClearOutboundQueue();
+                SkinMessageHandlers.OnSceneChanged(preserveSession);
+                if (_worldReadySentForScene) Network.MultiplayerSender.SendClientWorldReady();
             }
-            SkinApplier.OnSceneChanged();
+            SkinApplier.OnSceneChanged(preserveSession);
         }
 
         private static bool _quitting;
@@ -395,6 +400,9 @@ namespace SkinSyncMod
             currentSkinIndex = idx;
             SwitchToSkin(skinId);
         }
+
+        internal static string ResolveLocalEffectiveSkinForServer()
+            => _instance == null || Settings == null || Settings.VanillaSkinForSelf.Value ? "" : _instance.ResolveCurrentSkin();
 
         private string ResolveCurrentSkin()
         {
@@ -700,6 +708,11 @@ namespace SkinSyncMod
         private void ReportLocalSkinIfNeeded()
         {
             if (localNetBodyBox == null || localChara == null || _activeSceneName == "PreGen") return;
+            if (SessionConsumer.IsRunning && !SessionConsumer.IsServer && !_worldReadySentForScene)
+            {
+                Network.MultiplayerSender.SendClientWorldReady();
+                _worldReadySentForScene = true;
+            }
             int curCharType = ReadLocalCharType(localChara);
             if (_reportedLocalChara == localChara && _reportedLocalCharType == curCharType && _localSkinReportedNetId != 0) return;
             string cached = Settings != null ? Settings.CurrentSkin.Value : null;

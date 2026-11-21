@@ -1,6 +1,6 @@
 # SkinSync
 
-《Casualties: Unknown》（未知伤亡）的自定义皮肤与联机同步模组，当前版本 `1.2.5`（兼容 `Casualties: Together` 5.5.x 各分支，面板与存档管理器等模组统一为半透明黑白粗框风格）。
+《Casualties: Unknown》（未知伤亡）的自定义皮肤与联机同步模组，当前版本 `1.2.6`（兼容 `Casualties: Together` 5.5.x 各分支，面板与存档管理器等模组统一为半透明黑白粗框风格）。
 
 最初参考 Nexus Mods 上的 `SpriteReplacer` 起步，目前支持三个可玩角色（Experiment / Milky / Dune）的肢体与表情替换、背部翅膀、肢体配件、自定义血液、区块灯光粒子与序列帧动画，外加一套基于 Verlet 积分的尾巴物理摆动。单机装上就能用；如果装了 `Casualties: Together`（`CasualtiesMP` 5.5.x），房间里同样装了本模组的玩家会自动看到彼此的皮肤、配件开关和尾巴摆动参数。
 
