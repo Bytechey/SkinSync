@@ -64,6 +64,9 @@ namespace SkinSyncMod
         private void Awake()
         {
             _instance = this;
+            // 默认 BepInEx HideManagerGameObject=false，单装模组切场景会销毁共享宿主，强制设 HideAndDontSave 与 DontDestroyOnLoad 保活 OnGUI/Update 及 _instance
+            gameObject.hideFlags = HideFlags.HideAndDontSave;
+            UnityEngine.Object.DontDestroyOnLoad(gameObject);
             ModLog.Init(Logger);
             ModLog.Debug("[Build] Debug 构建，详细日志已启用");
             TogetherInstalled = BepInEx.Bootstrap.Chainloader.PluginInfos.ContainsKey(TogetherPluginGuid);
