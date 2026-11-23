@@ -29,6 +29,12 @@ namespace SkinSyncMod
         internal ConfigEntry<string> PreferredLanguage { get; }
         internal ConfigEntry<int> UiScalePercent { get; }
 
+        internal ConfigFile RawConfig => _config;
+        internal ConfigEntry<bool> PauseDialAutoAvoid { get; }
+        internal ConfigEntry<float> PauseDialAngleDeg { get; }
+        internal ConfigEntry<float> PauseDialRadiusOffset { get; }
+        internal ConfigEntry<int> PauseDialScalePercent { get; }
+
         internal ConfigEntry<string> SyncMode { get; }
         internal bool IsPassiveSyncMode => string.Equals(SyncMode.Value?.Trim(), "Passive", StringComparison.OrdinalIgnoreCase);
         internal ConfigEntry<bool> SyncAccessories { get; }
@@ -126,6 +132,18 @@ namespace SkinSyncMod
                     "界面缩放百分比（75-150）。检测到 CuSaveManager 时自动跟随主面板统一缩放。",
                     new AcceptableValueRange<int>(75, 150)));
 
+            PauseDialAutoAvoid = config.Bind("PauseDial", "AutoAvoidOverlap", true,
+                "暂停表盘按钮是否自动避让原版按钮与其他模组按钮/面板，并在空间拥挤时自适应缩小。");
+            PauseDialAngleDeg = config.Bind("PauseDial", "AngleDegrees", PauseDialLayoutSolver.DefaultAngleDeg,
+                new ConfigDescription("暂停表盘按钮环绕角度（度，0=正右，90=正上，-90=正下，±180=正左）。",
+                    new AcceptableValueRange<float>(-180f, 180f)));
+            PauseDialRadiusOffset = config.Bind("PauseDial", "RadiusOffset", 0f,
+                new ConfigDescription("暂停表盘按钮相对原版按钮轨道的半径偏移（像素）。",
+                    new AcceptableValueRange<float>(PauseDialLayoutSolver.MinRadiusOffset, PauseDialLayoutSolver.MaxRadiusOffset)));
+            PauseDialScalePercent = config.Bind("PauseDial", "ScalePercent", 100,
+                new ConfigDescription("暂停表盘按钮大小百分比（60% ~ 160%）。",
+                    new AcceptableValueRange<int>(60, 160)));
+
             SyncMode = config.Bind("Sync", "Mode", "OnEnter",
                 "多人同步策略。OnEnter=进入游戏时同步皮肤与已保存的配件/尾巴覆盖；Passive=入局只报皮肤名，改动参数时再广播。");
             string rawSyncMode = SyncMode.Value?.Trim();
@@ -163,6 +181,14 @@ namespace SkinSyncMod
                 UiScalePercent.Value = clamped;
             }
             _config?.Save();
+        }
+
+        internal void ResetPauseDialLayout()
+        {
+            PauseDialAutoAvoid.Value = true;
+            PauseDialAngleDeg.Value = PauseDialLayoutSolver.DefaultAngleDeg;
+            PauseDialRadiusOffset.Value = 0f;
+            PauseDialScalePercent.Value = 100;
         }
 
         internal static bool IsBound(KeyboardShortcut sc) => sc.MainKey != KeyCode.None;

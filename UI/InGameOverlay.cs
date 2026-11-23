@@ -3,7 +3,7 @@ using UnityEngine;
 
 namespace SkinSyncMod
 {
-    // 未嵌入 SaveManager 时在暂停界面右下角绘制入口，保留 124f 底边距以避让 CuSaveManager 与 HwAssistive 堆叠槽位
+    // 独立模式下作为暂停表盘按钮挂载失败时的右下角兜底入口，保留 124f 底边距以避让其他模组堆叠槽位
     internal sealed class InGameOverlay
     {
         private const float ButtonWidth = 320f;
@@ -12,15 +12,28 @@ namespace SkinSyncMod
         private const float MarginBottom = 124f;
         private const float BorderThickness = 5f;
 
+        internal static bool IsGamePaused()
+        {
+            try
+            {
+                if (PauseHandler.paused) return true;
+                var main = PauseHandler.main;
+                return main != null && main.pauseContainer != null && main.pauseContainer.activeSelf;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         internal static bool ShouldShow()
         {
+            if (PauseDialButtonInjector.IsMounted) return false;
             if (UiBlocker.IsBlocking) return false;
             try
             {
                 if (PlayerCamera.main == null || SettingsMenu.instance != null) return false;
-                if (PauseHandler.paused) return true;
-                var main = PauseHandler.main;
-                return main != null && main.pauseContainer != null && main.pauseContainer.activeSelf;
+                return IsGamePaused();
             }
             catch
             {

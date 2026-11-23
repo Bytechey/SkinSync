@@ -133,6 +133,15 @@ namespace SkinSyncMod
             ["about.sec_credits"] = "开发人员",
             ["about.testers"] = "测试人员",
             ["about.sec_deps"] = "依赖与致谢",
+
+            ["tip.pause_dial_desc"] = "点击打开皮肤同步 · 右键拖动调整表盘位置 · 滚轮调整大小",
+            ["sec.pause_dial"] = "暂停表盘按钮",
+            ["sw.pause_dial_auto_avoid"] = "智能避让重叠与拥挤缩放",
+            ["fmt.pause_dial_angle"] = "表盘环绕角度：{0:0.#}°",
+            ["fmt.pause_dial_radius"] = "轨道间距偏移：{0:+0.#;-0.#;0} px",
+            ["fmt.pause_dial_scale"] = "表盘按钮大小：{0}%",
+            ["btn.pause_dial_reset"] = "恢复默认表盘位置与大小",
+            ["hint.pause_dial_drag"] = "提示：局内按 ESC 暂停后，可直接右键（或 Alt+左键）拖动表盘上的皮肤同步按钮换位，悬停滚轮调大小。",
         };
 
         private static readonly Dictionary<string, string> _en = new Dictionary<string, string>
@@ -257,6 +266,15 @@ namespace SkinSyncMod
             ["about.sec_credits"] = "Developers",
             ["about.testers"] = "Playtesters",
             ["about.sec_deps"] = "Dependencies & thanks",
+
+            ["tip.pause_dial_desc"] = "Click to open Skin Sync · Right-drag to move around dial · Scroll to resize",
+            ["sec.pause_dial"] = "Pause Dial Button",
+            ["sw.pause_dial_auto_avoid"] = "Smart overlap avoidance & crowd scaling",
+            ["fmt.pause_dial_angle"] = "Dial angle: {0:0.#}°",
+            ["fmt.pause_dial_radius"] = "Orbit radius offset: {0:+0.#;-0.#;0} px",
+            ["fmt.pause_dial_scale"] = "Dial button scale: {0}%",
+            ["btn.pause_dial_reset"] = "Reset dial position & scale",
+            ["hint.pause_dial_drag"] = "Tip: While paused in-game (ESC), right-drag (or Alt+drag) the dial button to move it, or scroll over it to resize.",
         };
 
         private static Dictionary<string, string> _cachedDict;

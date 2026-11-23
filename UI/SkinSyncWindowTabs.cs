@@ -105,6 +105,8 @@ namespace SkinSyncMod
                 CaptureKeyDownIfNeeded();
                 GUILayout.EndVertical();
 
+                DrawPauseDialSection();
+
                 DrawSectionHeader(SkinSyncI18n.T("sec.misc"));
                 GUILayout.BeginVertical(BlackWhiteSkin.CardStyle);
                 bool showLog = DrawSwitch(SkinSyncI18n.T("sw.show_log_in_console"), _cfg.ShowLogInConsole.Value);
