@@ -222,6 +222,116 @@ namespace SkinSyncMod
             return TryPackForShare(skinID, false, out byte[] payload, out _) ? payload : null;
         }
 
+        // ———————————————— 内容寻址（皮肤名与内容解耦） ————————————————
+
+        /// <summary>内容哈希的十六进制长度；取 SHA-256 前 16 字节（128 位）。</summary>
+        internal const int HASH_LENGTH = 32;
+
+        /// <summary>原始皮肤名等元数据文件名；不在打包白名单内，不会被收进包，也不参与哈希。</summary>
+        internal const string MetaFileName = "skinsync.meta.json";
+
+        /// <summary>收到的皮肤包根目录；以下划线开头，不会被皮肤扫描当成可选皮肤列出。</summary>
+        internal static string ReceivedPackRoot
+            => Path.Combine(BepInEx.Paths.PluginPath, "CustomSprites", "_received");
+
+        /// <summary>某个内容哈希对应的已收包目录。</summary>
+        internal static string GetReceivedPackDir(string hash)
+            => string.IsNullOrEmpty(hash) ? "" : Path.Combine(ReceivedPackRoot, hash);
+
+        /// <summary>是否为本模组生成的内容哈希（32 位小写十六进制）。</summary>
+        internal static bool IsHashLike(string s)
+        {
+            if (string.IsNullOrEmpty(s) || s.Length != HASH_LENGTH) return false;
+            foreach (char c in s)
+            {
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+            }
+            return true;
+        }
+
+        /// <summary>本地是否已持有该内容（内存或已收包目录）。</summary>
+        internal static bool HasReceivedPack(string hash)
+        {
+            if (string.IsNullOrEmpty(hash)) return false;
+            if (_cache.ContainsKey(hash)) return true;
+            string dir = GetReceivedPackDir(hash);
+            return Directory.Exists(dir) && Directory.GetFiles(dir, "*.png", SearchOption.AllDirectories).Length > 0;
+        }
+
+        /// <summary>对包字节求内容哈希：只覆盖文件条目（相对路径 + 字节），不含包头里的皮肤名。</summary>
+        /// <remarks>
+        /// 不含皮肤名是刻意的：把名字算进去会让"同内容不同名"得到不同哈希，
+        /// 内容寻址就退化回按名字寻址，正是本次要解决的问题。
+        /// </remarks>
+        internal static string ComputeContentHash(byte[] payload)
+        {
+            if (!TryDecodePayload(payload, skipIfLocalOwned: false, out _, out Dictionary<string, byte[]> dict)) return null;
+            return dict == null ? null : HashEntries(dict);
+        }
+
+        /// <summary>按皮肤名打包后求内容哈希；取不到皮肤目录时返回 null。</summary>
+        internal static string ComputeContentHash(string skinID)
+        {
+            if (!TryPackForShare(skinID, false, out byte[] payload, out _)) return null;
+            return ComputeContentHash(payload);
+        }
+
+        private static string HashEntries(Dictionary<string, byte[]> dict)
+        {
+            var keys = new List<string>(dict.Keys);
+            keys.Sort(StringComparer.Ordinal);
+
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+            using (var ms = new MemoryStream())
+            using (var bw = new BinaryWriter(ms, Encoding.UTF8))
+            {
+                bw.Write(keys.Count);
+                foreach (string key in keys)
+                {
+                    byte[] data = dict[key];
+                    bw.Write(key);
+                    bw.Write(data.Length);
+                    bw.Write(data);
+                }
+                bw.Flush();
+
+                byte[] digest = sha.ComputeHash(ms.ToArray());
+                var sb = new StringBuilder(HASH_LENGTH);
+                for (int i = 0; i < HASH_LENGTH / 2; i++) sb.Append(digest[i].ToString("x2"));
+                return sb.ToString();
+            }
+        }
+
+        /// <summary>把收到的包按内容寻址写到 _received/&lt;hash&gt;/，目录名即哈希，天然免疫同名覆盖。</summary>
+        internal static bool StoreReceived(string hash, string skinID, Dictionary<string, byte[]> dict)
+        {
+            if (string.IsNullOrEmpty(hash) || dict == null || dict.Count == 0) return false;
+            try
+            {
+                string baseDir = GetReceivedPackDir(hash);
+                Directory.CreateDirectory(baseDir);
+                foreach (var kv in dict)
+                {
+                    string fullPath = Path.Combine(baseDir, kv.Key);
+                    string dir = Path.GetDirectoryName(fullPath);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                    File.WriteAllBytes(fullPath, kv.Value);
+                }
+
+                string meta = "{\"hash\":\"" + hash + "\",\"name\":\"" + (skinID ?? "").Replace("\\", "\\\\").Replace("\"", "\\\"")
+                    + "\",\"savedAt\":\"" + DateTime.UtcNow.ToString("o") + "\"}";
+                File.WriteAllText(Path.Combine(baseDir, MetaFileName), meta, Encoding.UTF8);
+
+                SkinPathResolver.Invalidate();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                SkinSyncMod.ModLog.Warning("SkinPackCodec.StoreReceived failed: " + ex.Message);
+                return false;
+            }
+        }
+
         private static byte[] TryPackDirectory(string skinID, string baseDir)
         {
             if (string.IsNullOrEmpty(baseDir) || !Directory.Exists(baseDir)) return null;
@@ -252,6 +362,9 @@ namespace SkinSyncMod
         private static byte[] EncodeFiles(string skinID, List<KeyValuePair<string, byte[]>> files)
         {
             if (files == null || files.Count == 0 || files.Count > MAX_FILE_COUNT) return null;
+            // 确定性排序：目录枚举顺序不保证跨机器一致，不排序会让同内容在两台机器上
+            // 编码出不同字节、算出不同内容 hash，内容寻址随即失效（表现为反复重拉皮肤包）。
+            files.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
             using (var ms = new MemoryStream())
             using (var bw = new BinaryWriter(ms))
             {
@@ -365,6 +478,52 @@ namespace SkinSyncMod
             {
                 SkinSync.NotifyDiskSkinsChanged(skinID);
             }
+            return true;
+        }
+
+        /// <summary>带内容哈希校验的解包；本机已有同名自有皮肤时改为按内容寻址另存，不再直接丢弃。</summary>
+        /// <remarks>
+        /// 原实现遇到本机同名自有皮肤会整包丢弃（保护用户文件不被覆盖），代价是远端那份内容
+        /// 在本机永远不可得，于是显示成"你自己的那个同名皮肤"。
+        /// 这里改为：保留用户那份不动，把远端内容按哈希另存到 _received/&lt;hash&gt;，
+        /// 渲染时用 hash 形态的 id 指过去，两者并存互不覆盖。
+        /// </remarks>
+        internal static bool UnpackAndCache(byte[] payload, string expectedHash, bool persistToDisk,
+            out string skinID, out string actualHash, bool remoteAllowPersist = false)
+        {
+            skinID = null;
+            actualHash = null;
+            if (!TryDecodePayload(payload, skipIfLocalOwned: false, out skinID, out Dictionary<string, byte[]> dict))
+            {
+                return false;
+            }
+
+            actualHash = HashEntries(dict);
+            if (!string.IsNullOrEmpty(expectedHash)
+                && !string.Equals(expectedHash, actualHash, StringComparison.Ordinal))
+            {
+                SkinSyncMod.ModLog.Warning($"皮肤包内容校验失败：声明 {expectedHash}，实际 {actualHash}（{skinID}），已丢弃。");
+                return false;
+            }
+
+            if (SkinPathResolver.HasLocalCustomSkin(skinID))
+            {
+                _cache[actualHash] = dict;
+                if (persistToDisk) StoreReceived(actualHash, skinID, dict);
+                SkinSyncMod.ModLog.Info($"皮肤包 {skinID} 与本机同名皮肤内容不同，已按内容寻址另存为 _received/{actualHash}（本机文件未改动）");
+                return true;
+            }
+
+            // 落盘一律按内容寻址：_received/<hash>。不再写 CustomSprites/<名字>，
+            // 目录名即哈希，同名不同内容因此不可能互相覆盖；重启后靠切换消息里的哈希再定位。
+            _remoteAllowPersist[actualHash] = remoteAllowPersist;
+            _cache[skinID] = dict;
+            _cache[actualHash] = dict;
+            if (persistToDisk) StoreReceived(actualHash, skinID, dict);
+
+            SkinPathResolver.Invalidate();
+            StoreCachedPack(skinID, payload);
+            SkinSyncMod.ModLog.Info($"皮肤包 {skinID} 已缓存（hash={actualHash}，persist={persistToDisk}）");
             return true;
         }
 

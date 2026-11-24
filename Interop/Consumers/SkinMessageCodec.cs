@@ -12,6 +12,8 @@ namespace SkinSyncMod.Interop.Consumers
             writer.PutString(message.skinID ?? string.Empty);
             writer.PutUInt(message.netId);
             writer.PutInt(message.charType);
+            // 内容哈希追加在末尾：旧版本读完前三个字段即止，尾部多余字节被忽略，因此不破坏互通。
+            writer.PutString(message.contentHash ?? string.Empty);
         }
 
         internal static SkinChangeMessage ReadSkinChange(IInteropReader reader)
@@ -21,6 +23,9 @@ namespace SkinSyncMod.Interop.Consumers
             message.netId = reader.GetUInt();
             // 兼容未携带 charType 字段的旧版客户端消息。
             message.charType = reader.RemainingBytes >= 4 ? reader.GetInt() : 0;
+            // 同理兼容未携带 contentHash 的旧版消息；非法值一律视为"未提供"。
+            string hash = reader.RemainingBytes >= 2 ? reader.GetString() : null;
+            message.contentHash = SkinPackCodec.IsHashLike(hash) ? hash : null;
             return message;
         }
 
@@ -135,6 +140,8 @@ namespace SkinSyncMod.Interop.Consumers
             writer.PutUInt(message.crc32);
             writer.PutBool(message.allowPersist);
             writer.PutBytes(message.data ?? System.Array.Empty<byte>());
+            // 内容哈希追加在末尾：旧版本读完 data 即止，尾部多余字节被忽略。
+            writer.PutString(message.contentHash ?? string.Empty);
         }
 
         internal static SkinPackChunkMessage ReadSkinPackChunk(IInteropReader reader)
@@ -147,6 +154,8 @@ namespace SkinSyncMod.Interop.Consumers
             message.crc32 = reader.GetUInt();
             message.allowPersist = reader.GetBool();
             message.data = reader.GetBytes();
+            string hash = reader.RemainingBytes >= 2 ? reader.GetString() : null;
+            message.contentHash = SkinPackCodec.IsHashLike(hash) ? hash : null;
             return message;
         }
     }

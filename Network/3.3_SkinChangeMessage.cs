@@ -6,6 +6,13 @@ namespace SkinSyncMod
         public string skinID;
         public uint netId;
         public int charType;
+
+        /// <summary>
+        /// 皮肤内容哈希（32 位十六进制，见 SkinPackCodec.HASH_LENGTH）；空或 null 表示发送方是旧版本。
+        /// 用于把「皮肤名」与「皮肤内容」解耦：接收端据此判断本地同名皮肤是否就是同一份内容。
+        /// 追加在消息体末尾，旧版本读取时忽略尾部多余字节，因此不影响互通。
+        /// </summary>
+        public string contentHash;
     }
 
     /// <summary>定义 SkinSync 网络通道的子消息编号常量。</summary>

@@ -62,6 +62,19 @@ namespace SkinSyncMod
             string direct = Path.Combine(customSpritesRoot, characterName);
             string syncDir = Path.Combine(SyncCacheRoot, characterName);
 
+            // 内容寻址目录：hash 形态的 id 只可能指向 _received/<hash>，代表"某一份具体内容"，
+            // 与皮肤名解耦，因此不会与用户自建的同名皮肤混淆。
+            if (SkinPackCodec.IsHashLike(characterName))
+            {
+                string received = Path.Combine(customSpritesRoot, "_received", characterName);
+                if (Directory.Exists(received) && HasAnyContent(received))
+                {
+                    string receivedActual = ResolveActual(received);
+                    _resolved[characterName] = receivedActual;
+                    return receivedActual;
+                }
+            }
+
             if (IsEffectiveLocalCustomDir(customSpritesRoot, characterName, direct))
             {
                 string actual = ResolveActual(direct);

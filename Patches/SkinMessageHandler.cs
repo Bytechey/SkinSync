@@ -195,8 +195,20 @@ namespace SkinSyncMod
 
             if (!isLocalEcho)
             {
-                RecordRemoteSkin(msg.netId, msg.skinID);
-                ApplySkinToPlayer(msg.netId, msg.skinID, msg.charType);
+                // 按 (皮肤名, 内容哈希) 解析出本地真正该渲染的 id：
+                // 同名同内容 → 用名字；已有该哈希的收包 → 用 hash；都没有 → 先拉包，到齐后再应用。
+                string localId = ContentSkinResolver.ResolveLocal(msg.skinID, msg.contentHash);
+                if (localId != null)
+                {
+                    RecordRemoteSkin(msg.netId, localId);
+                    ApplySkinToPlayer(msg.netId, localId, msg.charType);
+                }
+                else
+                {
+                    // 按哈希记录本次目标：皮肤包到齐后可据此重新应用（渲染用的是 hash 形态的 id）。
+                    RecordRemoteSkin(msg.netId, msg.contentHash);
+                    SkinSyncMod.ModLog.Info($"本地缺少皮肤内容 {msg.skinID}（hash={msg.contentHash}），已请求皮肤包，到齐后补应用（netId {msg.netId}）。");
+                }
             }
         }
 
@@ -548,7 +560,8 @@ namespace SkinSyncMod
             else
             {
                 bool persist = SkinSync.Settings.SkinPackPersistOnDisk.Value && allowPersist;
-                if (!SkinPackCodec.UnpackAndCache(payload, persist, out skinID, remoteAllowPersist: allowPersist)) return;
+                // 走带内容寻址的解包：落盘一律写 _received/<hash>，不再写 CustomSprites/<名字>。
+                if (!SkinPackCodec.UnpackAndCache(payload, null, persist, out skinID, out _, remoteAllowPersist: allowPersist)) return;
                 unpackedForHost = true;
                 SkinSyncMod.ModLog.Info($"服务端：收到 client {callerId} 的皮肤包 {skinID}（{payload.Length} bytes, allowPersist={allowPersist}），本机 persist={persist}");
             }
@@ -588,14 +601,16 @@ namespace SkinSyncMod
             if (SkinSync.Settings == null || !SkinSync.Settings.EnableSkinPackSync.Value) return;
             if (SkinPackChunkAssembler.TryPushChunk(ushort.MaxValue, msg, out byte[] complete, out bool allowPersist))
             {
-                ProcessClientCompleteSkinPack(complete, allowPersist);
+                ProcessClientCompleteSkinPack(complete, allowPersist, msg.contentHash);
             }
         }
 
-        private static void ProcessClientCompleteSkinPack(byte[] payload, bool allowPersist)
+        private static void ProcessClientCompleteSkinPack(byte[] payload, bool allowPersist, string expectedHash = null)
         {
             bool persist = SkinSync.Settings.SkinPackPersistOnDisk.Value && allowPersist;
-            if (!SkinPackCodec.UnpackAndCache(payload, persist, out string skinID, remoteAllowPersist: allowPersist))
+            // 走带哈希校验的解包：本机有同名自有皮肤时按内容寻址另存到 _received/<hash>，不再整包丢弃。
+            if (!SkinPackCodec.UnpackAndCache(payload, expectedHash, persist,
+                    out string skinID, out string actualHash, remoteAllowPersist: allowPersist))
             {
                 if (SkinPackCodec.TryPeekSkinId(payload, payload != null ? payload.Length : 0, out string peeked)
                     && !SkinPathResolver.HasLocalCustomSkin(peeked))
@@ -604,9 +619,12 @@ namespace SkinSyncMod
                 }
                 return;
             }
-            SkinSyncMod.ModLog.Info($"客户端：收到皮肤包 {skinID}（{payload.Length} bytes, allowPersist={allowPersist}），本机 persist={persist}");
+            SkinSyncMod.ModLog.Info($"客户端：收到皮肤包 {skinID}（hash={actualHash}，{payload.Length} bytes, allowPersist={allowPersist}），本机 persist={persist}");
 
+            ContentSkinResolver.OnPackArrived(actualHash);
             SkinApplier.ReapplyForSkin(skinID);
+            // 同名不同内容时渲染用的是 hash 形态的 id，这里再按它刷一次。
+            if (!string.IsNullOrEmpty(actualHash)) SkinApplier.ReapplyForSkin(actualHash);
         }
     }
 }

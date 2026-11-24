@@ -29,6 +29,8 @@ namespace SkinSyncMod.Network
                 skinID = skinID,
                 netId = netId,
                 charType = charType,
+                // 内容哈希让接收端区分"同名但内容不同"；取不到皮肤目录时留空，退回按名字。
+                contentHash = SkinPackCodec.ComputeContentHash(skinID),
             });
             CommsTrace.ClientSend(skinID, netId, charType);
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "服务端");
@@ -125,6 +127,8 @@ namespace SkinSyncMod.Network
                 skinID = skinID,
                 netId = netId,
                 charType = charType,
+                // 内容哈希让接收端区分"同名但内容不同"；取不到皮肤目录时留空，退回按名字。
+                contentHash = SkinPackCodec.ComputeContentHash(skinID),
             });
             CommsTrace.HostUnicast(targetClientId, skinID, netId, charType);
             DebugMessageTrace.Sent(writer, SkinNetworkIDs.SkinChangeMessageId, "客户端 " + targetClientId);
@@ -192,6 +196,8 @@ namespace SkinSyncMod.Network
             public uint Crc32;
             public bool AllowPersist;
             public byte[] Payload;
+            /// <summary>整包内容哈希；建 job 时算一次，随每个分片带上，避免逐片重复解析整包。</summary>
+            public string ContentHash;
             public ushort NextChunkIndex;
             public System.Func<IInteropWriter, int> SendAction;
         }
@@ -251,6 +257,7 @@ namespace SkinSyncMod.Network
                     crc32 = job.Crc32,
                     allowPersist = job.AllowPersist,
                     data = slice,
+                    contentHash = job.ContentHash,
                 });
                 int recipients = job.SendAction(writer);
                 if (recipients <= 0)
@@ -360,6 +367,7 @@ namespace SkinSyncMod.Network
                 Crc32 = crc,
                 AllowPersist = allowPersist,
                 Payload = payload,
+                ContentHash = SkinPackCodec.ComputeContentHash(payload),
                 NextChunkIndex = 0,
                 SendAction = send,
             });
